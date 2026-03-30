@@ -1,6 +1,6 @@
 streamlit
 openai
-pinecone-client
+pinecone
 PyPDF2
 pandas
 openpyxl
