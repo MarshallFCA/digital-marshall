@@ -1,0 +1,8 @@
+streamlit==1.32.0
+openai
+pinecone-client
+PyPDF2
+pandas
+openpyxl
+streamlit-oauth
+requests
