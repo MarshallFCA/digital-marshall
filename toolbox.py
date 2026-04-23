@@ -126,48 +126,34 @@ def search_transvirtual_connote(connote_number):
     }
     
     try:
-        # STEP 1: The Search Stub (Find the internal ID)
-        url_search = "https://api.transvirtual.com.au/api/Consignment/Search"
-        response_search = requests.post(url_search, headers=headers, json={"ConsignmentNumber": connote_number})
-        
-        internal_id = None
-        if response_search.status_code == 200:
-            internal_id = response_search.json().get("Data", {}).get("Id")
-            
-        # STEP 2: Fetch Consignment Details
+        # STEP 1: Fetch Consignment Details (The Booking Data)
         url_query = "https://api.transvirtual.com.au/api/ConsignmentQuery"
         response_query = requests.post(url_query, headers=headers, json={"ConsignmentNumber": connote_number})
         full_data = response_query.json().get("Data", {}) if response_query.status_code == 200 else {}
         
-        # STEP 3: The Ultimate Tracking Skeleton Key
+        # STEP 2: The Targeted Status Pick
         tracking_log = []
         tracking_data = None
+        url_status = "https://api.transvirtual.com.au/api/ConsignmentStatus"
         
-        test_tracking_routes = [
-            ("GET /ConsignmentStatus", f"https://api.transvirtual.com.au/api/ConsignmentStatus?ConsignmentNumber={connote_number}", None),
-            ("GET /Tracking (Query)", f"https://api.transvirtual.com.au/api/Tracking?ConsignmentNumber={connote_number}", None),
-            ("GET /Tracking (ID)", f"https://api.transvirtual.com.au/api/Tracking/{internal_id}" if internal_id else "SKIP", None),
-            ("POST /ConsignmentStatus (Array)", "https://api.transvirtual.com.au/api/ConsignmentStatus", [connote_number]),
-            ("POST /Tracking (Array)", "https://api.transvirtual.com.au/api/Tracking", [connote_number]),
-            ("POST /Tracking (Number)", "https://api.transvirtual.com.au/api/Tracking", {"Number": connote_number})
+        # The 4 most common enterprise payload shapes
+        test_payloads = [
+            ("Plural Array", {"ConsignmentNumbers": [connote_number]}),
+            ("List Object", {"List": [connote_number]}),
+            ("Tracking Object", {"TrackingNumbers": [connote_number]}),
+            ("Number Array", {"Numbers": [connote_number]})
         ]
         
-        for test_name, url, test_payload in test_tracking_routes:
-            if url == "SKIP":
-                continue
+        for shape_name, payload in test_payloads:
+            resp = requests.post(url_status, headers=headers, json=payload)
             
-            if test_payload is not None:
-                resp = requests.post(url, headers=headers, json=test_payload)
-            else:
-                resp = requests.get(url, headers=headers)
-                
-            # Check for a successful hit that DOESN'T contain our previous error message
-            if resp.status_code == 200 and "Missing consignment number" not in resp.text:
+            # If we get a 200 OK and it doesn't complain about a missing number
+            if resp.status_code == 200 and "Missing" not in resp.text:
                 tracking_data = resp.json()
-                tracking_log.append(f"✅ Hit {test_name}")
+                tracking_log.append(f"✅ Success with shape: {shape_name}")
                 break
             else:
-                tracking_log.append(f"❌ {test_name} -> HTTP {resp.status_code} | {resp.text[:50]}")
+                tracking_log.append(f"❌ {shape_name} -> HTTP {resp.status_code} | {resp.text[:60]}")
         
         # Combine the Data for Digital Marsh
         combined_matrix = {
