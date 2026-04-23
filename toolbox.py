@@ -108,14 +108,13 @@ def search_machship_connote(connote_number):
                 return f"✅ Machship Record (Found via {search_type}): Carrier: {carrier} | Status: {status}\n\n**Raw Data Available to AI:**\n```json\n{raw_data}\n```"
 
     return f"Failed to find '{connote_number}' in Machship."
-    # ==========================================
+# ==========================================
 # TOOL 3: TRANSVIRTUAL CONSIGNMENT SEARCH
 # ==========================================
 def search_transvirtual_connote(connote_number):
     token = st.secrets["TRANSVIRTUAL_API_KEY"]
     connote_number = connote_number.strip().upper()
     
-    # Standard Transvirtual API endpoint for querying a consignment
     url = f"https://api.transvirtual.com.au/api/tracking/{connote_number}"
     
     headers = {
@@ -125,21 +124,10 @@ def search_transvirtual_connote(connote_number):
     
     try:
         response = requests.get(url, headers=headers)
-        if response.status_code == 200:
-            data = response.json()
-            if data:
-                # Format raw data for Digital Marsh
-                raw_data = json.dumps(data, indent=2)
-                
-                # Pull out some high-level info (adjust keys if TV's output slightly varies)
-                status = data.get("Status", "Unknown")
-                sender = data.get("SenderName", "Unknown")
-                receiver = data.get("ReceiverName", "Unknown")
-                
-                return f"✅ Transvirtual Record: {connote_number} | Status: {status} | From: {sender} | To: {receiver}\n\n**Raw Data Available to AI:**\n```json\n{raw_data}\n```"
-            else:
-                return f"Transvirtual returned an empty result for '{connote_number}'."
-        else:
-            return f"Transvirtual API Error: HTTP {response.status_code} - {response.text}"
+        
+        # --- X-RAY DIAGNOSTICS ---
+        # We are bypassing Digital Marsh's polite summary and forcing it to print the raw server data
+        return f"🚨 TRANSVIRTUAL X-RAY RESULTS for {connote_number} 🚨\nHTTP Status Code: {response.status_code}\nRaw Server Reply: {response.text}"
+        
     except Exception as e:
         return f"Transvirtual Connection Crash: {str(e)}"
