@@ -115,37 +115,54 @@ def search_transvirtual_connote(connote_number):
     token = st.secrets["TRANSVIRTUAL_API_KEY"]
     connote_number = connote_number.strip().upper()
     
-    # THE FIX: Transvirtual rejects the standard "Bearer " prefix. 
-    # We are handing it the raw token directly.
     headers = {
-        "Authorization": token,
+        "Authorization": token,  # Raw token, no 'Bearer' prefix
         "Content-Type": "application/json",
         "Accept": "application/json"
     }
     
-    error_log = []
-    
-    # Test 1: Standard GET Request
-    url_get = f"https://api.transvirtual.com.au/api/Consignment/{connote_number}"
-    try:
-        response_get = requests.get(url_get, headers=headers)
-        if response_get.status_code == 200:
-            return f"✅ SUCCESS via GET:\n```json\n{json.dumps(response_get.json(), indent=2)}\n```"
-        else:
-            error_log.append(f"GET /Consignment -> HTTP {response_get.status_code} | Reply: {response_get.text[:200]}")
-    except Exception as e:
-        error_log.append(f"GET Crash: {str(e)}")
-
-    # Test 2: Standard POST Search Payload
-    url_post = "https://api.transvirtual.com.au/api/Consignment/Search"
+    # STEP 1: The Search Stub (Find the internal ID)
+    url_search = "https://api.transvirtual.com.au/api/Consignment/Search"
     payload = {"ConsignmentNumber": connote_number}
+    
     try:
-        response_post = requests.post(url_post, headers=headers, json=payload)
-        if response_post.status_code == 200:
-            return f"✅ SUCCESS via POST:\n```json\n{json.dumps(response_post.json(), indent=2)}\n```"
+        response_search = requests.post(url_search, headers=headers, json=payload)
+        
+        if response_search.status_code == 200:
+            search_data = response_search.json()
+            
+            # Extract the true internal ID from the stub
+            internal_id = search_data.get("Data", {}).get("Id")
+            
+            # Fallback just in case TV prefers the actual ConsignmentNumber
+            if not internal_id:
+                internal_id = search_data.get("Data", {}).get("ConsignmentNumber")
+                
+            if not internal_id:
+                 return f"Transvirtual found '{connote_number}' but returned no internal ID to fetch the details. Raw Stub: {search_data}"
+                 
+            # STEP 2: The Deep Dive (Fetch the actual freight matrix)
+            url_get = f"https://api.transvirtual.com.au/api/Consignment/{internal_id}"
+            response_get = requests.get(url_get, headers=headers)
+            
+            if response_get.status_code == 200:
+                full_data = response_get.json()
+                
+                # Format the matrix for Digital Marsh's brain
+                raw_matrix = json.dumps(full_data, indent=2)
+                
+                # Pull some top-level headers for the human chat window
+                status = full_data.get("Status", "Unknown")
+                sender = full_data.get("SenderName", "Unknown")
+                receiver = full_data.get("ReceiverName", "Unknown")
+                
+                return f"✅ Transvirtual Record: {connote_number} (Internal: {internal_id}) | Status: {status} | From: {sender} | To: {receiver}\n\n**Raw Data Available to AI:**\n```json\n{raw_matrix}\n```"
+            
+            else:
+                return f"Transvirtual Step 2 Failed. Found ID {internal_id}, but could not download data. HTTP {response_get.status_code}"
+                
         else:
-            error_log.append(f"POST /Consignment/Search -> HTTP {response_post.status_code} | Reply: {response_post.text[:200]}")
+            return f"Transvirtual Step 1 Failed. HTTP {response_search.status_code} | Reply: {response_search.text}"
+            
     except Exception as e:
-        error_log.append(f"POST Crash: {str(e)}")
-
-    return "🚨 TRANSVIRTUAL X-RAY FAILED 🚨\n" + "\n".join(error_log)
+        return f"Transvirtual API Crash: {str(e)}"
