@@ -63,18 +63,26 @@ def search_machship_connote(connote_number):
     """Searches Machship for a consignment number to get carrier and status."""
     token = st.secrets["MACHSHIP_API_TOKEN"]
     
-    # Machship API endpoint for searching consignments
-    url = f"https://live.machship.com/apiv2/consignments/returnConsignment?consignmentNumber={connote_number}"
+    # The correct Machship endpoint for Carrier Consignment IDs
+    url = "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId"
     headers = {
         "token": token,
+        "Content-Type": "application/json",
         "Accept": "application/json"
     }
     
-    response = requests.get(url, headers=headers)
+    # Machship requires the search terms to be sent in a JSON "body"
+    payload = {
+        "carrierConsignmentIds": [connote_number]
+    }
+    
+    response = requests.post(url, headers=headers, json=payload)
+    
     if response.status_code == 200:
         data = response.json()
-        if data.get("object"):
-            consignment = data["object"]
+        # Machship returns search results inside a list called "object"
+        if data.get("object") and len(data["object"]) > 0:
+            consignment = data["object"][0]
             carrier = consignment.get("carrier", {}).get("name", "Unknown Carrier")
             status = consignment.get("status", {}).get("name", "Unknown Status")
             return f"Machship Record - Carrier: {carrier}, Status: {status}."
