@@ -229,40 +229,11 @@ with col1:
         with st.spinner("Connecting to Xero..."):
             result = toolbox.search_xero_contact(test_contact)
             st.info(result)
-            
+
 with col2:
-    # ==========================================
-    # TOOL 2: MACHSHIP CONNOTE SEARCH
-    # ==========================================
-    def search_machship_connote(connote_number):
-        """Searches Machship for a consignment number to get carrier and status."""
-    token = st.secrets["MACHSHIP_API_TOKEN"]
-    
-    # The correct Machship endpoint for Carrier Consignment IDs
-    url = "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId"
-    headers = {
-        "token": token,
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
-    
-    # Machship requires the search terms to be sent in a JSON "body"
-    payload = {
-        "carrierConsignmentIds": [connote_number]
-    }
-    
-    response = requests.post(url, headers=headers, json=payload)
-    
-    if response.status_code == 200:
-        data = response.json()
-        # Machship returns search results inside a list called "object"
-        if data.get("object") and len(data["object"]) > 0:
-            consignment = data["object"][0]
-            carrier = consignment.get("carrier", {}).get("name", "Unknown Carrier")
-            status = consignment.get("status", {}).get("name", "Unknown Status")
-            return f"Machship Record - Carrier: {carrier}, Status: {status}."
-        else:
-            return f"Could not find consignment {connote_number} in Machship."
-    else:
-        # If it fails again, this will print the exact reason from Machship
-        return f"Machship API Error: {response.text}"
+    st.write("**Test Machship**")
+    test_connote = st.text_input("Enter a known Connote Number:")
+    if st.button("Search Machship"):
+        with st.spinner("Connecting to Machship..."):
+            result = toolbox.search_machship_connote(test_connote)
+            st.info(result)
