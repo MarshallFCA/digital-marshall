@@ -2,6 +2,7 @@ import requests
 import base64
 import re
 import streamlit as st
+from datetime import datetime, timedelta
 
 # ==========================================
 # XERO CONNECTION HANDSHAKE
@@ -43,7 +44,7 @@ def search_xero_contact(contact_name):
         return f"Xero API Error: {response.text}"
 
 # ==========================================
-# TOOL 2: SUPER SMART MACHSHIP SEARCH
+# TOOL 2: UNRESTRICTED MACHSHIP SEARCH
 # ==========================================
 def search_machship_connote(connote_number):
     token = st.secrets["MACHSHIP_API_TOKEN"]
@@ -60,21 +61,21 @@ def search_machship_connote(connote_number):
             data = response.json()
             if data.get("object"):
                 consignment = data["object"]
-                carrier = consignment.get("carrier", {}).get("name", "Unknown Carrier")
+                # Sometimes Machship hides carrier name in abbreviation if name is blank
+                carrier = consignment.get("carrier", {}).get("name") or consignment.get("carrier", {}).get("abbreviation") or "Carrier Not Assigned"
                 status = consignment.get("status", {}).get("name", "Unknown Status")
-                
-                # --- DIAGNOSTIC X-RAY ---
-                actual_carrier_id = consignment.get("carrierConsignmentId", "NO_ID_FOUND")
-                company_id = consignment.get("companyId", "UNKNOWN_COMPANY")
-                
-                return f"✅ Machship Record (MS): Carrier: {carrier} | Status: {status} | **Hidden Carrier ID: {actual_carrier_id}** | **Company ID: {company_id}**"
+                return f"✅ Machship Record (MS): Carrier: {carrier} | Status: {status}."
             else:
                 return f"Could not find MS consignment '{connote_number}'."
         else:
             return f"API Error (MS Search): {response.text}"
 
-    # PATH B: Hunt through Carrier IDs and Reference fields
+    # PATH B: Unrestricted Carrier ID & Reference Hunt
     headers["Content-Type"] = "application/json"
+    
+    # We force Machship to look back up to 5 years ago instead of the default 30 days
+    past_date = (datetime.now() - timedelta(days=1825)).strftime("%Y-%m-%dT00:00:00Z")
+    
     search_routes = [
         ("Carrier ID", "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId", "carrierConsignmentIds"),
         ("Reference 1", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1", "references"),
@@ -82,14 +83,17 @@ def search_machship_connote(connote_number):
     ]
 
     for search_type, url, payload_key in search_routes:
-        payload = { payload_key: [connote_number] }
+        payload = { 
+            payload_key: [connote_number],
+            "consignmentsCreatedStartDate": past_date
+        }
         response = requests.post(url, headers=headers, json=payload)
         if response.status_code == 200:
             data = response.json()
             if data.get("object") and len(data["object"]) > 0:
                 consignment = data["object"][0]
-                carrier = consignment.get("carrier", {}).get("name", "Unknown Carrier")
+                carrier = consignment.get("carrier", {}).get("name") or consignment.get("carrier", {}).get("abbreviation") or "Carrier Not Assigned"
                 status = consignment.get("status", {}).get("name", "Unknown Status")
                 return f"✅ Machship Record (Found via {search_type}): Carrier: {carrier} | Status: {status}."
 
-    return f"Could not find '{connote_number}' as a Carrier ID, Reference 1, or Reference 2 in Machship."
+    return f"Could not find '{connote_number}' directly. It may be restricted by Company Sub-Account permissions."
