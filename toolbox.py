@@ -1,5 +1,6 @@
 import requests
 import base64
+import re
 import streamlit as st
 
 # ==========================================
@@ -10,7 +11,6 @@ def get_xero_token():
     client_id = st.secrets["XERO_CLIENT_ID"]
     client_secret = st.secrets["XERO_CLIENT_SECRET"]
     
-    # Xero requires the ID and Secret to be mashed together and encoded
     credentials = f"{client_id}:{client_secret}"
     encoded_credentials = base64.b64encode(credentials.encode()).decode()
     
@@ -37,7 +37,7 @@ def search_xero_contact(contact_name):
     token = get_xero_token()
     
     if "Error" in token:
-        return token # Return the error if handshake failed
+        return token 
         
     url = f'https://api.xero.com/api.xro/2.0/Contacts?where=Name.Contains("{contact_name}")'
     headers = {
@@ -57,36 +57,54 @@ def search_xero_contact(contact_name):
         return f"Xero API Error: {response.text}"
 
 # ==========================================
-# TOOL 2: MACHSHIP CONNOTE SEARCH
+# TOOL 2: SMART MACHSHIP SEARCH
 # ==========================================
 def search_machship_connote(connote_number):
-    """Searches Machship for a consignment number to get carrier and status."""
+    """Smart search: checks MS internal numbers first, then Carrier IDs."""
     token = st.secrets["MACHSHIP_API_TOKEN"]
+    connote_number = connote_number.strip().upper()
     
-    # The correct Machship endpoint for Carrier Consignment IDs
-    url = "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId"
     headers = {
         "token": token,
-        "Content-Type": "application/json",
         "Accept": "application/json"
     }
-    
-    # Machship requires the search terms to be sent in a JSON "body"
-    payload = {
-        "carrierConsignmentIds": [connote_number]
-    }
-    
-    response = requests.post(url, headers=headers, json=payload)
-    
-    if response.status_code == 200:
-        data = response.json()
-        # Machship returns search results inside a list called "object"
-        if data.get("object") and len(data["object"]) > 0:
-            consignment = data["object"][0]
-            carrier = consignment.get("carrier", {}).get("name", "Unknown Carrier")
-            status = consignment.get("status", {}).get("name", "Unknown Status")
-            return f"Machship Record - Carrier: {carrier}, Status: {status}."
+
+    # PATH A: It is an internal Machship number (Starts with MS)
+    if connote_number.startswith("MS"):
+        # Strip away the "MS" to get just the ID number Machship's server wants
+        ms_id = re.sub(r"\D", "", connote_number)
+        url = f"https://live.machship.com/apiv2/consignments/getConsignment?id={ms_id}"
+        
+        response = requests.get(url, headers=headers)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("object"):
+                consignment = data["object"]
+                carrier = consignment.get("carrier", {}).get("name", "Unknown Carrier")
+                status = consignment.get("status", {}).get("name", "Unknown Status")
+                return f"✅ Machship Record (MS): Carrier: {carrier} | Status: {status}."
+            else:
+                return f"Could not find MS consignment '{connote_number}'."
         else:
-            return f"Could not find consignment {connote_number} in Machship."
+            return f"API Error (MS Search): {response.text}"
+
+    # PATH B: It is a Carrier Consignment Number (e.g. FCU000069)
     else:
-        return f"Machship API Error: {response.text}"
+        url = "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId"
+        headers["Content-Type"] = "application/json"
+        payload = {
+            "carrierConsignmentIds": [connote_number]
+        }
+        
+        response = requests.post(url, headers=headers, json=payload)
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("object") and len(data["object"]) > 0:
+                consignment = data["object"][0]
+                carrier = consignment.get("carrier", {}).get("name", "Unknown Carrier")
+                status = consignment.get("status", {}).get("name", "Unknown Status")
+                return f"✅ Machship Record (Carrier ID): Carrier: {carrier} | Status: {status}."
+            else:
+                return f"Could not find Carrier Consignment '{connote_number}'."
+        else:
+            return f"API Error (Carrier Search): {response.text}"
