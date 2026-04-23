@@ -6,6 +6,7 @@ import pandas as pd
 import io
 from streamlit_oauth import OAuth2Component
 import requests
+import toolbox
 
 # --- CONFIGURATION (SECURED FOR CLOUD) ---
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
@@ -216,3 +217,23 @@ if prompt := st.chat_input("Input query or command..."):
             
         except Exception as e:
             message_placeholder.error(f"🚨 SYSTEM ERROR: {str(e)}")
+st.markdown("---")
+st.subheader("🛠️ API Connection Test Zone")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    st.write("**Test Xero**")
+    test_contact = st.text_input("Enter a known Xero Contact Name:")
+    if st.button("Search Xero"):
+        with st.spinner("Connecting to Xero..."):
+            result = toolbox.search_xero_contact(test_contact)
+            st.info(result)
+            
+with col2:
+    st.write("**Test Machship**")
+    test_connote = st.text_input("Enter a known Connote Number:")
+    if st.button("Search Machship"):
+        with st.spinner("Connecting to Machship..."):
+            result = toolbox.search_machship_connote(test_connote)
+            st.info(result)
