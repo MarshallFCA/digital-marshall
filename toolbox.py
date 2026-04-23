@@ -64,27 +64,26 @@ def search_machship_connote(connote_number):
                 status = consignment.get("status", {}).get("name", "Unknown Status")
                 return f"✅ Machship Record (MS): Carrier: {carrier} | Status: {status}."
             else:
-                return f"Could not find MS consignment '{connote_number}'. RAW: {data.get('errors')}"
+                return f"Could not find MS consignment '{connote_number}'."
         else:
             return f"API Error (MS Search): {response.text}"
 
     # PATH B: Carrier ID & Reference Hunt
     headers["Content-Type"] = "application/json"
     
-    # FIX: Capitalized Keys (CarrierConsignmentIds and References) to satisfy Machship's strict server rules
+    # We append the child companies command directly to the URL
     search_routes = [
-        ("Carrier ID", "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId", "CarrierConsignmentIds"),
-        ("Reference 1", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1", "References"),
-        ("Reference 2", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference2", "References")
+        ("Carrier ID", "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true"),
+        ("Reference 1", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1?includeChildCompanies=true"),
+        ("Reference 2", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference2?includeChildCompanies=true")
     ]
 
     error_log = []
 
-    for search_type, url, payload_key in search_routes:
-        payload = { 
-            payload_key: [connote_number]
-        }
-        
+    # THE FIX: Handing Machship the raw array exactly as it demands
+    payload = [connote_number]
+
+    for search_type, url in search_routes:
         response = requests.post(url, headers=headers, json=payload)
         
         if response.status_code == 200:
@@ -96,10 +95,11 @@ def search_machship_connote(connote_number):
                 status = consignment.get("status", {}).get("name", "Unknown Status")
                 return f"✅ Machship Record (Found via {search_type}): Carrier: {carrier} | Status: {status}."
             else:
-                # Still saving errors just in case it fails again
-                error_log.append(f"{search_type} API Reply: {data.get('errors')}")
+                # Kept the diagnostic log just in case it returns an empty "object" without errors
+                error_log.append(f"{search_type} found 0 matches.")
         else:
-            error_log.append(f"{search_type} HTTP Error: {response.text}")
+            # Catching raw HTTP failures
+            error_log.append(f"{search_type} HTTP Error {response.status_code}: {response.text}")
 
-    # If all 3 fail, print the exact error log to the screen
-    return f"Failed to find '{connote_number}'. Machship's internal response:\n" + "\n".join(error_log)
+    # If all 3 fail, print the diagnostic log
+    return f"Failed to find '{connote_number}'. Diagnostics:\n" + "\n".join(error_log)
