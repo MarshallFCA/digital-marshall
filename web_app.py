@@ -235,7 +235,7 @@ with col2:
     # TOOL 2: MACHSHIP CONNOTE SEARCH
     # ==========================================
     def search_machship_connote(connote_number):
-    """Searches Machship for a consignment number to get carrier and status."""
+        """Searches Machship for a consignment number to get carrier and status."""
     token = st.secrets["MACHSHIP_API_TOKEN"]
     
     # The correct Machship endpoint for Carrier Consignment IDs
