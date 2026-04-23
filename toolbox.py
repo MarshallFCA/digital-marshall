@@ -71,10 +71,11 @@ def search_machship_connote(connote_number):
     # PATH B: Carrier ID & Reference Hunt
     headers["Content-Type"] = "application/json"
     
+    # FIX: Capitalized Keys (CarrierConsignmentIds and References) to satisfy Machship's strict server rules
     search_routes = [
-        ("Carrier ID", "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId", "carrierConsignmentIds"),
-        ("Reference 1", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1", "references"),
-        ("Reference 2", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference2", "references")
+        ("Carrier ID", "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId", "CarrierConsignmentIds"),
+        ("Reference 1", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1", "References"),
+        ("Reference 2", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference2", "References")
     ]
 
     error_log = []
@@ -95,7 +96,7 @@ def search_machship_connote(connote_number):
                 status = consignment.get("status", {}).get("name", "Unknown Status")
                 return f"✅ Machship Record (Found via {search_type}): Carrier: {carrier} | Status: {status}."
             else:
-                # If it failed, save exactly what Machship's brain spat out
+                # Still saving errors just in case it fails again
                 error_log.append(f"{search_type} API Reply: {data.get('errors')}")
         else:
             error_log.append(f"{search_type} HTTP Error: {response.text}")
