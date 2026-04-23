@@ -131,34 +131,26 @@ def search_transvirtual_connote(connote_number):
         response_query = requests.post(url_query, headers=headers, json={"ConsignmentNumber": connote_number})
         full_data = response_query.json().get("Data", {}) if response_query.status_code == 200 else {}
         
-        # STEP 2: The Targeted Status Pick
-        tracking_log = []
-        tracking_data = None
+        # STEP 2: The Official Tracking Extraction
         url_status = "https://api.transvirtual.com.au/api/ConsignmentStatus"
+        # Using the exact payload schema discovered from the Swagger docs
+        payload_status = {
+            "Number": connote_number
+        }
         
-        # The 4 most common enterprise payload shapes
-        test_payloads = [
-            ("Plural Array", {"ConsignmentNumbers": [connote_number]}),
-            ("List Object", {"List": [connote_number]}),
-            ("Tracking Object", {"TrackingNumbers": [connote_number]}),
-            ("Number Array", {"Numbers": [connote_number]})
-        ]
+        response_status = requests.post(url_status, headers=headers, json=payload_status)
         
-        for shape_name, payload in test_payloads:
-            resp = requests.post(url_status, headers=headers, json=payload)
+        tracking_data = None
+        # We ensure it's a 200 OK and didn't spit back a generic 'Missing' error
+        if response_status.status_code == 200 and "Missing" not in response_status.text:
+            tracking_data = response_status.json().get("Data", response_status.json())
+        else:
+            tracking_data = f"Tracking Extraction Failed: HTTP {response_status.status_code} | {response_status.text[:100]}"
             
-            # If we get a 200 OK and it doesn't complain about a missing number
-            if resp.status_code == 200 and "Missing" not in resp.text:
-                tracking_data = resp.json()
-                tracking_log.append(f"✅ Success with shape: {shape_name}")
-                break
-            else:
-                tracking_log.append(f"❌ {shape_name} -> HTTP {resp.status_code} | {resp.text[:60]}")
-        
         # Combine the Data for Digital Marsh
         combined_matrix = {
             "ConsignmentDetails": full_data,
-            "TrackingScans": tracking_data if tracking_data else "Failed tracking X-Ray: " + " | ".join(tracking_log)
+            "TrackingScans": tracking_data
         }
         
         raw_matrix = json.dumps(combined_matrix, indent=2)
