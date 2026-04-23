@@ -116,7 +116,7 @@ def search_transvirtual_connote(connote_number):
     connote_number = connote_number.strip().upper()
     
     headers = {
-        "Authorization": token,  # Raw token, no 'Bearer' prefix
+        "Authorization": token, 
         "Content-Type": "application/json",
         "Accept": "application/json"
     }
@@ -130,36 +130,42 @@ def search_transvirtual_connote(connote_number):
         
         if response_search.status_code == 200:
             search_data = response_search.json()
-            
-            # Extract the true internal ID from the stub
             internal_id = search_data.get("Data", {}).get("Id")
             
-            # Fallback just in case TV prefers the actual ConsignmentNumber
             if not internal_id:
-                internal_id = search_data.get("Data", {}).get("ConsignmentNumber")
-                
-            if not internal_id:
-                 return f"Transvirtual found '{connote_number}' but returned no internal ID to fetch the details. Raw Stub: {search_data}"
+                 internal_id = search_data.get("Data", {}).get("ConsignmentNumber")
                  
-            # STEP 2: The Deep Dive (Fetch the actual freight matrix)
-            url_get = f"https://api.transvirtual.com.au/api/Consignment/{internal_id}"
-            response_get = requests.get(url_get, headers=headers)
+            if not internal_id:
+                 return f"Transvirtual found '{connote_number}' but returned no internal ID. Raw Stub: {search_data}"
+                 
+            # STEP 2: The Skeleton Key (Try multiple standard TV endpoints)
+            error_log = []
+            test_routes = [
+                ("GET Query by ID", f"https://api.transvirtual.com.au/api/Consignment?Id={internal_id}", None),
+                ("POST ConsignmentQuery by Number", "https://api.transvirtual.com.au/api/ConsignmentQuery", {"ConsignmentNumber": connote_number}),
+                ("POST ConsignmentQuery by ID", "https://api.transvirtual.com.au/api/ConsignmentQuery", {"Id": internal_id}),
+                ("POST Consignment (Search again)", "https://api.transvirtual.com.au/api/Consignment", {"Id": internal_id})
+            ]
             
-            if response_get.status_code == 200:
-                full_data = response_get.json()
-                
-                # Format the matrix for Digital Marsh's brain
-                raw_matrix = json.dumps(full_data, indent=2)
-                
-                # Pull some top-level headers for the human chat window
-                status = full_data.get("Status", "Unknown")
-                sender = full_data.get("SenderName", "Unknown")
-                receiver = full_data.get("ReceiverName", "Unknown")
-                
-                return f"✅ Transvirtual Record: {connote_number} (Internal: {internal_id}) | Status: {status} | From: {sender} | To: {receiver}\n\n**Raw Data Available to AI:**\n```json\n{raw_matrix}\n```"
+            for test_name, url, test_payload in test_routes:
+                if test_payload:
+                    resp = requests.post(url, headers=headers, json=test_payload)
+                else:
+                    resp = requests.get(url, headers=headers)
+                    
+                if resp.status_code == 200:
+                    full_data = resp.json()
+                    raw_matrix = json.dumps(full_data, indent=2)
+                    status = full_data.get("Status", "Unknown")
+                    sender = full_data.get("SenderName", "Unknown")
+                    receiver = full_data.get("ReceiverName", "Unknown")
+                    
+                    return f"✅ Transvirtual Record: {connote_number} (Internal: {internal_id}) | Route: {test_name} | Status: {status} | From: {sender} | To: {receiver}\n\n**Raw Data Available to AI:**\n```json\n{raw_matrix}\n```"
+                else:
+                    error_log.append(f"{test_name} -> HTTP {resp.status_code}: {resp.text[:100]}")
             
-            else:
-                return f"Transvirtual Step 2 Failed. Found ID {internal_id}, but could not download data. HTTP {response_get.status_code}"
+            # If all 4 locks fail, tell the AI to print the raw diagnostic log
+            return f"🚨 TRANSVIRTUAL SKELETON KEY FAILED for ID {internal_id} 🚨\n" + "\n".join(error_log)
                 
         else:
             return f"Transvirtual Step 1 Failed. HTTP {response_search.status_code} | Reply: {response_search.text}"
