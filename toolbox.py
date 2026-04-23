@@ -25,7 +25,7 @@ def get_xero_token():
         return f"Error connecting to Xero: {response.text}"
 
 # ==========================================
-# TOOL 1: XERO CONTACT SEARCH
+# TOOL 1: XERO FINANCIAL SEARCH
 # ==========================================
 def search_xero_contact(contact_name):
     token = get_xero_token()
@@ -33,11 +33,23 @@ def search_xero_contact(contact_name):
     url = f'https://api.xero.com/api.xro/2.0/Contacts?where=Name.Contains("{contact_name}")'
     headers = { "Authorization": f"Bearer {token}", "Accept": "application/json" }
     response = requests.get(url, headers=headers)
+    
     if response.status_code == 200:
         data = response.json()
         if data.get("Contacts"):
             contact = data["Contacts"][0]
-            return f"Found Contact: {contact.get('Name')}. Status: {contact.get('ContactStatus')}."
+            name = contact.get("Name", "Unknown")
+            status = contact.get("ContactStatus", "Unknown")
+            
+            # Dig into Xero's financial balances
+            balances = contact.get("Balances", {}).get("AccountsReceivable", {})
+            outstanding = balances.get("Outstanding", 0.00)
+            overdue = balances.get("Overdue", 0.00)
+            
+            # Format the raw dictionary for the AI
+            raw_data = json.dumps(contact, indent=2)
+            
+            return f"✅ Xero Record: {name} | Status: {status} | Total Outstanding: ${outstanding} | Overdue: ${overdue}\n\n**Raw Data Available to AI:**\n```json\n{raw_data}\n```"
         else:
             return f"No contact found in Xero matching '{contact_name}'."
     else:
@@ -64,7 +76,6 @@ def search_machship_connote(connote_number):
                 carrier = consignment.get("carrier", {}).get("name") or consignment.get("carrier", {}).get("abbreviation") or "Carrier Not Assigned"
                 status = consignment.get("status", {}).get("name", "Unknown Status")
                 
-                # Format the entire raw dictionary so you can read it on screen
                 raw_data = json.dumps(consignment, indent=2)
                 return f"✅ Machship Record (MS): Carrier: {carrier} | Status: {status}\n\n**Raw Data Available to AI:**\n```json\n{raw_data}\n```"
             else:
@@ -93,7 +104,6 @@ def search_machship_connote(connote_number):
                 carrier = consignment.get("carrier", {}).get("name") or consignment.get("carrier", {}).get("abbreviation") or "Carrier Not Assigned"
                 status = consignment.get("status", {}).get("name", "Unknown Status")
                 
-                # Format the entire raw dictionary so you can read it on screen
                 raw_data = json.dumps(consignment, indent=2)
                 return f"✅ Machship Record (Found via {search_type}): Carrier: {carrier} | Status: {status}\n\n**Raw Data Available to AI:**\n```json\n{raw_data}\n```"
 
