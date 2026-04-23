@@ -112,6 +112,10 @@ def search_machship_connote(connote_number):
 # TOOL 3: TRANSVIRTUAL CONSIGNMENT SEARCH
 # ==========================================
 def search_transvirtual_connote(connote_number):
+    import json
+    import requests
+    import streamlit as st
+    
     token = st.secrets["TRANSVIRTUAL_API_KEY"]
     connote_number = connote_number.strip().upper()
     
@@ -121,54 +125,55 @@ def search_transvirtual_connote(connote_number):
         "Accept": "application/json"
     }
     
-    # STEP 1: The Search Stub (Find the internal ID)
-    url_search = "https://api.transvirtual.com.au/api/Consignment/Search"
-    payload = {"ConsignmentNumber": connote_number}
-    
     try:
-        response_search = requests.post(url_search, headers=headers, json=payload)
+        # STEP 1: The Search Stub (Find the internal ID just in case we need it)
+        url_search = "https://api.transvirtual.com.au/api/Consignment/Search"
+        response_search = requests.post(url_search, headers=headers, json={"ConsignmentNumber": connote_number})
         
+        internal_id = None
         if response_search.status_code == 200:
-            search_data = response_search.json()
-            internal_id = search_data.get("Data", {}).get("Id")
+            internal_id = response_search.json().get("Data", {}).get("Id")
             
-            if not internal_id:
-                 internal_id = search_data.get("Data", {}).get("ConsignmentNumber")
-                 
-            if not internal_id:
-                 return f"Transvirtual found '{connote_number}' but returned no internal ID. Raw Stub: {search_data}"
-                 
-            # STEP 2: The Skeleton Key (Try multiple standard TV endpoints)
-            error_log = []
-            test_routes = [
-                ("GET Query by ID", f"https://api.transvirtual.com.au/api/Consignment?Id={internal_id}", None),
-                ("POST ConsignmentQuery by Number", "https://api.transvirtual.com.au/api/ConsignmentQuery", {"ConsignmentNumber": connote_number}),
-                ("POST ConsignmentQuery by ID", "https://api.transvirtual.com.au/api/ConsignmentQuery", {"Id": internal_id}),
-                ("POST Consignment (Search again)", "https://api.transvirtual.com.au/api/Consignment", {"Id": internal_id})
-            ]
+        # STEP 2: Fetch Consignment Details (We know this works perfectly from our last test)
+        url_query = "https://api.transvirtual.com.au/api/ConsignmentQuery"
+        response_query = requests.post(url_query, headers=headers, json={"ConsignmentNumber": connote_number})
+        full_data = response_query.json().get("Data", {}) if response_query.status_code == 200 else {}
+        
+        # STEP 3: The Tracking Skeleton Key
+        tracking_log = []
+        tracking_data = None
+        
+        test_tracking_routes = [
+            ("POST /ConsignmentStatus", "https://api.transvirtual.com.au/api/ConsignmentStatus", {"ConsignmentNumber": connote_number}),
+            ("GET /Scans by ID", f"https://api.transvirtual.com.au/api/Scans?consignmentId={internal_id}" if internal_id else "SKIP", None),
+            ("POST /Tracking", "https://api.transvirtual.com.au/api/Tracking", {"ConsignmentNumber": connote_number})
+        ]
+        
+        for test_name, url, test_payload in test_tracking_routes:
+            if url == "SKIP":
+                continue
             
-            for test_name, url, test_payload in test_routes:
-                if test_payload:
-                    resp = requests.post(url, headers=headers, json=test_payload)
-                else:
-                    resp = requests.get(url, headers=headers)
-                    
-                if resp.status_code == 200:
-                    full_data = resp.json()
-                    raw_matrix = json.dumps(full_data, indent=2)
-                    status = full_data.get("Status", "Unknown")
-                    sender = full_data.get("SenderName", "Unknown")
-                    receiver = full_data.get("ReceiverName", "Unknown")
-                    
-                    return f"✅ Transvirtual Record: {connote_number} (Internal: {internal_id}) | Route: {test_name} | Status: {status} | From: {sender} | To: {receiver}\n\n**Raw Data Available to AI:**\n```json\n{raw_matrix}\n```"
-                else:
-                    error_log.append(f"{test_name} -> HTTP {resp.status_code}: {resp.text[:100]}")
-            
-            # If all 4 locks fail, tell the AI to print the raw diagnostic log
-            return f"🚨 TRANSVIRTUAL SKELETON KEY FAILED for ID {internal_id} 🚨\n" + "\n".join(error_log)
+            if test_payload:
+                resp = requests.post(url, headers=headers, json=test_payload)
+            else:
+                resp = requests.get(url, headers=headers)
                 
-        else:
-            return f"Transvirtual Step 1 Failed. HTTP {response_search.status_code} | Reply: {response_search.text}"
+            if resp.status_code == 200:
+                tracking_data = resp.json()
+                tracking_log.append(f"✅ Hit {test_name}")
+                break
+            else:
+                tracking_log.append(f"❌ {test_name} -> HTTP {resp.status_code}")
+        
+        # Combine the Data for Digital Marsh
+        combined_matrix = {
+            "ConsignmentDetails": full_data,
+            "TrackingScans": tracking_data if tracking_data else "Failed tracking X-Ray: " + " | ".join(tracking_log)
+        }
+        
+        raw_matrix = json.dumps(combined_matrix, indent=2)
+        
+        return f"✅ Transvirtual Record: {connote_number}\n\n**Raw Data Available to AI:**\n```json\n{raw_matrix}\n```"
             
     except Exception as e:
         return f"Transvirtual API Crash: {str(e)}"
