@@ -1,6 +1,7 @@
 import requests
 import base64
 import re
+import json
 import streamlit as st
 
 # ==========================================
@@ -62,7 +63,10 @@ def search_machship_connote(connote_number):
                 consignment = data["object"]
                 carrier = consignment.get("carrier", {}).get("name") or consignment.get("carrier", {}).get("abbreviation") or "Carrier Not Assigned"
                 status = consignment.get("status", {}).get("name", "Unknown Status")
-                return f"✅ Machship Record (MS): Carrier: {carrier} | Status: {status}."
+                
+                # Format the entire raw dictionary so you can read it on screen
+                raw_data = json.dumps(consignment, indent=2)
+                return f"✅ Machship Record (MS): Carrier: {carrier} | Status: {status}\n\n**Raw Data Available to AI:**\n```json\n{raw_data}\n```"
             else:
                 return f"Could not find MS consignment '{connote_number}'."
         else:
@@ -71,16 +75,12 @@ def search_machship_connote(connote_number):
     # PATH B: Carrier ID & Reference Hunt
     headers["Content-Type"] = "application/json"
     
-    # We append the child companies command directly to the URL
     search_routes = [
         ("Carrier ID", "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true"),
         ("Reference 1", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1?includeChildCompanies=true"),
         ("Reference 2", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference2?includeChildCompanies=true")
     ]
 
-    error_log = []
-
-    # THE FIX: Handing Machship the raw array exactly as it demands
     payload = [connote_number]
 
     for search_type, url in search_routes:
@@ -88,18 +88,13 @@ def search_machship_connote(connote_number):
         
         if response.status_code == 200:
             data = response.json()
-            # If Machship successfully found it:
             if data.get("object") and len(data["object"]) > 0:
                 consignment = data["object"][0]
                 carrier = consignment.get("carrier", {}).get("name") or consignment.get("carrier", {}).get("abbreviation") or "Carrier Not Assigned"
                 status = consignment.get("status", {}).get("name", "Unknown Status")
-                return f"✅ Machship Record (Found via {search_type}): Carrier: {carrier} | Status: {status}."
-            else:
-                # Kept the diagnostic log just in case it returns an empty "object" without errors
-                error_log.append(f"{search_type} found 0 matches.")
-        else:
-            # Catching raw HTTP failures
-            error_log.append(f"{search_type} HTTP Error {response.status_code}: {response.text}")
+                
+                # Format the entire raw dictionary so you can read it on screen
+                raw_data = json.dumps(consignment, indent=2)
+                return f"✅ Machship Record (Found via {search_type}): Carrier: {carrier} | Status: {status}\n\n**Raw Data Available to AI:**\n```json\n{raw_data}\n```"
 
-    # If all 3 fail, print the diagnostic log
-    return f"Failed to find '{connote_number}'. Diagnostics:\n" + "\n".join(error_log)
+    return f"Failed to find '{connote_number}' in Machship."
