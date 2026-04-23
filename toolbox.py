@@ -115,19 +115,36 @@ def search_transvirtual_connote(connote_number):
     token = st.secrets["TRANSVIRTUAL_API_KEY"]
     connote_number = connote_number.strip().upper()
     
-    url = f"https://api.transvirtual.com.au/api/tracking/{connote_number}"
-    
     headers = {
         "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
         "Accept": "application/json"
     }
     
+    error_log = []
+    
+    # Test 1: Standard GET Request to the Consignment folder
+    url_get = f"https://api.transvirtual.com.au/api/Consignment/{connote_number}"
     try:
-        response = requests.get(url, headers=headers)
-        
-        # --- X-RAY DIAGNOSTICS ---
-        # We are bypassing Digital Marsh's polite summary and forcing it to print the raw server data
-        return f"🚨 TRANSVIRTUAL X-RAY RESULTS for {connote_number} 🚨\nHTTP Status Code: {response.status_code}\nRaw Server Reply: {response.text}"
-        
+        response_get = requests.get(url_get, headers=headers)
+        if response_get.status_code == 200:
+            return f"✅ SUCCESS via GET:\n```json\n{json.dumps(response_get.json(), indent=2)}\n```"
+        else:
+            error_log.append(f"GET /Consignment -> HTTP {response_get.status_code}")
     except Exception as e:
-        return f"Transvirtual Connection Crash: {str(e)}"
+        error_log.append(f"GET Crash: {str(e)}")
+
+    # Test 2: Standard POST Search Payload
+    url_post = "https://api.transvirtual.com.au/api/Consignment/Search"
+    payload = {"ConsignmentNumber": connote_number}
+    try:
+        response_post = requests.post(url_post, headers=headers, json=payload)
+        if response_post.status_code == 200:
+            return f"✅ SUCCESS via POST:\n```json\n{json.dumps(response_post.json(), indent=2)}\n```"
+        else:
+            # We capture the text here in case it gives us a hint about required payload keys
+            error_log.append(f"POST /Consignment/Search -> HTTP {response_post.status_code} | Reply: {response_post.text[:200]}")
+    except Exception as e:
+        error_log.append(f"POST Crash: {str(e)}")
+
+    return "🚨 TRANSVIRTUAL X-RAY FAILED 🚨\n" + "\n".join(error_log)
