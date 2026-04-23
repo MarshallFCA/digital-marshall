@@ -2,7 +2,6 @@ import requests
 import base64
 import re
 import streamlit as st
-from datetime import datetime, timedelta
 
 # ==========================================
 # XERO CONNECTION HANDSHAKE
@@ -65,35 +64,41 @@ def search_machship_connote(connote_number):
                 status = consignment.get("status", {}).get("name", "Unknown Status")
                 return f"✅ Machship Record (MS): Carrier: {carrier} | Status: {status}."
             else:
-                return f"Could not find MS consignment '{connote_number}'."
+                return f"Could not find MS consignment '{connote_number}'. RAW: {data.get('errors')}"
         else:
             return f"API Error (MS Search): {response.text}"
 
-    # PATH B: Unrestricted Carrier ID & Reference Hunt (Including Child Companies)
+    # PATH B: Carrier ID & Reference Hunt
     headers["Content-Type"] = "application/json"
     
-    # Force Machship to look back 5 years
-    past_date = (datetime.now() - timedelta(days=1825)).strftime("%Y-%m-%dT00:00:00Z")
-    
-    # We append ?includeChildCompanies=true to force the broad search
     search_routes = [
-        ("Carrier ID", "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true", "carrierConsignmentIds"),
-        ("Reference 1", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1?includeChildCompanies=true", "references"),
-        ("Reference 2", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference2?includeChildCompanies=true", "references")
+        ("Carrier ID", "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId", "carrierConsignmentIds"),
+        ("Reference 1", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1", "references"),
+        ("Reference 2", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference2", "references")
     ]
+
+    error_log = []
 
     for search_type, url, payload_key in search_routes:
         payload = { 
-            payload_key: [connote_number],
-            "consignmentsCreatedStartDate": past_date
+            payload_key: [connote_number]
         }
+        
         response = requests.post(url, headers=headers, json=payload)
+        
         if response.status_code == 200:
             data = response.json()
+            # If Machship successfully found it:
             if data.get("object") and len(data["object"]) > 0:
                 consignment = data["object"][0]
                 carrier = consignment.get("carrier", {}).get("name") or consignment.get("carrier", {}).get("abbreviation") or "Carrier Not Assigned"
                 status = consignment.get("status", {}).get("name", "Unknown Status")
                 return f"✅ Machship Record (Found via {search_type}): Carrier: {carrier} | Status: {status}."
+            else:
+                # If it failed, save exactly what Machship's brain spat out
+                error_log.append(f"{search_type} API Reply: {data.get('errors')}")
+        else:
+            error_log.append(f"{search_type} HTTP Error: {response.text}")
 
-    return f"Could not find '{connote_number}' directly. Machship's API returned an empty result across all companies."
+    # If all 3 fail, print the exact error log to the screen
+    return f"Failed to find '{connote_number}'. Machship's internal response:\n" + "\n".join(error_log)
