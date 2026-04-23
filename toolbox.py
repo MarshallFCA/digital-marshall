@@ -61,7 +61,6 @@ def search_machship_connote(connote_number):
             data = response.json()
             if data.get("object"):
                 consignment = data["object"]
-                # Sometimes Machship hides carrier name in abbreviation if name is blank
                 carrier = consignment.get("carrier", {}).get("name") or consignment.get("carrier", {}).get("abbreviation") or "Carrier Not Assigned"
                 status = consignment.get("status", {}).get("name", "Unknown Status")
                 return f"✅ Machship Record (MS): Carrier: {carrier} | Status: {status}."
@@ -70,16 +69,17 @@ def search_machship_connote(connote_number):
         else:
             return f"API Error (MS Search): {response.text}"
 
-    # PATH B: Unrestricted Carrier ID & Reference Hunt
+    # PATH B: Unrestricted Carrier ID & Reference Hunt (Including Child Companies)
     headers["Content-Type"] = "application/json"
     
-    # We force Machship to look back up to 5 years ago instead of the default 30 days
+    # Force Machship to look back 5 years
     past_date = (datetime.now() - timedelta(days=1825)).strftime("%Y-%m-%dT00:00:00Z")
     
+    # We append ?includeChildCompanies=true to force the broad search
     search_routes = [
-        ("Carrier ID", "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId", "carrierConsignmentIds"),
-        ("Reference 1", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1", "references"),
-        ("Reference 2", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference2", "references")
+        ("Carrier ID", "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true", "carrierConsignmentIds"),
+        ("Reference 1", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1?includeChildCompanies=true", "references"),
+        ("Reference 2", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference2?includeChildCompanies=true", "references")
     ]
 
     for search_type, url, payload_key in search_routes:
@@ -96,4 +96,4 @@ def search_machship_connote(connote_number):
                 status = consignment.get("status", {}).get("name", "Unknown Status")
                 return f"✅ Machship Record (Found via {search_type}): Carrier: {carrier} | Status: {status}."
 
-    return f"Could not find '{connote_number}' directly. It may be restricted by Company Sub-Account permissions."
+    return f"Could not find '{connote_number}' directly. Machship's API returned an empty result across all companies."
