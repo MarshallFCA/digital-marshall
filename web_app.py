@@ -253,6 +253,23 @@ if prompt := st.chat_input("Input query or command..."):
                 }
             ]
 
+            {
+                    "type": "function",
+                    "function": {
+                        "name": "search_and_read_google_drive",
+                        "description": "Searches the company Google Drive for SOPs, contracts, or guides and reads the text inside the document.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "search_query": {
+                                    "type": "string",
+                                    "description": "The name of the file or specific keyword to search for (e.g., 'Dangerous Goods SOP' or 'Direct Freight Rate Card')."
+                                }
+                            },
+                            "required": ["search_query"]
+                        }
+                    }
+                }
             # 1. Start the API message list with the System Prompt
             api_messages = [{"role": "system", "content": system_prompt}]
 
