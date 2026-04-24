@@ -16,8 +16,9 @@ from googleapiclient.http import MediaIoBaseDownload
 @st.cache_data(ttl=1800, show_spinner=False)  # Cache for 30 mins
 def get_xero_token():
     try:
-        client_id = st.secrets["XERO_CLIENT_ID"]
-        client_secret = st.secrets["XERO_CLIENT_SECRET"]
+        # Added ["xero"] to map to your TOML headers
+        client_id = st.secrets["xero"]["XERO_CLIENT_ID"]
+        client_secret = st.secrets["xero"]["XERO_CLIENT_SECRET"]
         credentials = f"{client_id}:{client_secret}"
         encoded_credentials = base64.b64encode(credentials.encode()).decode()
         
@@ -33,6 +34,7 @@ def get_xero_token():
         return response.json()["access_token"]
     except Exception as e:
         return f"Error: {str(e)}"
+
 
 @st.cache_data(ttl=3000, show_spinner=False)  # Cache for 50 mins
 def get_cartoncloud_token():
@@ -93,7 +95,8 @@ def search_xero_contact(contact_name: str) -> str:
 # TOOL 2: UNRESTRICTED MACHSHIP SEARCH
 # ==========================================
 def search_machship_connote(connote_number: str) -> str:
-    token = st.secrets["MACHSHIP_API_TOKEN"]
+    # Added ["machship"] to map to your TOML headers
+    token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
     connote_number = connote_number.strip().upper()
     headers = { "token": token, "Accept": "application/json" }
 
