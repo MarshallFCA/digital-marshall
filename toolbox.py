@@ -341,18 +341,25 @@ def search_cartoncloud_order(reference_number):
             "Content-Type": "application/json"
         }
         
+        # The exact JSON structure from Carton Cloud's documentation
+        # Using AndCondition and the modern JsonField pointer
         search_payload = {
             "condition": {
-                "type": "TextComparisonCondition",
-                "field": {
-                    "type": "ValueField",
-                    "value": "reference"
-                },
-                "value": {
-                    "type": "ValueField",
-                    "value": reference_number
-                },
-                "method": "EQUAL_TO"
+                "type": "AndCondition",
+                "conditions": [
+                    {
+                        "type": "TextComparisonCondition",
+                        "field": {
+                            "type": "JsonField",
+                            "pointer": "/references/customer"
+                        },
+                        "value": {
+                            "type": "ValueField",
+                            "value": str(reference_number)
+                        },
+                        "method": "EQUAL_TO"
+                    }
+                ]
             }
         }
 
