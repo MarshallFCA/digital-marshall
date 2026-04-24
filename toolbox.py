@@ -304,37 +304,36 @@ def search_and_read_google_drive(search_query):
 def search_cartoncloud_order(reference_number):
     import requests
     import streamlit as st
+    import base64
 
     try:
-        # 1. Fetch Credentials & Automatically Wash Hidden Spaces
         tenant_id = st.secrets["cartoncloud"]["tenant_id"].strip()
         client_id = st.secrets["cartoncloud"]["client_id"].strip()
         client_secret = st.secrets["cartoncloud"]["client_secret"].strip()
 
-        # The global server domain
         base_url = "https://api.cartoncloud.com"
 
-        # 2. Authenticate and Get Bearer Token (Notice the /uaa/ is back!)
-        auth_url = f"{base_url}/uaa/oauth/token" 
-        auth_payload = {
-            "grant_type": "client_credentials"
-        }
+        # 1. Manually build the Base64 Auth header to match the cURL exactly
+        credentials = f"{client_id}:{client_secret}"
+        encoded_credentials = base64.b64encode(credentials.encode('utf-8')).decode('utf-8')
+
+        auth_url = f"{base_url}/uaa/oauth/token"
+        auth_payload = "grant_type=client_credentials"
         auth_headers = {
             "Accept-Version": "1",
-            "Content-Type": "application/x-www-form-urlencoded"
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": f"Basic {encoded_credentials}"
         }
         
-        # We pass the keys using the auth= parameter to force a Basic Auth header
         auth_response = requests.post(
             auth_url, 
             data=auth_payload, 
-            headers=auth_headers,
-            auth=(client_id, client_secret)
+            headers=auth_headers
         )
         auth_response.raise_for_status()
         access_token = auth_response.json().get("access_token")
 
-        # 3. Search for the Order
+        # 2. Search for the Order
         search_url = f"{base_url}/tenants/{tenant_id}/outbound-orders/search"
         headers = {
             "Accept-Version": "1",
@@ -361,7 +360,7 @@ def search_cartoncloud_order(reference_number):
         response.raise_for_status()
         orders = response.json()
 
-        # 4. Parse the Response
+        # 3. Parse the Response
         if not orders:
             return f"No order found in Carton Cloud matching reference: {reference_number}."
 
