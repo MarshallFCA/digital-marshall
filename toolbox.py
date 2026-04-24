@@ -366,10 +366,18 @@ def search_cartoncloud_order(reference_number):
         customer_name = order.get("customer", {}).get("name", "Unknown Customer")
         
         # --- Extract Receiver/Destination ---
-        # Digging into the 'details' dictionary
         details = order.get("details", {})
-        delivery = details.get("deliveryAddress") or details.get("shippingAddress") or {}
-        receiver_name = delivery.get("name") or delivery.get("companyName") or details.get("deliveryName") or "Unknown Receiver"
+        
+        # Hunting inside the 'delivery' -> 'address' path
+        delivery_node = details.get("delivery", {})
+        address_node = delivery_node.get("address", {})
+        
+        receiver_name = (
+            address_node.get("companyName") or 
+            address_node.get("name") or 
+            details.get("deliveryName") or 
+            "Unknown Receiver"
+        )
 
         items = order.get("items", [])
         item_list = ""
@@ -390,7 +398,7 @@ def search_cartoncloud_order(reference_number):
         Items in this order:
         {item_list if item_list else "No items listed."}
         
-        DEBUG DETAILS: {str(details)[:300]}...
+        DEBUG DETAILS: {str(details)[:800]}...
         """
 
     except Exception as e:
