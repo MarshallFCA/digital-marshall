@@ -310,6 +310,8 @@ if prompt := st.chat_input("Input query or command..."):
                         function_response = toolbox.search_machship_connote(function_args.get("connote_number"))
                     elif function_name == "search_transvirtual_connote":
                         function_response = toolbox.search_transvirtual_connote(function_args.get("connote_number"))
+                    elif function_name == "search_and_read_google_drive":
+                                function_response = toolbox.search_and_read_google_drive(function_args.get("search_query"))
                     
                     # Hand the raw data matrix back to the AI
                     api_messages.append({
