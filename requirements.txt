@@ -12,3 +12,4 @@ google-auth-oauthlib
 PyPDF2
 pandas
 openpyxl
+requests
