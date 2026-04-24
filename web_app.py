@@ -311,6 +311,10 @@ if prompt := st.chat_input("Input query or command..."):
                         # Matches AI request directly to the toolbox.py function
                         target_function = getattr(toolbox, function_name)
                         function_response = target_function(**function_args)
+                        
+                        # --- THE MASTER X-RAY ---
+                        st.error(f"X-RAY [{function_name}]: {function_response}")
+                        
                     except AttributeError:
                         function_response = f"Tool Execution Crash: Module '{function_name}' is not registered in the toolbox."
                     except Exception as e:
