@@ -360,22 +360,23 @@ def search_cartoncloud_order(reference_number):
         if not orders:
             return f"No order found in Carton Cloud containing reference: {reference_number}."
 
-        # 3. Parse the Response
+       # 3. Parse the Response
         order = orders[0]
         status = order.get("status", "UNKNOWN")
         customer_name = order.get("customer", {}).get("name", "Unknown Customer")
-        items = order.get("items", [])
         
+        # --- NEW: Extract Receiver/Destination ---
+        # Hunting for the exact delivery key
+        delivery = order.get("deliveryAddress") or order.get("delivery") or order.get("shippingAddress") or {}
+        receiver_name = delivery.get("name") or delivery.get("companyName") or order.get("deliveryName") or "Unknown Receiver"
+
+        items = order.get("items", [])
         item_list = ""
         
         for item in items:
-            # Extract Quantity
             quantity = item.get("measures", {}).get("quantity", 0)
-            
-            # Extract Product Name
             product = item.get("details", {}).get("product", {})
             product_name = product.get("name") or product.get("references", {}).get("code") or product.get("references", {}).get("name") or "Unknown Product"
-            
             item_list += f"- {quantity}x {product_name}\n"
 
         return f"""
@@ -383,21 +384,12 @@ def search_cartoncloud_order(reference_number):
         - Reference: {reference_number}
         - Status: {status}
         - Customer: {customer_name}
-        
-        Items in this order:
-        {item_list if item_list else "No items listed."}
-        """
-
-        return f"""
-        ✅ CARTON CLOUD ORDER FOUND
-        - Reference: {reference_number}
-        - Status: {status}
-        - Customer: {customer_name}
+        - Receiver: {receiver_name}
         
         Items in this order:
         {item_list if item_list else "No items listed."}
         
-        DEBUG KEYS: {raw_debug[:200]}...
+        DEBUG ORDER KEYS: {list(order.keys())}
         """
 
     except Exception as e:
