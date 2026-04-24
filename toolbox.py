@@ -126,39 +126,85 @@ def search_transvirtual_connote(connote_number):
     }
     
     try:
-        # STEP 1: Fetch Consignment Details (The Booking Data)
-        url_query = "https://api.transvirtual.com.au/api/ConsignmentQuery"
-        response_query = requests.post(url_query, headers=headers, json={"ConsignmentNumber": connote_number})
-        full_data = response_query.json().get("Data", {}) if response_query.status_code == 200 else {}
+        # 1. Authenticate using Streamlit Secrets
+        credentials_dict = dict(st.secrets["gcp_service_account"])
+        creds = service_account.Credentials.from_service_account_info(
+            credentials_dict,
+            scopes=['https://www.googleapis.com/auth/drive.readonly']
+        )
+        service = build('drive', 'v3', credentials=creds)
+
+        # 2. Search for the file (searches titles and full text)
+        query = f"fullText contains '{search_query}' or name contains '{search_query}'"
+        results = service.files().list(
+            q=query,
+            pageSize=3,
+            fields="nextPageToken, files(id, name, mimeType)"
+        ).execute()
         
-        # STEP 2: The Official Tracking Extraction
-        url_status = "https://api.transvirtual.com.au/api/ConsignmentStatus"
-        # Using the exact payload schema discovered from the Swagger docs
-        payload_status = {
-            "Number": connote_number
-        }
+        items = results.get('files', [])
         
-        response_status = requests.post(url_status, headers=headers, json=payload_status)
+        if not items:
+            return f"No documents found in Google Drive matching: '{search_query}'. Ensure the file is shared with the Service Account email."
+            
+        # 3. Read the first (most relevant) document
+        file = items[0]
+        file_id = file['id']
+        file_name = file['name']
+        mime_type = file['mimeType']
         
-        tracking_data = None
-        # We ensure it's a 200 OK and didn't spit back a generic 'Missing' error
-        if response_status.status_code == 200 and "Missing" not in response_status.text:
-            tracking_data = response_status.json().get("Data", response_status.json())
+        content = ""
+        
+        # Extract Google Doc
+        if 'application/vnd.google-apps.document' in mime_type:
+            request = service.files().export_media(fileId=file_id, mimeType='text/plain')
+            content = request.execute().decode('utf-8')
+            
+        # Extract Google Sheet (Converted to CSV for the AI)
+        elif 'application/vnd.google-apps.spreadsheet' in mime_type:
+            request = service.files().export_media(fileId=file_id, mimeType='text/csv')
+            content = request.execute().decode('utf-8')
+            
+        # Extract Excel File (.xlsx)
+        elif 'spreadsheetml.sheet' in mime_type or 'application/vnd.ms-excel' in mime_type:
+            import pandas as pd
+            request = service.files().get_media(fileId=file_id)
+            fh = io.BytesIO(request.execute())
+            df = pd.read_excel(fh)
+            content = df.to_csv(index=False)
+            
+        # Extract PDF
+        elif 'application/pdf' in mime_type:
+            request = service.files().get_media(fileId=file_id)
+            fh = io.BytesIO()
+            downloader = MediaIoBaseDownload(fh, request)
+            done = False
+            while done is False:
+                status, done = downloader.next_chunk()
+            
+            fh.seek(0)
+            pdf_reader = PyPDF2.PdfReader(fh)
+            for page in pdf_reader.pages:
+                if page.extract_text():
+                    content += page.extract_text() + "\n"
+                
+        # Extract Plain Text File
+        elif 'text/plain' in mime_type or 'text/csv' in mime_type:
+            request = service.files().get_media(fileId=file_id)
+            content = request.execute().decode('utf-8')
+            
         else:
-            tracking_data = f"Tracking Extraction Failed: HTTP {response_status.status_code} | {response_status.text[:100]}"
-            
-        # Combine the Data for Digital Marsh
-        combined_matrix = {
-            "ConsignmentDetails": full_data,
-            "TrackingScans": tracking_data
-        }
-        
-        raw_matrix = json.dumps(combined_matrix, indent=2)
-        
-        return f"✅ Transvirtual Record: {connote_number}\n\n**Raw Data Available to AI:**\n```json\n{raw_matrix}\n```"
-            
+            return f"Found '{file_name}', but it is a format ({mime_type}) that Digital Marsh cannot read yet."
+
+        # Truncate content to avoid blowing out the AI's context window memory
+        max_chars = 15000
+        if len(content) > max_chars:
+            content = content[:max_chars] + "\n... [TRUNCATED DUE TO LENGTH: Data exceeds AI memory limit. Summarizing the first 15,000 characters.]"
+
+        return f"✅ GOOGLE DRIVE MATCH FOUND: '{file_name}'\n\n**Document Content:**\n{content}"
+
     except Exception as e:
-        return f"Transvirtual API Crash: {str(e)}"
+        return f"🚨 Google Drive Connection Crash: {str(e)}"
 # ==========================================
 # TOOL 4: GOOGLE DRIVE ORACLE
 # ==========================================
