@@ -292,35 +292,52 @@ if prompt := st.chat_input("Input query or command..."):
             
             response_message = response.choices[0].message
 
-            # 5. Check if the AI wants to use a tool
+           # 5. Check if the AI wants to use a tool
             if response_message.tool_calls:
-                # Tell the chat window what the AI is doing
                 message_placeholder.markdown("*(Digital Marsh is auditing live operational data...)*")
                 
-                # Append the AI's tool request to the conversation history
                 api_messages.append(response_message)
                 
-                # Execute the requested tools
                 for tool_call in response_message.tool_calls:
                     function_name = tool_call.function.name
                     function_args = json.loads(tool_call.function.arguments)
                     
-                    if function_name == "search_xero_contact":
-                        function_response = toolbox.search_xero_contact(function_args.get("contact_name"))
-                    elif function_name == "search_machship_connote":
-                        function_response = toolbox.search_machship_connote(function_args.get("connote_number"))
-                    elif function_name == "search_transvirtual_connote":
-                        function_response = toolbox.search_transvirtual_connote(function_args.get("connote_number"))
-                    elif function_name == "search_and_read_google_drive":
-                                function_response = toolbox.search_and_read_google_drive(function_args.get("search_query"))
+                    function_response = "Error: Tool not found"
                     
-                    # Hand the raw data matrix back to the AI
+                    try:
+                        if function_name == "search_xero_contact":
+                            function_response = toolbox.search_xero_contact(function_args.get("contact_name"))
+                        elif function_name == "search_machship_connote":
+                            function_response = toolbox.search_machship_connote(function_args.get("connote_number"))
+                        elif function_name == "search_transvirtual_connote":
+                            function_response = toolbox.search_transvirtual_connote(function_args.get("connote_number"))
+                        elif function_name == "search_and_read_google_drive":
+                            function_response = toolbox.search_and_read_google_drive(function_args.get("search_query"))
+                            
+                            # --- X-RAY DIAGNOSTIC ---
+                            # This forces Streamlit to print exactly what the tool fetched before the AI reads it
+                            st.error(f"🚨 X-RAY: Google Drive Tool Output:\n{str(function_response)[:1000]}")
+                            
+                    except Exception as e:
+                        function_response = f"Tool Execution Crash: {str(e)}"
+                        st.error(f"🚨 X-RAY: Tool Crash:\n{function_response}")
+                    
                     api_messages.append({
                         "tool_call_id": tool_call.id,
                         "role": "tool",
                         "name": function_name,
                         "content": str(function_response),
                     })
+                
+                # 6. Second Call to OpenAI
+                second_response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=api_messages,
+                    temperature=0.3
+                )
+                full_response = second_response.choices[0].message.content
+            else:
+                full_response = response_message.content
                 
                 # 6. Second Call to OpenAI (AI reads the tool data and writes final answer)
                 second_response = client.chat.completions.create(
