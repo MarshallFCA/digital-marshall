@@ -313,12 +313,8 @@ if prompt := st.chat_input("Input query or command..."):
                         elif function_name == "search_and_read_google_drive":
                             function_response = toolbox.search_and_read_google_drive(function_args.get("search_query"))
                             
-                            # --- X-RAY DIAGNOSTIC ---
-                            st.error(f"🚨 X-RAY: Google Drive Tool Output:\n{str(function_response)[:1000]}")
-                            
                     except Exception as e:
                         function_response = f"Tool Execution Crash: {str(e)}"
-                        st.error(f"🚨 X-RAY: Tool Crash:\n{function_response}")
                     
                     api_messages.append({
                         "tool_call_id": tool_call.id,
@@ -343,5 +339,3 @@ if prompt := st.chat_input("Input query or command..."):
             
         except Exception as e:
             message_placeholder.error(f"🚨 SYSTEM ERROR: {str(e)}")
-
-
