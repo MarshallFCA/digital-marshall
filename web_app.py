@@ -205,7 +205,7 @@ if prompt := st.chat_input("Input query or command..."):
                     "type": "function",
                     "function": {
                         "name": "search_xero_contact",
-                        "description": "Searches live Xero for a contact to get their status, total outstanding balance, overdue amounts, and raw financial matrix.",
+                        "description": "Searches Xero for a contact by name and returns their details and outstanding invoice summary.",
                         "parameters": {
                             "type": "object",
                             "properties": {
@@ -222,13 +222,13 @@ if prompt := st.chat_input("Input query or command..."):
                     "type": "function",
                     "function": {
                         "name": "search_machship_connote",
-                        "description": "Searches live Machship for a consignment number to get carrier details, routing, status, and raw matrix data.",
+                        "description": "Searches Machship for a consignment note (connote) and returns booking, routing, and pricing details.",
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "connote_number": {
                                     "type": "string",
-                                    "description": "The consignment number or carrier reference (e.g., MS64450234, FCAM000006)."
+                                    "description": "The Machship consignment number (e.g., MS123456)."
                                 }
                             },
                             "required": ["connote_number"]
@@ -239,22 +239,20 @@ if prompt := st.chat_input("Input query or command..."):
                     "type": "function",
                     "function": {
                         "name": "search_transvirtual_connote",
-                        "description": "Searches live Transvirtual for a consignment number to get sender, receiver, status, and raw tracking data.",
+                        "description": "Searches Transvirtual for a consignment note and returns the booking data and live tracking scans.",
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "connote_number": {
                                     "type": "string",
-                                    "description": "The consignment number or tracking ID used in Transvirtual."
+                                    "description": "The Transvirtual consignment number."
                                 }
                             },
                             "required": ["connote_number"]
                         }
                     }
-                }
-            ]
-
-           {
+                },
+                {
                     "type": "function",
                     "function": {
                         "name": "search_and_read_google_drive",
@@ -271,6 +269,7 @@ if prompt := st.chat_input("Input query or command..."):
                         }
                     }
                 }
+            ]
             # 1. Start the API message list with the System Prompt
             api_messages = [{"role": "system", "content": system_prompt}]
 
