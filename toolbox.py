@@ -306,13 +306,16 @@ def search_cartoncloud_order(reference_number):
     import streamlit as st
 
     try:
-        # 1. Fetch Credentials
-        tenant_id = st.secrets["cartoncloud"]["tenant_id"]
-        client_id = st.secrets["cartoncloud"]["client_id"]
-        client_secret = st.secrets["cartoncloud"]["client_secret"]
+        # 1. Fetch Credentials & Automatically Wash Hidden Spaces
+        tenant_id = st.secrets["cartoncloud"]["tenant_id"].strip()
+        client_id = st.secrets["cartoncloud"]["client_id"].strip()
+        client_secret = st.secrets["cartoncloud"]["client_secret"].strip()
 
-        # 2. Authenticate and Get Bearer Token (Using HTTP Basic Auth and /uaa/ path)
-        auth_url = "https://api.cartoncloud.com/uaa/oauth/token" 
+        # Use the Australian Regional Server
+        base_url = "https://api.cartoncloud.com.au"
+
+        # 2. Authenticate and Get Bearer Token
+        auth_url = f"{base_url}/uaa/oauth/token" 
         auth_payload = {
             "grant_type": "client_credentials"
         }
@@ -321,7 +324,6 @@ def search_cartoncloud_order(reference_number):
             "Content-Type": "application/x-www-form-urlencoded"
         }
         
-        # requests.auth handles the {clientId}:{clientSecret} encoding automatically
         auth_response = requests.post(
             auth_url, 
             data=auth_payload, 
@@ -332,7 +334,7 @@ def search_cartoncloud_order(reference_number):
         access_token = auth_response.json().get("access_token")
 
         # 3. Search for the Order
-        search_url = f"https://api.cartoncloud.com/tenants/{tenant_id}/outbound-orders/search"
+        search_url = f"{base_url}/tenants/{tenant_id}/outbound-orders/search"
         headers = {
             "Accept-Version": "1",
             "Authorization": f"Bearer {access_token}",
