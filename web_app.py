@@ -330,7 +330,9 @@ if prompt := st.chat_input("Input query or command..."):
                         elif function_name == "search_and_read_google_drive":
                             function_response = toolbox.search_and_read_google_drive(function_args.get("search_query"))
                         elif function_name == "search_cartoncloud_order":
-                            function_response = toolbox.search_cartoncloud_order(function_args.get("reference_number"))                            
+                            function_response = toolbox.search_cartoncloud_order(function_args.get("reference_number"))
+                            st.error(f"X-RAY CARTON CLOUD: {function_response}")  # <-- RIGHT HERE
+                            
                     except Exception as e:
                         function_response = f"Tool Execution Crash: {str(e)}"
                     
