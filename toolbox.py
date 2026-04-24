@@ -298,3 +298,81 @@ def search_and_read_google_drive(search_query):
 
     except Exception as e:
         return f"🚨 Google Drive Connection Crash: {str(e)}"
+# ==========================================
+# TOOL 5: CARTON CLOUD WMS ORACLE
+# ==========================================
+def search_cartoncloud_order(reference_number):
+    import requests
+    import streamlit as st
+
+    try:
+        # 1. Fetch Credentials
+        tenant_id = st.secrets["cartoncloud"]["tenant_id"]
+        client_id = st.secrets["cartoncloud"]["client_id"]
+        client_secret = st.secrets["cartoncloud"]["client_secret"]
+
+        # 2. Authenticate and Get Bearer Token
+        auth_url = "https://api.cartoncloud.com/oauth/token" 
+        auth_payload = {
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret
+        }
+        auth_response = requests.post(auth_url, data=auth_payload)
+        auth_response.raise_for_status()
+        access_token = auth_response.json().get("access_token")
+
+        # 3. Search for the Order
+        search_url = f"https://api.cartoncloud.com/tenants/{tenant_id}/outbound-orders/search"
+        headers = {
+            "Accept-Version": "1",
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+        
+        search_payload = {
+            "condition": {
+                "type": "TextComparisonCondition",
+                "field": {
+                    "type": "ValueField",
+                    "value": "reference"
+                },
+                "value": {
+                    "type": "ValueField",
+                    "value": reference_number
+                },
+                "method": "EQUAL_TO"
+            }
+        }
+
+        response = requests.post(search_url, headers=headers, json=search_payload)
+        response.raise_for_status()
+        orders = response.json()
+
+        # 4. Parse the Response
+        if not orders:
+            return f"No order found in Carton Cloud matching reference: {reference_number}."
+
+        order = orders[0]
+        status = order.get("status", "UNKNOWN")
+        customer_name = order.get("customer", {}).get("name", "Unknown Customer")
+        items = order.get("items", [])
+        
+        item_list = ""
+        for item in items:
+            product_name = item.get("product", {}).get("name", "Unknown Product")
+            quantity = item.get("quantity", 0)
+            item_list += f"- {quantity}x {product_name}\n"
+
+        return f"""
+        ✅ CARTON CLOUD ORDER FOUND
+        - Reference: {reference_number}
+        - Status: {status}
+        - Customer: {customer_name}
+        
+        Items in this order:
+        {item_list if item_list else "No items listed."}
+        """
+
+    except Exception as e:
+        return f"🚨 Carton Cloud API Error: {str(e)}"
