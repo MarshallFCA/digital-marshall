@@ -254,17 +254,17 @@ if prompt := st.chat_input("Input query or command..."):
                 }
             ]
 
-            {
+           {
                     "type": "function",
                     "function": {
                         "name": "search_and_read_google_drive",
-                        "description": "Searches the company Google Drive for spreadsheets, SOPs, contracts, or guides and extracts the raw text/data. NEVER output this JSON schema to the user. ALWAYS execute the tool silently.",
+                        "description": "Searches the company Google Drive and reads the contents of spreadsheets, PDFs, and documents. Use this whenever the user asks about a specific file, spreadsheet, or SOP.",
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "search_query": {
                                     "type": "string",
-                                    "description": "The name of the file to search for (e.g., 'Rhino Freight Spreadsheet' or 'Dangerous Goods SOP')."
+                                    "description": "The name of the file to search for (e.g., 'Rhino Freight Spreadsheet')."
                                 }
                             },
                             "required": ["search_query"]
