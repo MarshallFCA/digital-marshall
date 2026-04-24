@@ -367,17 +367,18 @@ def search_cartoncloud_order(reference_number):
         
         # --- Extract Receiver/Destination ---
         details = order.get("details", {})
-        
-        # Hunting inside the 'delivery' -> 'address' path
-        delivery_node = details.get("delivery", {})
-        address_node = delivery_node.get("address", {})
+        address_node = details.get("deliver", {}).get("address", {})
         
         receiver_name = (
             address_node.get("companyName") or 
+            address_node.get("contactName") or 
             address_node.get("name") or 
-            details.get("deliveryName") or 
             "Unknown Receiver"
         )
+
+        # --- Extract Dispatch Date ---
+        timestamps = order.get("timestamps", {})
+        dispatch_date = timestamps.get("dispatched", {}).get("time") or "Not Dispatched Yet"
 
         items = order.get("items", [])
         item_list = ""
@@ -394,11 +395,10 @@ def search_cartoncloud_order(reference_number):
         - Status: {status}
         - Customer: {customer_name}
         - Receiver: {receiver_name}
+        - Dispatch Date: {dispatch_date}
         
         Items in this order:
         {item_list if item_list else "No items listed."}
-        
-        DEBUG DETAILS: {str(details)[:800]}...
         """
 
     except Exception as e:
