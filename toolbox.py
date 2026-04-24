@@ -311,13 +311,15 @@ def search_cartoncloud_order(reference_number):
         client_id = st.secrets["cartoncloud"]["client_id"].strip()
         client_secret = st.secrets["cartoncloud"]["client_secret"].strip()
 
-        # Use the Australian Regional Server
-        base_url = "https://api.cartoncloud.com.au"
+        # Reverting to the official, global server
+        base_url = "https://api.cartoncloud.com"
 
         # 2. Authenticate and Get Bearer Token
-        auth_url = f"{base_url}/uaa/oauth/token" 
+        auth_url = f"{base_url}/oauth/token" 
         auth_payload = {
-            "grant_type": "client_credentials"
+            "grant_type": "client_credentials",
+            "client_id": client_id,
+            "client_secret": client_secret
         }
         auth_headers = {
             "Accept-Version": "1",
@@ -327,8 +329,7 @@ def search_cartoncloud_order(reference_number):
         auth_response = requests.post(
             auth_url, 
             data=auth_payload, 
-            headers=auth_headers, 
-            auth=(client_id, client_secret)
+            headers=auth_headers
         )
         auth_response.raise_for_status()
         access_token = auth_response.json().get("access_token")
