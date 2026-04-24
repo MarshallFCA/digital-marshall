@@ -205,9 +205,7 @@ def search_transvirtual_connote(connote_number):
 
     except Exception as e:
         return f"🚨 Google Drive Connection Crash: {str(e)}"
-# ==========================================
-# TOOL 4: GOOGLE DRIVE ORACLE
-# ==========================================
+
 # ==========================================
 # TOOL 4: GOOGLE DRIVE ORACLE
 # ==========================================
@@ -228,11 +226,12 @@ def search_and_read_google_drive(search_query):
         )
         service = build('drive', 'v3', credentials=creds)
 
-        # 2. Search for the file (searches titles and full text)
+        # 2. Search for the file (searches titles and full text, sorting by newest first)
         query = f"fullText contains '{search_query}' or name contains '{search_query}'"
         results = service.files().list(
             q=query,
             pageSize=3,
+            orderBy="modifiedTime desc",  # <-- THIS IS THE MAGIC LINE
             fields="nextPageToken, files(id, name, mimeType)"
         ).execute()
         
