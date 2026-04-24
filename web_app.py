@@ -359,6 +359,3 @@ if prompt := st.chat_input("Input query or command..."):
             
         except Exception as e:
             message_placeholder.error(f"🚨 SYSTEM ERROR: {str(e)}")
-
-
-
