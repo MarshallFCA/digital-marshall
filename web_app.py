@@ -341,3 +341,76 @@ if prompt := st.chat_input("Input query or command..."):
             
         except Exception as e:
             message_placeholder.error(f"🚨 SYSTEM ERROR: {str(e)}")
+
+
+# ==========================================
+# TOOL 3: TRANSVIRTUAL CONSIGNMENT SEARCH
+# ==========================================
+def search_transvirtual_connote(connote_number: str) -> str:
+    import json
+    import requests
+    import streamlit as st
+
+    try:
+        # 1. Map to the nested TOML structure
+        token = st.secrets["transvirtual"]["TRANSVIRTUAL_API_KEY"]
+        connote_number = connote_number.strip().upper()
+
+        headers = {
+            "Authorization": token, 
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+
+        # STEP 1: Fetch Consignment Details (The Booking Data)
+        url_query = "https://api.transvirtual.com.au/api/ConsignmentQuery"
+        response_query = requests.post(url_query, headers=headers, json={"ConsignmentNumber": connote_number}, timeout=15)
+        full_data = response_query.json().get("Data", {}) if response_query.status_code == 200 else {}
+
+        # STEP 2: The Tracking Extraction
+        url_status = "https://api.transvirtual.com.au/api/ConsignmentStatus"
+        tracking_data = None
+        tracking_log = []
+
+        # 1st Attempt: Standard shape
+        payload_status = {"Number": connote_number}
+        response_status = requests.post(url_status, headers=headers, json=payload_status, timeout=15)
+        
+        if response_status.status_code == 200 and "Missing" not in response_status.text:
+            tracking_data = response_status.json().get("Data", response_status.json())
+        else:
+            tracking_log.append(f"Standard Payload Failed: HTTP {response_status.status_code}")
+            
+            # Fallback: The 4 most common enterprise payload shapes
+            test_payloads = [
+                ("Plural Array", {"ConsignmentNumbers": [connote_number]}),
+                ("List Object", {"List": [connote_number]}),
+                ("Tracking Object", {"TrackingNumbers": [connote_number]}),
+                ("Number Array", {"Numbers": [connote_number]})
+            ]
+            
+            for shape_name, payload in test_payloads:
+                resp = requests.post(url_status, headers=headers, json=payload, timeout=15)
+                if resp.status_code == 200 and "Missing" not in resp.text:
+                    tracking_data = resp.json()
+                    tracking_log.append(f"✅ Success with shape: {shape_name}")
+                    break
+                else:
+                    tracking_log.append(f"❌ {shape_name} -> HTTP {resp.status_code}")
+
+        # Combine the Data for Digital Marsh
+        combined_matrix = {
+            "ConsignmentDetails": full_data,
+            "TrackingScans": tracking_data if tracking_data else "Failed tracking X-Ray: " + " | ".join(tracking_log)
+        }
+
+        raw_matrix = json.dumps(combined_matrix, indent=2)
+
+        return f"✅ Transvirtual Record: {connote_number}\n\n**Raw Data Available to AI:**\n```json\n{raw_matrix}\n```"
+
+    except requests.exceptions.Timeout:
+        return "🚨 Transvirtual API Error: The server timed out."
+    except Exception as e:
+        return f"🚨 Transvirtual API Crash: {str(e)}"
+
+
