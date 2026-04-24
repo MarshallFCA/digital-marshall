@@ -4,18 +4,18 @@ from pinecone import Pinecone
 import PyPDF2
 import pandas as pd
 import io
-from streamlit_oauth import OAuth2Component
+import json
 import requests
+from streamlit_oauth import OAuth2Component
 import toolbox
 
 # --- CONFIGURATION (SECURED FOR CLOUD) ---
 OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
 PINECONE_API_KEY = st.secrets["PINECONE_API_KEY"]
-PINECONE_INDEX_NAME = "digital-marsh"  # It is safe to leave the index name as text
+PINECONE_INDEX_NAME = "digital-marsh" 
 
 GOOGLE_CLIENT_ID = st.secrets["GOOGLE_CLIENT_ID"]
 GOOGLE_CLIENT_SECRET = st.secrets["GOOGLE_CLIENT_SECRET"]
-
 
 # 1. Interface Initialisation
 st.set_page_config(page_title="Digital Marshall", page_icon="🗄️", layout="centered")
@@ -28,7 +28,6 @@ if not st.session_state.logged_in:
     st.title("Digital Marshall")
     st.warning("Please log in with your FCA account to access the Forensic Data Terminal.")
     
-    # Setup the Google OAuth component
     oauth2 = OAuth2Component(
         GOOGLE_CLIENT_ID, 
         GOOGLE_CLIENT_SECRET, 
@@ -38,7 +37,6 @@ if not st.session_state.logged_in:
         "https://oauth2.googleapis.com/revoke"
     )
     
-    # Create the Login Button (Using the URL with the slash!)
     result = oauth2.authorize_button(
         name="Sign in with Google",
         icon="https://www.google.com/favicon.ico",
@@ -49,29 +47,26 @@ if not st.session_state.logged_in:
     )
     
     if result and "token" in result:
-        # We got a token! Now let's check their email address.
         access_token = result["token"]["access_token"]
         user_info = requests.get(f"https://www.googleapis.com/oauth2/v1/userinfo?access_token={access_token}").json()
         user_email = user_info.get("email", "")
         
-        # The Checkpoint: Are they FCA staff?
         if user_email.endswith("@freightcompaniesaustralia.com.au"):
             st.session_state.logged_in = True
             st.session_state.user_email = user_email
-            st.query_params.clear()  # <-- MAGIC FIX: Wipes the token to prevent ghost reruns
-            st.rerun() # Refresh the page to let them in!
+            st.query_params.clear() 
+            st.rerun() 
         else:
             st.error(f"Access Denied. {user_email} is not an authorized FCA account.")
             
-    # Stop the rest of the app from loading until they pass the check
     st.stop()
 
-# --- IF THEY PASS THE BOUNCER, THEY SEE THIS ---
+# --- THE TERMINAL INTERFACE ---
 st.title("Digital Marshall")
 st.subheader("FCA Forensic Data Terminal")
 st.success(f"Secure session active: {st.session_state.user_email}")
 
-# 2. Database Connection
+# 2. Database Connection (Cached)
 @st.cache_resource
 def init_clients():
     client = OpenAI(api_key=OPENAI_API_KEY)
@@ -120,7 +115,6 @@ for message in st.session_state.messages:
 # 6. Query Execution
 if prompt := st.chat_input("Input query or command..."):
     
-    # Process attachment if present
     file_context = ""
     file_text = ""
     if uploaded_file is not None:
@@ -159,8 +153,6 @@ if prompt := st.chat_input("Input query or command..."):
                 historical_context += f"Marshall's Action: {metadata.get('marshall_response', '')}\n"
 
             # C. Logic Engine Execution
-            import json
-
             system_prompt = f"""You are Digital Marsh, the AI incarnation of Marshall Hughes (Founder, Freight Companies Australia). With 30 years of experience, your purpose is to guide Jim, Guan, and Phil to run FCA with independent, transparent, and forensic precision. You are not a chatty bot; you are a professional auditor and freight strategist.
 
             NEW SYSTEM CAPABILITIES:
@@ -269,7 +261,7 @@ if prompt := st.chat_input("Input query or command..."):
                         }
                     }
                 },
-             {
+                {
                     "type": "function",
                     "function": {
                         "name": "search_cartoncloud_order",
@@ -287,17 +279,14 @@ if prompt := st.chat_input("Input query or command..."):
                     }
                 }   
             ]
-            # 1. Start the API message list with the System Prompt
+            
             api_messages = [{"role": "system", "content": system_prompt}]
 
-            # 2. Loop through the chat history and add previous messages
             for msg in st.session_state.messages[:-1]:
                 api_messages.append({"role": msg["role"], "content": msg["content"]})
 
-            # 3. Add the current query, injecting the hidden file context and RAG data
             api_messages.append({"role": "user", "content": full_user_query})
 
-            # 4. First Call to OpenAI (AI decides if it needs a tool)
             response = client.chat.completions.create(
                 model="gpt-4o-mini",
                 messages=api_messages,
@@ -308,7 +297,7 @@ if prompt := st.chat_input("Input query or command..."):
             
             response_message = response.choices[0].message
 
-           # 5. Check if the AI wants to use a tool
+            # DYNAMIC TOOL EXECUTION (SCALABILITY UPGRADE)
             if response_message.tool_calls:
                 message_placeholder.markdown("*(Digital Marsh is auditing live operational data...)*")
                 
@@ -318,21 +307,12 @@ if prompt := st.chat_input("Input query or command..."):
                     function_name = tool_call.function.name
                     function_args = json.loads(tool_call.function.arguments)
                     
-                    function_response = "Error: Tool not found"
-                    
                     try:
-                        if function_name == "search_xero_contact":
-                            function_response = toolbox.search_xero_contact(function_args.get("contact_name"))
-                        elif function_name == "search_machship_connote":
-                            function_response = toolbox.search_machship_connote(function_args.get("connote_number"))
-                        elif function_name == "search_transvirtual_connote":
-                            function_response = toolbox.search_transvirtual_connote(function_args.get("connote_number"))
-                        elif function_name == "search_and_read_google_drive":
-                            function_response = toolbox.search_and_read_google_drive(function_args.get("search_query"))
-                        elif function_name == "search_cartoncloud_order":
-                            function_response = toolbox.search_cartoncloud_order(function_args.get("reference_number"))
-                            #st.error(f"X-RAY CARTON CLOUD: {function_response}")  # <-- RIGHT HERE
-                            
+                        # Matches AI request directly to the toolbox.py function
+                        target_function = getattr(toolbox, function_name)
+                        function_response = target_function(**function_args)
+                    except AttributeError:
+                        function_response = f"Tool Execution Crash: Module '{function_name}' is not registered in the toolbox."
                     except Exception as e:
                         function_response = f"Tool Execution Crash: {str(e)}"
                     
@@ -343,7 +323,6 @@ if prompt := st.chat_input("Input query or command..."):
                         "content": str(function_response),
                     })
                 
-                # 6. Second Call to OpenAI
                 second_response = client.chat.completions.create(
                     model="gpt-4o-mini",
                     messages=api_messages,
@@ -353,12 +332,8 @@ if prompt := st.chat_input("Input query or command..."):
             else:
                 full_response = response_message.content
 
-            # 7. Print the final answer to the screen and save to history
             message_placeholder.markdown(full_response)
             st.session_state.messages.append({"role": "assistant", "content": full_response})
             
         except Exception as e:
             message_placeholder.error(f"🚨 SYSTEM ERROR: {str(e)}")
-
-
-
