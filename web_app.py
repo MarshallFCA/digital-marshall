@@ -315,7 +315,6 @@ if prompt := st.chat_input("Input query or command..."):
                             function_response = toolbox.search_and_read_google_drive(function_args.get("search_query"))
                             
                             # --- X-RAY DIAGNOSTIC ---
-                            # This forces Streamlit to print exactly what the tool fetched before the AI reads it
                             st.error(f"🚨 X-RAY: Google Drive Tool Output:\n{str(function_response)[:1000]}")
                             
                     except Exception as e:
@@ -337,17 +336,6 @@ if prompt := st.chat_input("Input query or command..."):
                 )
                 full_response = second_response.choices[0].message.content
             else:
-                full_response = response_message.content
-                
-                # 6. Second Call to OpenAI (AI reads the tool data and writes final answer)
-                second_response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=api_messages,
-                    temperature=0.3
-                )
-                full_response = second_response.choices[0].message.content
-            else:
-                # If no tools were needed, just output the normal text
                 full_response = response_message.content
 
             # 7. Print the final answer to the screen and save to history
