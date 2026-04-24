@@ -367,16 +367,26 @@ def search_cartoncloud_order(reference_number):
         items = order.get("items", [])
         
         item_list = ""
-        raw_debug = ""
         
         for item in items:
-            raw_debug = str(item) # Capturing the raw dictionary to map the correct keys
+            # Extract Quantity
+            quantity = item.get("measures", {}).get("quantity", 0)
             
-            # Trying a few common variations until we see the debug output
-            product_name = item.get("productName") or item.get("product", {}).get("name") or "Unknown Product"
-            quantity = item.get("quantity") or item.get("orderedQuantity") or 0
+            # Extract Product Name
+            product = item.get("details", {}).get("product", {})
+            product_name = product.get("name") or product.get("references", {}).get("code") or product.get("references", {}).get("name") or "Unknown Product"
             
             item_list += f"- {quantity}x {product_name}\n"
+
+        return f"""
+        ✅ CARTON CLOUD ORDER FOUND
+        - Reference: {reference_number}
+        - Status: {status}
+        - Customer: {customer_name}
+        
+        Items in this order:
+        {item_list if item_list else "No items listed."}
+        """
 
         return f"""
         ✅ CARTON CLOUD ORDER FOUND
