@@ -208,6 +208,9 @@ def search_transvirtual_connote(connote_number):
 # ==========================================
 # TOOL 4: GOOGLE DRIVE ORACLE
 # ==========================================
+# ==========================================
+# TOOL 4: GOOGLE DRIVE ORACLE
+# ==========================================
 def search_and_read_google_drive(search_query):
     import streamlit as st
     from google.oauth2 import service_account
@@ -229,7 +232,7 @@ def search_and_read_google_drive(search_query):
         query = f"fullText contains '{search_query}' or name contains '{search_query}'"
         results = service.files().list(
             q=query,
-            pageSize=3, # Grabs the top 3 matches
+            pageSize=3,
             fields="nextPageToken, files(id, name, mimeType)"
         ).execute()
         
@@ -251,6 +254,19 @@ def search_and_read_google_drive(search_query):
             request = service.files().export_media(fileId=file_id, mimeType='text/plain')
             content = request.execute().decode('utf-8')
             
+        # Extract Google Sheet (Converted to CSV for the AI)
+        elif 'application/vnd.google-apps.spreadsheet' in mime_type:
+            request = service.files().export_media(fileId=file_id, mimeType='text/csv')
+            content = request.execute().decode('utf-8')
+            
+        # Extract Excel File (.xlsx)
+        elif 'spreadsheetml.sheet' in mime_type or 'application/vnd.ms-excel' in mime_type:
+            import pandas as pd
+            request = service.files().get_media(fileId=file_id)
+            fh = io.BytesIO(request.execute())
+            df = pd.read_excel(fh)
+            content = df.to_csv(index=False)
+            
         # Extract PDF
         elif 'application/pdf' in mime_type:
             request = service.files().get_media(fileId=file_id)
@@ -267,17 +283,17 @@ def search_and_read_google_drive(search_query):
                     content += page.extract_text() + "\n"
                 
         # Extract Plain Text File
-        elif 'text/plain' in mime_type:
+        elif 'text/plain' in mime_type or 'text/csv' in mime_type:
             request = service.files().get_media(fileId=file_id)
             content = request.execute().decode('utf-8')
             
         else:
-            return f"Found '{file_name}', but it is a format ({mime_type}) that Digital Marsh cannot read yet. Please use Google Docs, PDFs, or TXT files."
+            return f"Found '{file_name}', but it is a format ({mime_type}) that Digital Marsh cannot read yet."
 
         # Truncate content to avoid blowing out the AI's context window memory
         max_chars = 15000
         if len(content) > max_chars:
-            content = content[:max_chars] + "\n... [TRUNCATED DUE TO LENGTH]"
+            content = content[:max_chars] + "\n... [TRUNCATED DUE TO LENGTH: Data exceeds AI memory limit.]"
 
         return f"✅ GOOGLE DRIVE MATCH FOUND: '{file_name}'\n\n**Document Content:**\n{content}"
 
