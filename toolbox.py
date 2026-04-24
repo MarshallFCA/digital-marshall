@@ -311,14 +311,23 @@ def search_cartoncloud_order(reference_number):
         client_id = st.secrets["cartoncloud"]["client_id"]
         client_secret = st.secrets["cartoncloud"]["client_secret"]
 
-        # 2. Authenticate and Get Bearer Token
-        auth_url = "https://api.cartoncloud.com/oauth/token" 
+        # 2. Authenticate and Get Bearer Token (Using HTTP Basic Auth and /uaa/ path)
+        auth_url = "https://api.cartoncloud.com/uaa/oauth/token" 
         auth_payload = {
-            "grant_type": "client_credentials",
-            "client_id": client_id,
-            "client_secret": client_secret
+            "grant_type": "client_credentials"
         }
-        auth_response = requests.post(auth_url, data=auth_payload)
+        auth_headers = {
+            "Accept-Version": "1",
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        
+        # requests.auth handles the {clientId}:{clientSecret} encoding automatically
+        auth_response = requests.post(
+            auth_url, 
+            data=auth_payload, 
+            headers=auth_headers, 
+            auth=(client_id, client_secret)
+        )
         auth_response.raise_for_status()
         access_token = auth_response.json().get("access_token")
 
