@@ -431,6 +431,7 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
         company_id = 53031 
 
         # 3. The Ping Function (Runs for a single row)
+        # 3. The Ping Function (Runs for a single row)
         def fetch_route(index, row):
             # Dynamic Column Mapping
             to_sub = get_val(row, ["Destination", "To Suburb", "To", "Suburb"], "")
@@ -496,22 +497,24 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
                 
                 valid_routes = []
                 for r in routes:
-                    carrier_node = r.get('carrier', {})
-                    raw_carrier_name = carrier_node.get('name', 'Unknown')
+                    raw_carrier_name = r.get('carrier', {}).get('name', 'Unknown')
                     
                     # FILTER: Check against user's excluded carriers
                     if any(ex.lower() in raw_carrier_name.lower() for ex in excluded_carriers):
                         continue
                         
-                    # EXTRACT: Account Name & Service
-                    acc_node = carrier_node.get('account', {})
-                    acc_name = acc_node.get('name') or acc_node.get('accountName') or acc_node.get('accountCode') or ''
+                    # EXTRACT: Account Name & Service (Corrected JSON Path)
+                    acc_node = r.get('companyCarrierAccount') or r.get('carrierAccount') or {}
+                    acc_name = acc_node.get('name') or acc_node.get('accountCode') or ''
+                    
                     service_name = r.get('companyCarrierAccountService', {}).get('name') or r.get('carrierService', {}).get('name') or ''
                     
                     # Construct transparent display name
                     display_name = raw_carrier_name
-                    if service_name: display_name += f" - {service_name}"
-                    if acc_name: display_name += f" [{acc_name}]"
+                    if service_name: 
+                        display_name += f" - {service_name}"
+                    if acc_name: 
+                        display_name += f" [{acc_name}]"
 
                     c_total = r.get('consignmentTotal') or {}
                     
