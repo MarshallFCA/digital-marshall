@@ -23,33 +23,39 @@ st.set_page_config(page_title="Blessed Oracle of Freight", page_icon="🚀", lay
 # --- CUSTOM CSS: BRIGHT NASA CONTROL CENTER ---
 st.markdown("""
     <style>
+    /* Import Poppins from Google Fonts */
+    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700;900&display=swap');
+
+    /* Globally apply Poppins to all standard text elements without breaking icons */
+    .stApp, p, h1, h2, h3, h4, h5, h6, li, label, input, button, .stMarkdown, div[data-testid="stText"] {
+        font-family: 'Poppins', sans-serif !important;
+    }
+
     .stApp {
         background-color: #ffffff;
     }
     .main-header {
-        font-family: 'Arial', sans-serif;
         color: #0b3d91; /* NASA Blue */
         font-weight: 900;
         text-transform: uppercase;
         letter-spacing: 2px;
     }
     .sub-header {
-        font-family: 'Courier New', Courier, monospace;
         color: #fc3d21; /* NASA Red */
-        font-weight: bold;
+        font-weight: 700;
     }
     .telemetry-header {
-        font-family: 'Courier New', Courier, monospace;
         color: #0b3d91;
-        font-weight: bold;
+        font-weight: 700;
         border-bottom: 2px solid #0b3d91;
         padding-bottom: 5px;
         margin-bottom: 15px;
+        text-transform: uppercase;
     }
     .status-text {
-        font-family: 'Courier New', Courier, monospace;
         font-size: 14px;
         margin-bottom: 8px;
+        font-weight: 400;
     }
     </style>
 """, unsafe_allow_html=True)
