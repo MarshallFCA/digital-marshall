@@ -379,6 +379,26 @@ def search_cartoncloud_order(reference_number: str) -> str:
 # ==========================================
 # TOOL 6: MASS MATRIX PROCESSOR (FLIGHT COMPUTER)
 # ==========================================
+@st.cache_data(ttl=86400, show_spinner=False)
+def fetch_australian_postcodes():
+    import requests
+    import csv
+    url = "https://raw.githubusercontent.com/matthewproctor/australianpostcodes/master/australian_postcodes.csv"
+    pc_to_suburb = {}
+    try:
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            lines = resp.text.splitlines()
+            reader = csv.DictReader(lines)
+            for row in reader:
+                pc = row.get('postcode')
+                loc = row.get('locality')
+                if pc and loc and pc not in pc_to_suburb:
+                    pc_to_suburb[pc] = loc.upper()
+    except:
+        pass
+    return pc_to_suburb
+
 def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
     import pandas as pd
     import io
@@ -390,12 +410,15 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
     try:
         # 1. Read the CSV Payload
         df = pd.read_csv(io.BytesIO(file_bytes))
+        pc_db = fetch_australian_postcodes()
         
-        # Verify required columns exist
-        required_cols = ["Suburb", "Postcode", "Pallet Qty", "Weight"]
-        if not all(col in df.columns for col in required_cols):
-            return False, f"CSV Error: Missing required columns. Ensure your CSV has: {', '.join(required_cols)}"
-
+        # Helper function to dynamically map messy client columns
+        def get_val(row_s, possible_cols, default=""):
+            for col in possible_cols:
+                if col in row_s and pd.notna(row_s[col]):
+                    return str(row_s[col]).strip()
+            return default
+            
         # 2. Setup Dispatch Date (Next Business Day)
         next_day = datetime.now() + timedelta(days=1)
         while next_day.weekday() >= 5:  
@@ -405,26 +428,60 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
         token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
         url = "https://live.machship.com/apiv2/routes/returnroutes"
         headers = {"token": token, "Content-Type": "application/json"}
-        # Fallback company ID if you have multiple, using the one from your script
         company_id = 53031 
 
         # 3. The Ping Function (Runs for a single row)
         def fetch_route(index, row):
-            to_sub = str(row.get("Suburb", "")).strip()
-            to_post = str(row.get("Postcode", "")).strip().replace(".0", "")
-            qty = int(row.get("Pallet Qty", 1))
-            weight = float(row.get("Weight", 200))
+            # Dynamic Column Mapping
+            to_sub = get_val(row, ["Destination", "To Suburb", "To", "Suburb"], "")
+            to_post = get_val(row, ["To PC", "Postcode"], "").replace(".0", "")
             
+            from_sub = get_val(row, ["From", "From Suburb", "Origin"], "Seaford")
+            from_post = get_val(row, ["From PC", "Origin Postcode"], "3198").replace(".0", "")
+            
+            # Suburb Reverse Lookup (Fixes abbreviations like 'SYDN' or 'MELB')
+            if len(from_sub) <= 4 and from_post in pc_db:
+                from_sub = pc_db[from_post]
+            if len(to_sub) <= 4 and to_post in pc_db:
+                to_sub = pc_db[to_post]
+
+            # Freight Data Extraction
+            qty_items = float(get_val(row, ["Items"], 0))
+            qty_pallets = float(get_val(row, ["Pallets"], 0))
+            weight = float(get_val(row, ["KGS", "Weight", "Total Weight", "Charged KGs"], 0))
+            cubic = float(get_val(row, ["Cubic", "Volume"], 0))
+
+            # Determine Item Type
+            if qty_pallets > 0:
+                qty = int(qty_pallets)
+                item_name = "Pallet"
+            elif qty_items > 0:
+                qty = int(qty_items)
+                item_name = "Carton"
+            else:
+                qty = 1
+                item_name = "Item"
+
+            # Failsafe against empty rows causing divide-by-zero crashes
+            if qty <= 0: qty = 1
+            weight_per_item = weight / qty if weight > 0 else 1.0
+            cubic_per_item = cubic / qty if cubic > 0 else 0.001
+            
+            # Machship requires dimensions. We perfectly math the cubic volume back into CM.
+            side_m = cubic_per_item ** (1/3)
+            side_cm = int(side_m * 100)
+            if side_cm < 1: side_cm = 10
+
             payload = {
                 "companyId": company_id,
-                "fromLocation": {"suburb": "Seaford", "postcode": "3198"}, # Defaulting origin, can be dynamic later
+                "fromLocation": {"suburb": from_sub, "postcode": from_post},
                 "toLocation": {"suburb": to_sub, "postcode": to_post},
                 "items": [{
                     "itemType": "Item", 
-                    "name": "Pallet",
+                    "name": item_name,
                     "quantity": qty, 
-                    "weight": weight,
-                    "length": 120, "width": 120, "height": 130 # Standard dimensions
+                    "weight": weight_per_item,
+                    "length": side_cm, "width": side_cm, "height": side_cm 
                 }],
                 "despatchDateTimeLocal": dispatch_date
             }
@@ -432,64 +489,88 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
             try:
                 resp = requests.post(url, headers=headers, json=payload, timeout=15)
                 if resp.status_code != 200:
-                    return index, "API Error", None, None
+                    return index, "API Error", []
 
                 data = resp.json()
                 routes = data.get('object', {}).get('routes', [])
                 
                 valid_routes = []
                 for r in routes:
-                    carrier_name = r.get('carrier', {}).get('name', 'Unknown')
+                    carrier_node = r.get('carrier', {})
+                    raw_carrier_name = carrier_node.get('name', 'Unknown')
                     
                     # FILTER: Check against user's excluded carriers
-                    if any(ex.lower() in carrier_name.lower() for ex in excluded_carriers):
+                    if any(ex.lower() in raw_carrier_name.lower() for ex in excluded_carriers):
                         continue
+                        
+                    # EXTRACT: Account Name & Service
+                    acc_node = carrier_node.get('account', {})
+                    acc_name = acc_node.get('name') or acc_node.get('accountName') or acc_node.get('accountCode') or ''
+                    service_name = r.get('companyCarrierAccountService', {}).get('name') or r.get('carrierService', {}).get('name') or ''
+                    
+                    # Construct transparent display name
+                    display_name = raw_carrier_name
+                    if service_name: display_name += f" - {service_name}"
+                    if acc_name: display_name += f" [{acc_name}]"
 
                     c_total = r.get('consignmentTotal') or {}
                     
                     # Apply dynamic GP margin to base cost
                     base_cost = c_total.get('totalCost')
                     if base_cost is not None:
-                        # Math: Cost / (1 - Margin) = Sell
                         sell_price = float(base_cost) / (1 - (margin_target / 100))
                     else:
-                        # Fallback to Machship's default sell price if Cost is hidden
                         sell_price = c_total.get('totalSellPrice')
 
                     if sell_price is not None:
                         valid_routes.append({
-                            'carrier': carrier_name,
+                            'raw_carrier': raw_carrier_name,
+                            'display': display_name,
                             'price': float(sell_price)
                         })
 
                 if valid_routes:
-                    # Sort by price to get Top 3
+                    # Sort by price
                     valid_routes.sort(key=lambda x: x['price'])
-                    top_carrier = valid_routes[0]['carrier']
-                    top_price = valid_routes[0]['price']
                     
-                    # Grab alternative if exists
-                    alt_carrier = valid_routes[1]['carrier'] if len(valid_routes) > 1 else "N/A"
-                    alt_price = valid_routes[1]['price'] if len(valid_routes) > 1 else "N/A"
+                    # Ensure we grab 3 unique carriers (not just 3 services from the same carrier)
+                    unique_options = []
+                    seen_carriers = set()
+                    for vr in valid_routes:
+                        if vr['raw_carrier'] not in seen_carriers:
+                            seen_carriers.add(vr['raw_carrier'])
+                            unique_options.append(vr)
+                        if len(unique_options) == 3:
+                            break
                     
-                    return index, top_carrier, f"${top_price:.2f}", alt_carrier
+                    return index, "Success", unique_options
                     
-                return index, "No Valid Routes", None, None
+                return index, "No Valid Routes", []
                 
             except Exception as e:
-                return index, f"Crash: {str(e)}", None, None
+                return index, f"Crash: {str(e)}", []
 
         # 4. The Multi-Threaded Swarm
-        results = []
-        # Using 15 workers so we don't accidentally DDOS Machship
         with ThreadPoolExecutor(max_workers=15) as executor:
             future_to_row = {executor.submit(fetch_route, index, row): index for index, row in df.iterrows()}
             
             for future in as_completed(future_to_row):
-                idx, carrier, price, alt = future.result()
-                df.at[idx, "Selected Carrier"] = carrier
-                df.at[idx, "Quoted Price"] = price
-                df.at[idx, "Alternative Option"] = alt
+                idx, status, options = future.result()
+                
+                # We append the new data directly next to the original client columns!
+                if status != "Success":
+                    df.at[idx, "Routing Status"] = status
+                else:
+                    df.at[idx, "Routing Status"] = "Success"
+                    if len(options) > 0:
+                        df.at[idx, "Option 1 (Cheapest)"] = options[0]['display']
+                        df.at[idx, "Option 1 Price"] = f"${options[0]['price']:.2f}"
+                    if len(options) > 1:
+                        df.at[idx, "Option 2 (Alternative)"] = options[1]['display']
+                        df.at[idx, "Option 2 Price"] = f"${options[1]['price']:.2f}"
+                    if len(options) > 2:
+                        df.at[idx, "Option 3 (Alternative)"] = options[2]['display']
+                        df.at[idx, "Option 3 Price"] = f"${options[2]['price']:.2f}"
 
         return True, df
 
