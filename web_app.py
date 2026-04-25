@@ -249,7 +249,7 @@ if prompt := st.chat_input("Input query or command..."):
                     "type": "function",
                     "function": {
                         "name": "search_and_read_google_drive",
-                        "description": "Searches the company Google Drive and reads the contents of spreadsheets, PDFs, and documents. Use this whenever the user asks about a specific file, spreadsheet, or SOP.",
+                        "description": "Use this tool FIRST when searching for the status of a freight consignment, tracking number, or alphanumeric reference (e.g., FCU000071, MS12345).",
                         "parameters": {
                             "type": "object",
                             "properties": {
