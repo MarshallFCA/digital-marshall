@@ -17,16 +17,51 @@ PINECONE_INDEX_NAME = "digital-marsh"
 GOOGLE_CLIENT_ID = st.secrets["GOOGLE_CLIENT_ID"]
 GOOGLE_CLIENT_SECRET = st.secrets["GOOGLE_CLIENT_SECRET"]
 
-# 1. Interface Initialisation
-st.set_page_config(page_title="Digital Marshall", page_icon="🗄️", layout="centered")
+# 1. Interface Initialisation (NASA THEME)
+st.set_page_config(page_title="Blessed Oracle of Freight", page_icon="🚀", layout="wide")
+
+# --- CUSTOM CSS: BRIGHT NASA CONTROL CENTER ---
+st.markdown("""
+    <style>
+    .stApp {
+        background-color: #ffffff;
+    }
+    .main-header {
+        font-family: 'Arial', sans-serif;
+        color: #0b3d91; /* NASA Blue */
+        font-weight: 900;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+    }
+    .sub-header {
+        font-family: 'Courier New', Courier, monospace;
+        color: #fc3d21; /* NASA Red */
+        font-weight: bold;
+    }
+    .telemetry-header {
+        font-family: 'Courier New', Courier, monospace;
+        color: #0b3d91;
+        font-weight: bold;
+        border-bottom: 2px solid #0b3d91;
+        padding-bottom: 5px;
+        margin-bottom: 15px;
+    }
+    .status-text {
+        font-family: 'Courier New', Courier, monospace;
+        font-size: 14px;
+        margin-bottom: 8px;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 # --- GOOGLE SSO BOUNCER ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
 if not st.session_state.logged_in:
-    st.title("Digital Marshall")
-    st.warning("Please log in with your FCA account to access the Forensic Data Terminal.")
+    st.markdown("<h1 class='main-header'>Blessed Oracle of Freight</h1>", unsafe_allow_html=True)
+    st.markdown("<h3 class='sub-header'>FCA Mission Control - Authentication Required</h3>", unsafe_allow_html=True)
+    st.warning("Please log in with your FCA clearance to access the terminal.")
     
     oauth2 = OAuth2Component(
         GOOGLE_CLIENT_ID, 
@@ -57,14 +92,14 @@ if not st.session_state.logged_in:
             st.query_params.clear() 
             st.rerun() 
         else:
-            st.error(f"Access Denied. {user_email} is not an authorized FCA account.")
+            st.error(f"Access Denied. {user_email} lacks FCA clearance.")
             
     st.stop()
 
 # --- THE TERMINAL INTERFACE ---
-st.title("Digital Marshall")
-st.subheader("FCA Forensic Data Terminal")
-st.success(f"Secure session active: {st.session_state.user_email}")
+st.markdown("<h1 class='main-header'>Blessed Oracle of Freight</h1>", unsafe_allow_html=True)
+st.markdown("<h3 class='sub-header'>FCA Mission Control Terminal</h3>", unsafe_allow_html=True)
+st.success(f"Secure connection established: {st.session_state.user_email}")
 
 # 2. Database Connection (Cached)
 @st.cache_resource
@@ -98,11 +133,34 @@ def extract_text_from_file(uploaded_file):
         text = f"Error extracting document data: {str(e)}"
     return text
 
-# 4. Interface Layout: Sidebar for Uploads
+# 4. Interface Layout: Sidebar Telemetry
 with st.sidebar:
-    st.header("Data Ingestion")
-    st.markdown("Upload carrier invoices or consignment data for forensic analysis.")
-    uploaded_file = st.file_uploader("Upload PDF, CSV, or Excel", type=['pdf', 'csv', 'txt', 'xlsx', 'xls'])
+    st.markdown("<div class='telemetry-header'>🚀 SYSTEM TELEMETRY</div>", unsafe_allow_html=True)
+    
+    # Ping Secrets to determine status
+    x_stat = "🟢" if "XERO_CLIENT_ID" in st.secrets.get("xero", {}) else "🔴"
+    m_stat = "🟢" if "MACHSHIP_API_TOKEN" in st.secrets.get("machship", {}) else "🔴"
+    t_stat = "🟢" if "TRANSVIRTUAL_API_KEY" in st.secrets.get("transvirtual", {}) else "🔴"
+    c_stat = "🟢" if "tenant_id" in st.secrets.get("cartoncloud", {}) else "🔴"
+    g_stat = "🟢" if "project_id" in st.secrets.get("gcp_service_account", {}) else "🔴"
+    
+    st.markdown(f"<div class='status-text'>{x_stat} <b>XERO</b> (Financial)</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='status-text'>{m_stat} <b>MACHSHIP</b> (Routing)</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='status-text'>{t_stat} <b>TRANSVIRTUAL</b> (Live)</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='status-text'>{c_stat} <b>CARTON CLOUD</b> (WMS)</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='status-text'>{g_stat} <b>GOOGLE DRIVE</b> (Docs)</div>", unsafe_allow_html=True)
+    
+    if all(s == "🟢" for s in [x_stat, m_stat, t_stat, c_stat, g_stat]):
+        st.success("STATUS: ALL SYSTEMS NOMINAL")
+    else:
+        st.error("STATUS: TELEMETRY ANOMALY DETECTED")
+        
+    st.divider()
+    st.markdown("<div class='telemetry-header'>📂 DATA INGESTION</div>", unsafe_allow_html=True)
+    st.markdown("Upload carrier data for payload analysis.")
+    uploaded_file = st.file_uploader("", type=['pdf', 'csv', 'txt', 'xlsx', 'xls'])
+    if uploaded_file:
+        st.info(f"Payload acquired: {uploaded_file.name}")
 
 # 5. Session History
 if "messages" not in st.session_state:
@@ -113,7 +171,7 @@ for message in st.session_state.messages:
         st.markdown(message["content"])
 
 # 6. Query Execution
-if prompt := st.chat_input("Input query or command..."):
+if prompt := st.chat_input("Transmit command to the Oracle..."):
     
     file_context = ""
     file_text = ""
@@ -153,7 +211,7 @@ if prompt := st.chat_input("Input query or command..."):
                 historical_context += f"Marshall's Action: {metadata.get('marshall_response', '')}\n"
 
             # C. Logic Engine Execution
-            system_prompt = f"""You are Digital Marsh, the AI incarnation of Marshall Hughes (Founder, Freight Companies Australia). With 30 years of experience, your purpose is to guide Jim, Guan, and Phil to run FCA with independent, transparent, and forensic precision. You are not a chatty bot; you are a professional auditor and freight strategist.
+            system_prompt = f"""You are the Blessed Oracle of Freight, the AI incarnation of Marshall Hughes (Founder, Freight Companies Australia). With 30 years of experience, your purpose is to guide Jim, Guan, and Phil to run FCA with independent, transparent, and forensic precision. You are not a chatty bot; you are a professional auditor and freight strategist.
 
             NEW SYSTEM CAPABILITIES:
             You have live API access to Machship, Transvirtual, Xero, the Company Google Drive, and Carton Cloud (WMS). Use Carton Cloud to check warehouse order statuses and dispatch details. 
@@ -180,7 +238,7 @@ if prompt := st.chat_input("Input query or command..."):
                * The 17% Rule: Always apply a 17% GP target to the verified carrier cost.
                * Prohibition on Hallucination: Never guess. Do not invent data. If you cannot solve a problem, advise the user that you cannot solve the problem.
                * Linguistics: Utilise Australian/British English exclusively. Do not use the em dash.
-            9. The Hunt Protocol: If a user asks for the status of a reference number (e.g., FCU000071), you must autonomously search Machship, Transvirtual, and Carton Cloud. If the first tool returns no result, DO NOT stop. Execute the next tool. Only report failure if all three databases come up empty.
+            9. THE HUNT PROTOCOL: If a user asks for the status of a reference number (e.g., FCU000071), you must autonomously search Machship, Transvirtual, and Carton Cloud. If the first tool returns no result, DO NOT stop. Execute the next tool. Only report failure if all three databases come up empty.
 
             CRITICAL RAG INSTRUCTIONS:
             1. "Context (Sent to Marshall)" is the email sent TO Marshall.
@@ -215,13 +273,13 @@ if prompt := st.chat_input("Input query or command..."):
                     "type": "function",
                     "function": {
                         "name": "search_machship_connote",
-                        "description": "Searches Machship for a consignment note (connote) and returns booking, routing, and pricing details.",
+                        "description": "Use this tool FIRST when searching for the status of a freight consignment, tracking number, or alphanumeric reference (e.g., FCU000071, MS12345). Returns booking, routing, and pricing details.",
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "connote_number": {
                                     "type": "string",
-                                    "description": "The Machship consignment number (e.g., MS123456)."
+                                    "description": "The Machship consignment number (e.g., MS123456) or alphanumeric reference."
                                 }
                             },
                             "required": ["connote_number"]
@@ -249,7 +307,7 @@ if prompt := st.chat_input("Input query or command..."):
                     "type": "function",
                     "function": {
                         "name": "search_and_read_google_drive",
-                        "description": "Use this tool FIRST when searching for the status of a freight consignment, tracking number, or alphanumeric reference (e.g., FCU000071, MS12345).",
+                        "description": "Searches the company Google Drive and reads the contents of spreadsheets, PDFs, and documents. Use this whenever the user asks about a specific file, spreadsheet, or SOP.",
                         "parameters": {
                             "type": "object",
                             "properties": {
@@ -300,7 +358,7 @@ if prompt := st.chat_input("Input query or command..."):
 
             # DYNAMIC TOOL EXECUTION (SCALABILITY UPGRADE)
             if response_message.tool_calls:
-                message_placeholder.markdown("*(Digital Marsh is auditing live operational data...)*")
+                message_placeholder.markdown("*(Oracle is polling telemetry data...)*")
                 
                 api_messages.append(response_message)
                 
@@ -309,13 +367,8 @@ if prompt := st.chat_input("Input query or command..."):
                     function_args = json.loads(tool_call.function.arguments)
                     
                     try:
-                        # Matches AI request directly to the toolbox.py function
                         target_function = getattr(toolbox, function_name)
                         function_response = target_function(**function_args)
-                        
-                        # --- THE MASTER X-RAY ---
-                        st.error(f"X-RAY [{function_name}]: {function_response}")
-                        
                     except AttributeError:
                         function_response = f"Tool Execution Crash: Module '{function_name}' is not registered in the toolbox."
                     except Exception as e:
@@ -341,77 +394,4 @@ if prompt := st.chat_input("Input query or command..."):
             st.session_state.messages.append({"role": "assistant", "content": full_response})
             
         except Exception as e:
-            message_placeholder.error(f"🚨 SYSTEM ERROR: {str(e)}")
-
-
-# ==========================================
-# TOOL 3: TRANSVIRTUAL CONSIGNMENT SEARCH
-# ==========================================
-def search_transvirtual_connote(connote_number: str) -> str:
-    import json
-    import requests
-    import streamlit as st
-
-    try:
-        # 1. Map to the nested TOML structure
-        token = st.secrets["transvirtual"]["TRANSVIRTUAL_API_KEY"]
-        connote_number = connote_number.strip().upper()
-
-        headers = {
-            "Authorization": token, 
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
-
-        # STEP 1: Fetch Consignment Details (The Booking Data)
-        url_query = "https://api.transvirtual.com.au/api/ConsignmentQuery"
-        response_query = requests.post(url_query, headers=headers, json={"ConsignmentNumber": connote_number}, timeout=15)
-        full_data = response_query.json().get("Data", {}) if response_query.status_code == 200 else {}
-
-        # STEP 2: The Tracking Extraction
-        url_status = "https://api.transvirtual.com.au/api/ConsignmentStatus"
-        tracking_data = None
-        tracking_log = []
-
-        # 1st Attempt: Standard shape
-        payload_status = {"Number": connote_number}
-        response_status = requests.post(url_status, headers=headers, json=payload_status, timeout=15)
-        
-        if response_status.status_code == 200 and "Missing" not in response_status.text:
-            tracking_data = response_status.json().get("Data", response_status.json())
-        else:
-            tracking_log.append(f"Standard Payload Failed: HTTP {response_status.status_code}")
-            
-            # Fallback: The 4 most common enterprise payload shapes
-            test_payloads = [
-                ("Plural Array", {"ConsignmentNumbers": [connote_number]}),
-                ("List Object", {"List": [connote_number]}),
-                ("Tracking Object", {"TrackingNumbers": [connote_number]}),
-                ("Number Array", {"Numbers": [connote_number]})
-            ]
-            
-            for shape_name, payload in test_payloads:
-                resp = requests.post(url_status, headers=headers, json=payload, timeout=15)
-                if resp.status_code == 200 and "Missing" not in resp.text:
-                    tracking_data = resp.json()
-                    tracking_log.append(f"✅ Success with shape: {shape_name}")
-                    break
-                else:
-                    tracking_log.append(f"❌ {shape_name} -> HTTP {resp.status_code}")
-
-        # Combine the Data for Digital Marsh
-        combined_matrix = {
-            "ConsignmentDetails": full_data,
-            "TrackingScans": tracking_data if tracking_data else "Failed tracking X-Ray: " + " | ".join(tracking_log)
-        }
-
-        raw_matrix = json.dumps(combined_matrix, indent=2)
-
-        return f"✅ Transvirtual Record: {connote_number}\n\n**Raw Data Available to AI:**\n```json\n{raw_matrix}\n```"
-
-    except requests.exceptions.Timeout:
-        return "🚨 Transvirtual API Error: The server timed out."
-    except Exception as e:
-        return f"🚨 Transvirtual API Crash: {str(e)}"
-
-
+            message_placeholder.error(f"🚨 SYSTEM ANOMALY: {str(e)}")
