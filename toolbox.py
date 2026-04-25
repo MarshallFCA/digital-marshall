@@ -376,4 +376,122 @@ def search_cartoncloud_order(reference_number: str) -> str:
     except Exception as e:
         return f"🚨 Carton Cloud API Error: {str(e)}"
 
+# ==========================================
+# TOOL 6: MASS MATRIX PROCESSOR (FLIGHT COMPUTER)
+# ==========================================
+def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
+    import pandas as pd
+    import io
+    import requests
+    import streamlit as st
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from datetime import datetime, timedelta
 
+    try:
+        # 1. Read the CSV Payload
+        df = pd.read_csv(io.BytesIO(file_bytes))
+        
+        # Verify required columns exist
+        required_cols = ["Suburb", "Postcode", "Pallet Qty", "Weight"]
+        if not all(col in df.columns for col in required_cols):
+            return False, f"CSV Error: Missing required columns. Ensure your CSV has: {', '.join(required_cols)}"
+
+        # 2. Setup Dispatch Date (Next Business Day)
+        next_day = datetime.now() + timedelta(days=1)
+        while next_day.weekday() >= 5:  
+            next_day += timedelta(days=1)
+        dispatch_date = next_day.strftime("%Y-%m-%dT09:00:00")
+
+        token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
+        url = "https://live.machship.com/apiv2/routes/returnroutes"
+        headers = {"token": token, "Content-Type": "application/json"}
+        # Fallback company ID if you have multiple, using the one from your script
+        company_id = 53031 
+
+        # 3. The Ping Function (Runs for a single row)
+        def fetch_route(index, row):
+            to_sub = str(row.get("Suburb", "")).strip()
+            to_post = str(row.get("Postcode", "")).strip().replace(".0", "")
+            qty = int(row.get("Pallet Qty", 1))
+            weight = float(row.get("Weight", 200))
+            
+            payload = {
+                "companyId": company_id,
+                "fromLocation": {"suburb": "Seaford", "postcode": "3198"}, # Defaulting origin, can be dynamic later
+                "toLocation": {"suburb": to_sub, "postcode": to_post},
+                "items": [{
+                    "itemType": "Item", 
+                    "name": "Pallet",
+                    "quantity": qty, 
+                    "weight": weight,
+                    "length": 120, "width": 120, "height": 130 # Standard dimensions
+                }],
+                "despatchDateTimeLocal": dispatch_date
+            }
+
+            try:
+                resp = requests.post(url, headers=headers, json=payload, timeout=15)
+                if resp.status_code != 200:
+                    return index, "API Error", None, None
+
+                data = resp.json()
+                routes = data.get('object', {}).get('routes', [])
+                
+                valid_routes = []
+                for r in routes:
+                    carrier_name = r.get('carrier', {}).get('name', 'Unknown')
+                    
+                    # FILTER: Check against user's excluded carriers
+                    if any(ex.lower() in carrier_name.lower() for ex in excluded_carriers):
+                        continue
+
+                    c_total = r.get('consignmentTotal') or {}
+                    
+                    # Apply dynamic GP margin to base cost
+                    base_cost = c_total.get('totalCost')
+                    if base_cost is not None:
+                        # Math: Cost / (1 - Margin) = Sell
+                        sell_price = float(base_cost) / (1 - (margin_target / 100))
+                    else:
+                        # Fallback to Machship's default sell price if Cost is hidden
+                        sell_price = c_total.get('totalSellPrice')
+
+                    if sell_price is not None:
+                        valid_routes.append({
+                            'carrier': carrier_name,
+                            'price': float(sell_price)
+                        })
+
+                if valid_routes:
+                    # Sort by price to get Top 3
+                    valid_routes.sort(key=lambda x: x['price'])
+                    top_carrier = valid_routes[0]['carrier']
+                    top_price = valid_routes[0]['price']
+                    
+                    # Grab alternative if exists
+                    alt_carrier = valid_routes[1]['carrier'] if len(valid_routes) > 1 else "N/A"
+                    alt_price = valid_routes[1]['price'] if len(valid_routes) > 1 else "N/A"
+                    
+                    return index, top_carrier, f"${top_price:.2f}", alt_carrier
+                    
+                return index, "No Valid Routes", None, None
+                
+            except Exception as e:
+                return index, f"Crash: {str(e)}", None, None
+
+        # 4. The Multi-Threaded Swarm
+        results = []
+        # Using 15 workers so we don't accidentally DDOS Machship
+        with ThreadPoolExecutor(max_workers=15) as executor:
+            future_to_row = {executor.submit(fetch_route, index, row): index for index, row in df.iterrows()}
+            
+            for future in as_completed(future_to_row):
+                idx, carrier, price, alt = future.result()
+                df.at[idx, "Selected Carrier"] = carrier
+                df.at[idx, "Quoted Price"] = price
+                df.at[idx, "Alternative Option"] = alt
+
+        return True, df
+
+    except Exception as e:
+        return False, f"Matrix Engine Crash: {str(e)}"
