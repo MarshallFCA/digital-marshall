@@ -273,6 +273,7 @@ with tab_terminal:
                        * Prohibition on Hallucination: Never guess. Do not invent data. If you cannot solve a problem, advise the user that you cannot solve the problem.
                        * Linguistics: Utilise Australian/British English exclusively. Do not use the em dash.
                     9. THE HUNT PROTOCOL: If a user asks for the status of a reference number (e.g., FCU000071), you must autonomously search Machship, Transvirtual, and Carton Cloud. If the first tool returns no result, DO NOT stop. Execute the next tool. Only report failure if all three databases come up empty.
+                    10. HYBRID GEMINI PROTOCOL: If the user asks you to analyze a heavy dataset, audit a large file, or create a spreadsheet from an uploaded CSV/Excel file, DO NOT try to read the file yourself. You must immediately execute the `hybrid_gemini_sheet_generator` tool, passing the user's instructions and a logical title for the new sheet.
 
                     CRITICAL RAG INSTRUCTIONS:
                     1. "Context (Sent to Marshall)" is the email sent TO Marshall.
@@ -369,7 +370,28 @@ with tab_terminal:
                                     "required": ["reference_number"]
                                 }
                             }
-                        }   
+                        },
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "hybrid_gemini_sheet_generator",
+                                "description": "Uses Gemini 1.5 Pro to analyze massive datasets (CSV/Excel) currently uploaded in the system, extracts specific information based on instructions, and generates a new Google Sheet with the results.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "instructions": {
+                                            "type": "string",
+                                            "description": "Specific instructions on what data to extract, analyze, or format from the uploaded file."
+                                        },
+                                        "target_sheet_name": {
+                                            "type": "string",
+                                            "description": "The title for the newly generated Google Sheet."
+                                        }
+                                    },
+                                    "required": ["instructions", "target_sheet_name"]
+                                }
+                            }
+                        }
                     ]
                     
                     api_messages = [{"role": "system", "content": system_prompt}]
@@ -457,28 +479,4 @@ with tab_matrix:
         if st.button("INITIATE MASS PING", use_container_width=True):
             with st.spinner("Flight Computer is mass-pinging Machship... Please stand by."):
                 file_bytes = matrix_file.getvalue()
-                success, result = toolbox.generate_bulk_matrix(file_bytes, margin_target, excluded_carriers)
-                
-                if success:
-                    st.session_state.latest_matrix = result
-                else:
-                    st.error(result)
-            
-    st.divider()
-    st.markdown("#### Live Matrix Output")
-    
-    if "latest_matrix" in st.session_state:
-        st.dataframe(st.session_state.latest_matrix, use_container_width=True)
-        
-        # Create downloadable CSV
-        csv_buffer = io.StringIO()
-        st.session_state.latest_matrix.to_csv(csv_buffer, index=False)
-        st.download_button(
-            label="Download Completed Matrix (CSV)",
-            data=csv_buffer.getvalue(),
-            file_name="FCA_Quoted_Matrix.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-    else:
-        st.markdown("*(Matrix projection grid will appear here once executed)*")
+                success, result = toolbox.generate_bulk_matrix(file_bytes, margin_target, excluded
