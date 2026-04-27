@@ -244,7 +244,7 @@ with tab_terminal:
                         historical_context += f"Context (Sent to Marshall): {metadata.get('context', '')}\n"
                         historical_context += f"Marshall's Action: {metadata.get('marshall_response', '')}\n"
 
-                    # C. Logic Engine Execution
+                   # C. Logic Engine Execution
                     system_prompt = f"""You are the Blessed Oracle of Freight, the AI incarnation of Marshall Hughes (Founder, Freight Companies Australia). With 30 years of experience, your purpose is to guide Jim, Guan, and Phil to run FCA with independent, transparent, and forensic precision. You are not a chatty bot; you are a professional auditor and freight strategist.
 
                     NEW SYSTEM CAPABILITIES:
@@ -277,8 +277,135 @@ with tab_terminal:
                     CRITICAL RAG INSTRUCTIONS:
                     1. "Context (Sent to Marshall)" is the email sent TO Marshall.
                     2. "Marshall's Action" is what Marshall wrote back.
-                    3. When asked "Who" holds a role, identify the specific name from email signatures. Do not answer with a
+                    3. When asked "Who" holds a role, identify the specific name from email signatures. Do not answer with a temporary status.
+                    4. If a document is attached in the prompt, analyse its text against the GSOT to deduce the client, carrier, or objective.
+                    5. INVOICE PARSING: Rigorously scan the document's tabular data for "Reference", "Ref", "Caller", or "Job Details" to identify the true client.
+                    
+                    HISTORICAL EMAILS (GSOT):
+                    {historical_context}"""
 
+                    tools = [
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "search_xero_contact",
+                                "description": "Searches Xero for a contact by name and returns their details and outstanding invoice summary.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "contact_name": {
+                                            "type": "string",
+                                            "description": "The name of the company or person to search for in Xero."
+                                        }
+                                    },
+                                    "required": ["contact_name"]
+                                }
+                            }
+                        },
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "search_machship_connote",
+                                "description": "Use this tool FIRST when searching for the status of a freight consignment, tracking number, or alphanumeric reference (e.g., FCU000071, MS12345). Returns booking, routing, and pricing details.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "connote_number": {
+                                            "type": "string",
+                                            "description": "The Machship consignment number (e.g., MS123456) or alphanumeric reference."
+                                        }
+                                    },
+                                    "required": ["connote_number"]
+                                }
+                            }
+                        },
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "search_transvirtual_connote",
+                                "description": "Searches Transvirtual for a consignment note and returns the booking data and live tracking scans.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "connote_number": {
+                                            "type": "string",
+                                            "description": "The Transvirtual consignment number."
+                                        }
+                                    },
+                                    "required": ["connote_number"]
+                                }
+                            }
+                        },
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "search_and_read_google_drive",
+                                "description": "Searches the company Google Drive and reads the contents of spreadsheets, PDFs, and documents. Use this whenever the user asks about a specific file, spreadsheet, or SOP.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "search_query": {
+                                            "type": "string",
+                                            "description": "The name of the file to search for (e.g., 'Rhino Freight Spreadsheet')."
+                                        }
+                                    },
+                                    "required": ["search_query"]
+                                }
+                            }
+                        },
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "search_cartoncloud_order",
+                                "description": "Searches the Carton Cloud Warehouse Management System (WMS) for an outbound order status and contents.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "reference_number": {
+                                            "type": "string",
+                                            "description": "The customer reference number or sale order number (e.g., 'REF-123')."
+                                        }
+                                    },
+                                    "required": ["reference_number"]
+                                }
+                            }
+                        }   
+                    ]
+                    
+                    api_messages = [{"role": "system", "content": system_prompt}]
+
+                    for msg in st.session_state.messages[:-1]:
+                        api_messages.append({"role": msg["role"], "content": msg["content"]})
+
+                    api_messages.append({"role": "user", "content": full_user_query})
+
+                    response = client.chat.completions.create(
+                        model="gpt-4o-mini",
+                        messages=api_messages,
+                        temperature=0.3,
+                        tools=tools,
+                        tool_choice="auto"
+                    )
+                    
+                    response_message = response.choices[0].message
+
+                    # DYNAMIC TOOL EXECUTION (SCALABILITY UPGRADE)
+                    if response_message.tool_calls:
+                        message_placeholder.markdown("*(Oracle is polling telemetry data...)*")
+                        
+                        api_messages.append(response_message)
+                        
+                        for tool_call in response_message.tool_calls:
+                            function_name = tool_call.function.name
+                            function_args = json.loads(tool_call.function.arguments)
+                            
+                            try:
+                                target_function = getattr(toolbox, function_name)
+                                function_response = target_function(**function_args)
+                            except AttributeError:
+                                function_response = f"Tool Execution Crash: Module '{function_name}' is not registered in the toolbox."
+                            except Exception as e:
+                                function_response = f"Tool Execution Crash: {str(e)}"
 # ==========================================
 # CONSOLE 2: MATRIX DASHBOARD (BULK QUOTING)
 # ==========================================
