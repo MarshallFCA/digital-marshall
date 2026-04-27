@@ -129,7 +129,7 @@ def init_clients():
 
 client, index = init_clients()
 
-# 3. Document Extraction Protocol
+# 3. Document Extraction Protocol (PANDAS BYPASS ADDED)
 def extract_text_from_file(uploaded_file):
     text = ""
     try:
@@ -140,13 +140,13 @@ def extract_text_from_file(uploaded_file):
                 if extracted:
                     text += extracted + "\n"
         elif uploaded_file.name.endswith('.csv'):
-            df = pd.read_csv(uploaded_file)
-            text = df.to_string()
+            text = uploaded_file.getvalue().decode('utf-8', errors='replace')
         elif uploaded_file.name.endswith(('.xlsx', '.xls')):
+            uploaded_file.seek(0)
             df = pd.read_excel(uploaded_file)
             text = df.to_string()
         else:
-            text = uploaded_file.getvalue().decode("utf-8")
+            text = uploaded_file.getvalue().decode("utf-8", errors='replace')
     except Exception as e:
         text = f"Error extracting document data: {str(e)}"
     return text
@@ -274,6 +274,7 @@ with tab_terminal:
                        * Linguistics: Utilise Australian/British English exclusively. Do not use the em dash.
                     9. THE HUNT PROTOCOL: If a user asks for the status of a reference number (e.g., FCU000071), you must autonomously search Machship, Transvirtual, and Carton Cloud. If the first tool returns no result, DO NOT stop. Execute the next tool. Only report failure if all three databases come up empty.
                     10. HYBRID GEMINI PROTOCOL: If the user asks you to analyze a heavy dataset, cross-reference multiple files, audit a large file, or create a spreadsheet from uploaded CSV/Excel files, DO NOT try to read the files yourself. You must immediately execute the `hybrid_gemini_sheet_generator` tool, passing the user's instructions and a logical title for the new sheet.
+                    11. TRANSPARENCY PROTOCOL: If any tool returns an error message or crash report (e.g., "HYBRID GEMINI CRASH:" or "Tool Execution Crash:"), you MUST NOT hide it. You must explicitly output the exact error message to the user in your response so they can diagnose the anomaly.
 
                     CRITICAL RAG INSTRUCTIONS:
                     1. "Context (Sent to Marshall)" is the email sent TO Marshall.
