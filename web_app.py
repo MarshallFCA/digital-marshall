@@ -192,10 +192,16 @@ with tab_terminal:
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
+    # --- THE FIX: Create a dedicated chat container BEFORE the input box ---
+    chat_log = st.container()
 
+    # Render historical messages INSIDE the container
+    with chat_log:
+        for message in st.session_state.messages:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
+    # The input box sits BELOW the container
     if prompt := st.chat_input("Transmit command to the Oracle..."):
         
         file_context = ""
@@ -207,17 +213,21 @@ with tab_terminal:
         full_user_query = prompt + file_context
 
         st.session_state.messages.append({"role": "user", "content": prompt + (" (File Attached)" if uploaded_file else "")})
-        with st.chat_message("user"):
-            st.markdown(prompt + (" *(File Attached)*" if uploaded_file else ""))
+        
+        # --- THE FIX: Force new messages to render INSIDE the container above the box ---
+        with chat_log:
+            with st.chat_message("user"):
+                st.markdown(prompt + (" *(File Attached)*" if uploaded_file else ""))
 
-        with st.chat_message("assistant"):
-            message_placeholder = st.empty()
-            
-            try:
-                # A. Vector Conversion
-                search_text = prompt
-                if uploaded_file is not None:
-                    search_text = f"{prompt} {file_text[:500]}" 
+            with st.chat_message("assistant"):
+                message_placeholder = st.empty()
+                
+                try:
+                    # [Keep everything from A. Vector Conversion downwards exactly the same!]
+                    # A. Vector Conversion
+                    search_text = prompt
+                    if uploaded_file is not None:
+                        search_text = f"{prompt} {file_text[:500]}"
 
                 embedded_question = client.embeddings.create(
                     input=search_text, model="text-embedding-3-small"
