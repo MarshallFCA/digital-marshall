@@ -580,7 +580,7 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
         return False, f"Matrix Engine Crash: {str(e)}"
 
 # ==========================================
-# TOOL 7: HYBRID GEMINI SHEET GENERATOR (PANDAS BYPASS ADDED)
+# TOOL 7: HYBRID GEMINI SHEET GENERATOR (AUTO-DETECT ENGINE ADDED)
 # ==========================================
 def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> str:
     import google.generativeai as genai
@@ -612,13 +612,38 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
             else:
                 return f"Error: The uploaded file {uf.name} must be a CSV or Excel spreadsheet for the Gemini Matrix generator."
 
-        # 2. Configure Gemini API (Model patched to flash for maximum compatibility and context window)
+        # 2. Configure Gemini API
         gemini_key = st.secrets.get("GEMINI_API_KEY")
         if not gemini_key:
             return "Error: GEMINI_API_KEY is missing from the telemetry secrets."
 
         genai.configure(api_key=gemini_key)
-        model = genai.GenerativeModel("gemini-1.5-flash")
+        
+        # --- AUTO-DETECT BEST AVAILABLE MODEL ---
+        # Instead of guessing the string, we ask Google exactly what this API key is allowed to use.
+        try:
+            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            
+            if 'models/gemini-1.5-pro-latest' in available_models:
+                target_model = 'gemini-1.5-pro-latest'
+            elif 'models/gemini-1.5-pro' in available_models:
+                target_model = 'gemini-1.5-pro'
+            elif 'models/gemini-1.5-flash-latest' in available_models:
+                target_model = 'gemini-1.5-flash-latest'
+            elif 'models/gemini-1.5-flash' in available_models:
+                target_model = 'gemini-1.5-flash'
+            elif 'models/gemini-pro' in available_models:
+                target_model = 'gemini-pro'
+            elif available_models:
+                target_model = available_models[0].replace('models/', '') # Fallback to whatever is first
+            else:
+                return "Error: No valid text generation models found for this API key."
+                
+            target_model = target_model.replace('models/', '')
+            model = genai.GenerativeModel(target_model)
+            
+        except Exception as model_err:
+            return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {str(model_err)}"
 
         # 3. Formulate the prompt for Gemini
         system_instruction = "You are an enterprise data extraction AI. You will receive instructions and raw data from one or multiple files. You MUST cross-reference the data as instructed and output your final answer as pure CSV text. Do not include markdown formatting. Do not include conversational text."
