@@ -580,7 +580,7 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
         return False, f"Matrix Engine Crash: {str(e)}"
 
 # ==========================================
-# TOOL 7: HYBRID GEMINI SHEET GENERATOR (AUTO-DETECT ENGINE ADDED)
+# TOOL 7: HYBRID GEMINI SHEET GENERATOR (DRIVE FOLDER BYPASS ADDED)
 # ==========================================
 def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> str:
     import google.generativeai as genai
@@ -612,15 +612,13 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
             else:
                 return f"Error: The uploaded file {uf.name} must be a CSV or Excel spreadsheet for the Gemini Matrix generator."
 
-        # 2. Configure Gemini API
+        # 2. Configure Gemini API (Model Auto-Detect)
         gemini_key = st.secrets.get("GEMINI_API_KEY")
         if not gemini_key:
             return "Error: GEMINI_API_KEY is missing from the telemetry secrets."
 
         genai.configure(api_key=gemini_key)
         
-        # --- AUTO-DETECT BEST AVAILABLE MODEL ---
-        # Instead of guessing the string, we ask Google exactly what this API key is allowed to use.
         try:
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
             
@@ -635,7 +633,7 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
             elif 'models/gemini-pro' in available_models:
                 target_model = 'gemini-pro'
             elif available_models:
-                target_model = available_models[0].replace('models/', '') # Fallback to whatever is first
+                target_model = available_models[0].replace('models/', '') 
             else:
                 return "Error: No valid text generation models found for this API key."
                 
@@ -659,7 +657,7 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         gemini_csv_output = gemini_csv_output.replace(forbidden_char, "")
         gemini_csv_output = gemini_csv_output.strip()
 
-        # 5. Connect to Google Sheets via GCP
+        # 5. Connect to Google Sheets & Drive via GCP
         credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
             credentials_dict,
@@ -676,17 +674,28 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         if not values:
             return "Error: Gemini processed the data but returned an empty structural matrix."
 
-        # 6. Create the Spreadsheet
-        spreadsheet_body = {
-            "properties": {
-                "title": target_sheet_name
-            }
-        }
-        request = sheets_service.spreadsheets().create(body=spreadsheet_body, fields="spreadsheetId")
-        response_sheet = request.execute()
-        spreadsheet_id = response_sheet.get("spreadsheetId")
+        # 6. Locate the "BOOF Exports" folder (Bypassing the 403 Root Creation Block)
+        folder_query = "name = 'BOOF Exports' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
+        folder_results = drive_service.files().list(q=folder_query, fields="files(id, name)").execute()
+        folders = folder_results.get('files', [])
+        
+        if not folders:
+            sa_email = credentials_dict.get("client_email", "the service account")
+            return f"🚨 FOLDER NOT FOUND: To bypass Google's security blocks, please create a folder named exactly 'BOOF Exports' in your Google Drive and share it as an Editor with {sa_email}"
 
-        # 7. Write Data to the Sheet
+        parent_folder_id = folders[0]['id']
+
+        # 7. Create the Spreadsheet INSIDE the target folder using Drive API
+        file_metadata = {
+            'name': target_sheet_name,
+            'mimeType': 'application/vnd.google-apps.spreadsheet',
+            'parents': [parent_folder_id]
+        }
+        
+        sheet_file = drive_service.files().create(body=file_metadata, fields='id').execute()
+        spreadsheet_id = sheet_file.get('id')
+
+        # 8. Write Data to the Sheet
         body = {
             "values": values
         }
@@ -697,22 +706,8 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
             body=body
         ).execute()
 
-        # 8. Transfer Ownership / Share
-        human_email = st.session_state.get("user_email", "")
-        if human_email:
-            permission = {
-                "type": "user",
-                "role": "writer",
-                "emailAddress": human_email
-            }
-            drive_service.permissions().create(
-                fileId=spreadsheet_id,
-                body=permission,
-                fields="id"
-            ).execute()
-
         sheet_url = "https://docs.google.com/spreadsheets/d/" + spreadsheet_id
-        return "SUCCESS: Hybrid Gemini multi-file analysis complete. The heavy datasets were processed and piped into a new Google Sheet. You have been granted access. Title: " + target_sheet_name + " | URL: " + sheet_url
+        return "SUCCESS: Hybrid Gemini multi-file analysis complete. The dataset was piped into a new Google Sheet inside your 'BOOF Exports' folder. Title: " + target_sheet_name + " | URL: " + sheet_url
 
     except Exception as e:
         return "HYBRID GEMINI CRASH: " + str(e)
