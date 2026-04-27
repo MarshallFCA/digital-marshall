@@ -580,7 +580,7 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
         return False, f"Matrix Engine Crash: {str(e)}"
 
 # ==========================================
-# TOOL 7: HYBRID GEMINI SHEET GENERATOR (DRIVE FOLDER BYPASS ADDED)
+# TOOL 7: HYBRID GEMINI SHEET GENERATOR (HARDCODED FOLDER ID)
 # ==========================================
 def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> str:
     import google.generativeai as genai
@@ -674,25 +674,21 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         if not values:
             return "Error: Gemini processed the data but returned an empty structural matrix."
 
-        # 6. Locate the "BOOF Exports" folder (Bypassing the 403 Root Creation Block)
-        folder_query = "name = 'BOOF Exports' and mimeType = 'application/vnd.google-apps.folder' and trashed = false"
-        folder_results = drive_service.files().list(q=folder_query, fields="files(id, name)").execute()
-        folders = folder_results.get('files', [])
-        
-        if not folders:
-            sa_email = credentials_dict.get("client_email", "the service account")
-            return f"🚨 FOLDER NOT FOUND: To bypass Google's security blocks, please create a folder named exactly 'BOOF Exports' in your Google Drive and share it as an Editor with {sa_email}"
+        # 6. Use the EXACT Folder ID provided by Mission Control
+        parent_folder_id = "1U8PYxUZMfJql0AYnhc0izJpI0FqveeFR"
 
-        parent_folder_id = folders[0]['id']
-
-        # 7. Create the Spreadsheet INSIDE the target folder using Drive API
+        # 7. Create the Spreadsheet INSIDE the target Shared Drive folder using Drive API
         file_metadata = {
             'name': target_sheet_name,
             'mimeType': 'application/vnd.google-apps.spreadsheet',
             'parents': [parent_folder_id]
         }
         
-        sheet_file = drive_service.files().create(body=file_metadata, fields='id').execute()
+        sheet_file = drive_service.files().create(
+            body=file_metadata, 
+            fields='id',
+            supportsAllDrives=True
+        ).execute()
         spreadsheet_id = sheet_file.get('id')
 
         # 8. Write Data to the Sheet
@@ -706,8 +702,26 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
             body=body
         ).execute()
 
+        # 9. Transfer Ownership / Share (Silent fail if you already have access via Shared Drive)
+        human_email = st.session_state.get("user_email", "")
+        if human_email:
+            try:
+                permission = {
+                    "type": "user",
+                    "role": "writer",
+                    "emailAddress": human_email
+                }
+                drive_service.permissions().create(
+                    fileId=spreadsheet_id,
+                    body=permission,
+                    fields="id",
+                    supportsAllDrives=True
+                ).execute()
+            except Exception:
+                pass 
+
         sheet_url = "https://docs.google.com/spreadsheets/d/" + spreadsheet_id
-        return "SUCCESS: Hybrid Gemini multi-file analysis complete. The dataset was piped into a new Google Sheet inside your 'BOOF Exports' folder. Title: " + target_sheet_name + " | URL: " + sheet_url
+        return "SUCCESS: Hybrid Gemini multi-file analysis complete. The dataset was piped into a new Google Sheet inside your 'BOOF Exports' Shared Drive folder. Title: " + target_sheet_name + " | URL: " + sheet_url
 
     except Exception as e:
         return "HYBRID GEMINI CRASH: " + str(e)
