@@ -612,13 +612,13 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
             else:
                 return f"Error: The uploaded file {uf.name} must be a CSV or Excel spreadsheet for the Gemini Matrix generator."
 
-        # 2. Configure Gemini API (Model string patched to latest)
+        # 2. Configure Gemini API (Model patched to flash for maximum compatibility and context window)
         gemini_key = st.secrets.get("GEMINI_API_KEY")
         if not gemini_key:
             return "Error: GEMINI_API_KEY is missing from the telemetry secrets."
 
         genai.configure(api_key=gemini_key)
-        model = genai.GenerativeModel("gemini-1.5-pro")
+        model = genai.GenerativeModel("gemini-1.5-flash")
 
         # 3. Formulate the prompt for Gemini
         system_instruction = "You are an enterprise data extraction AI. You will receive instructions and raw data from one or multiple files. You MUST cross-reference the data as instructed and output your final answer as pure CSV text. Do not include markdown formatting. Do not include conversational text."
