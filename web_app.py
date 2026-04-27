@@ -176,9 +176,9 @@ with st.sidebar:
     st.divider()
     st.markdown("<div class='telemetry-header'>📂 ORACLE DATA INGESTION</div>", unsafe_allow_html=True)
     st.markdown("Upload documents here to give BOOF contextual memory for the chat.")
-    uploaded_file = st.file_uploader("", type=['pdf', 'csv', 'txt', 'xlsx', 'xls'], key="chat_uploader")
-    if uploaded_file:
-        st.info(f"Payload acquired: {uploaded_file.name}")
+    uploaded_files = st.file_uploader("", type=['pdf', 'csv', 'txt', 'xlsx', 'xls'], key="chat_uploader", accept_multiple_files=True)
+    if uploaded_files:
+        st.info(f"Payload acquired: {len(uploaded_files)} file(s) loaded.")
 
 # --- DUAL CONSOLE SETUP ---
 tab_terminal, tab_matrix = st.tabs(["💬 ORACLE TERMINAL", "📊 MATRIX DASHBOARD"])
@@ -192,32 +192,32 @@ with tab_terminal:
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
-    # --- THE FIX: Create a dedicated chat container BEFORE the input box ---
     chat_log = st.container()
 
-    # Render historical messages INSIDE the container
     with chat_log:
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
 
-    # The input box sits BELOW the container
     if prompt := st.chat_input("Transmit command to the Oracle..."):
         
         file_context = ""
         file_text = ""
-        if uploaded_file is not None:
-            file_text = extract_text_from_file(uploaded_file)
-            file_context = f"\n\nATTACHED DOCUMENT DATA:\n{file_text[:2000]}"
+        if uploaded_files:
+            file_context = "\n\nATTACHED DOCUMENT DATA:\n"
+            for uf in uploaded_files:
+                extracted = extract_text_from_file(uf)
+                file_text += f"=== FILE: {uf.name} ===\n{extracted}\n"
+                # Give OpenAI a taste of each file so it knows what's inside
+                file_context += f"=== FILE: {uf.name} ===\n{extracted[:1000]}\n"
         
         full_user_query = prompt + file_context
 
-        st.session_state.messages.append({"role": "user", "content": prompt + (" (File Attached)" if uploaded_file else "")})
+        st.session_state.messages.append({"role": "user", "content": prompt + (" *(Files Attached)*" if uploaded_files else "")})
         
-        # --- THE FIX: Force new messages to render INSIDE the container above the box ---
         with chat_log:
             with st.chat_message("user"):
-                st.markdown(prompt + (" *(File Attached)*" if uploaded_file else ""))
+                st.markdown(prompt + (" *(Files Attached)*" if uploaded_files else ""))
 
             with st.chat_message("assistant"):
                 message_placeholder = st.empty()
@@ -225,7 +225,7 @@ with tab_terminal:
                 try:
                     # A. Vector Conversion
                     search_text = prompt
-                    if uploaded_file is not None:
+                    if uploaded_files:
                         search_text = f"{prompt} {file_text[:500]}" 
 
                     embedded_question = client.embeddings.create(
@@ -273,7 +273,7 @@ with tab_terminal:
                        * Prohibition on Hallucination: Never guess. Do not invent data. If you cannot solve a problem, advise the user that you cannot solve the problem.
                        * Linguistics: Utilise Australian/British English exclusively. Do not use the em dash.
                     9. THE HUNT PROTOCOL: If a user asks for the status of a reference number (e.g., FCU000071), you must autonomously search Machship, Transvirtual, and Carton Cloud. If the first tool returns no result, DO NOT stop. Execute the next tool. Only report failure if all three databases come up empty.
-                    10. HYBRID GEMINI PROTOCOL: If the user asks you to analyze a heavy dataset, audit a large file, or create a spreadsheet from an uploaded CSV/Excel file, DO NOT try to read the file yourself. You must immediately execute the `hybrid_gemini_sheet_generator` tool, passing the user's instructions and a logical title for the new sheet.
+                    10. HYBRID GEMINI PROTOCOL: If the user asks you to analyze a heavy dataset, cross-reference multiple files, audit a large file, or create a spreadsheet from uploaded CSV/Excel files, DO NOT try to read the files yourself. You must immediately execute the `hybrid_gemini_sheet_generator` tool, passing the user's instructions and a logical title for the new sheet.
 
                     CRITICAL RAG INSTRUCTIONS:
                     1. "Context (Sent to Marshall)" is the email sent TO Marshall.
@@ -375,13 +375,13 @@ with tab_terminal:
                             "type": "function",
                             "function": {
                                 "name": "hybrid_gemini_sheet_generator",
-                                "description": "Uses Gemini 1.5 Pro to analyze massive datasets (CSV/Excel) currently uploaded in the system, extracts specific information based on instructions, and generates a new Google Sheet with the results.",
+                                "description": "Uses Gemini 1.5 Pro to analyze massive datasets (CSV/Excel) currently uploaded in the system (capable of cross-referencing multiple files), extracts specific information based on instructions, and generates a new Google Sheet with the results.",
                                 "parameters": {
                                     "type": "object",
                                     "properties": {
                                         "instructions": {
                                             "type": "string",
-                                            "description": "Specific instructions on what data to extract, analyze, or format from the uploaded file."
+                                            "description": "Specific instructions on what data to extract, analyze, cross-reference, or format from the uploaded file(s)."
                                         },
                                         "target_sheet_name": {
                                             "type": "string",
