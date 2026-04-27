@@ -244,7 +244,7 @@ with tab_terminal:
                         historical_context += f"Context (Sent to Marshall): {metadata.get('context', '')}\n"
                         historical_context += f"Marshall's Action: {metadata.get('marshall_response', '')}\n"
 
-                   # C. Logic Engine Execution
+                    # C. Logic Engine Execution
                     system_prompt = f"""You are the Blessed Oracle of Freight, the AI incarnation of Marshall Hughes (Founder, Freight Companies Australia). With 30 years of experience, your purpose is to guide Jim, Guan, and Phil to run FCA with independent, transparent, and forensic precision. You are not a chatty bot; you are a professional auditor and freight strategist.
 
                     NEW SYSTEM CAPABILITIES:
@@ -406,6 +406,29 @@ with tab_terminal:
                                 function_response = f"Tool Execution Crash: Module '{function_name}' is not registered in the toolbox."
                             except Exception as e:
                                 function_response = f"Tool Execution Crash: {str(e)}"
+                            
+                            api_messages.append({
+                                "tool_call_id": tool_call.id,
+                                "role": "tool",
+                                "name": function_name,
+                                "content": str(function_response),
+                            })
+                        
+                        second_response = client.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=api_messages,
+                            temperature=0.3
+                        )
+                        full_response = second_response.choices[0].message.content
+                    else:
+                        full_response = response_message.content
+
+                    message_placeholder.markdown(full_response)
+                    st.session_state.messages.append({"role": "assistant", "content": full_response})
+                    
+                except Exception as e:
+                    message_placeholder.error(f"🚨 SYSTEM ANOMALY: {str(e)}")
+
 # ==========================================
 # CONSOLE 2: MATRIX DASHBOARD (BULK QUOTING)
 # ==========================================
@@ -427,19 +450,20 @@ with tab_matrix:
     with col2:
         st.markdown("**2. Upload Payload (CSV format)**")
         matrix_file = st.file_uploader("Upload spreadsheet with delivery suburbs and item dimensions.", type=['csv'], key="matrix_uploader")
+        
     if matrix_file is not None:
-            st.success(f"File loaded: {matrix_file.name}. Ready for execution.")
-            
-            if st.button("INITIATE MASS PING", use_container_width=True):
-                with st.spinner("Flight Computer is mass-pinging Machship... Please stand by."):
-                    file_bytes = matrix_file.getvalue()
-                    success, result = toolbox.generate_bulk_matrix(file_bytes, margin_target, excluded_carriers)
-                    
-                    if success:
-                        st.session_state.latest_matrix = result
-                    else:
-                        st.error(result)
+        st.success(f"File loaded: {matrix_file.name}. Ready for execution.")
+        
+        if st.button("INITIATE MASS PING", use_container_width=True):
+            with st.spinner("Flight Computer is mass-pinging Machship... Please stand by."):
+                file_bytes = matrix_file.getvalue()
+                success, result = toolbox.generate_bulk_matrix(file_bytes, margin_target, excluded_carriers)
                 
+                if success:
+                    st.session_state.latest_matrix = result
+                else:
+                    st.error(result)
+            
     st.divider()
     st.markdown("#### Live Matrix Output")
     
@@ -457,9 +481,4 @@ with tab_matrix:
             use_container_width=True
         )
     else:
-        st.markdown("*(Matrix projection grid will appear here once executed)*")      
-        
-                
-    st.divider()
-    st.markdown("#### Live Matrix Output")
-    st.markdown("*(Matrix projection grid will appear here once the asynchronous engine is deployed in Phase 2)*")
+        st.markdown("*(Matrix projection grid will appear here once executed)*")
