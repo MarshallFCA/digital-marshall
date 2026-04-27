@@ -246,10 +246,13 @@ with tab_terminal:
 
                     # C. Logic Engine Execution
                     system_prompt = f"""You are the Blessed Oracle of Freight, the AI incarnation of Marshall Hughes (Founder, Freight Companies Australia). With 30 years of experience, your purpose is to guide Jim, Guan, and Phil to run FCA with independent, transparent, and forensic precision. You are not a chatty bot; you are a professional auditor and freight strategist.
+                    
+                    USER CONTEXT: The active user executing commands is {st.session_state.user_email}.
 
                     NEW SYSTEM CAPABILITIES:
                     You have live API access to Machship, Transvirtual, Xero, the Company Google Drive, and Carton Cloud (WMS). Use Carton Cloud to check warehouse order statuses and dispatch details. 
-                    CRITICAL OVERRIDE: You CAN read external documents and spreadsheets. NEVER say "I cannot access external documents". If asked about a file that is NOT currently attached to the chat, you MUST use the `search_and_read_google_drive` tool to fetch it. If the user explicitly attached files, DO NOT search Google Drive. Use the `hybrid_gemini_sheet_generator` tool instead. Do NOT output raw JSON tool schemas in your chat responses. Execute the tool natively.
+                    CRITICAL OVERRIDE: You CAN read external documents and spreadsheets. NEVER say "I cannot access external documents". If asked about a file that is NOT currently attached to the chat, you MUST use the `search_and_read_google_drive` tool to fetch it. If the user explicitly attached files, DO NOT search Google Drive. Use the tools `hybrid_gemini_sheet_generator` or `tool_8_carrier_invoice_auditor` natively. Do NOT output raw JSON tool schemas in your chat responses. Execute the tool natively.
+                    
                     OPERATIONAL MANUAL:
                     1. FCA BUSINESS MODEL (CRITICAL): Freight Companies Australia (FCA) is a freight management brokerage. Any carrier invoices uploaded (e.g., from Tranzworks, FedEx, Northline) will always bill FCA. Your job is NEVER to conclude that FCA is the client. Your job is to audit the invoice and identify which of FCA's actual clients (e.g., Henselite, ASGA, BOA, AC Solar) incurred the charge based on the "Reference", "Caller", "Job Details", or pickup/delivery locations, so FCA can on-charge them.
                     2. The GSOT (Gmail Source of Truth) Protocol: The historical emails provided below act as your absolute source of truth. They override all other assumptions.
@@ -275,6 +278,7 @@ with tab_terminal:
                     9. THE HUNT PROTOCOL: If a user asks for the status of a reference number (e.g., FCU000071), you must autonomously search Machship, Transvirtual, and Carton Cloud. If the first tool returns no result, DO NOT stop. Execute the next tool. Only report failure if all three databases come up empty.
                     10. HYBRID GEMINI PROTOCOL: If the user asks you to analyze a heavy dataset, cross-reference multiple files, audit a large file, or create a spreadsheet from uploaded CSV/Excel files, DO NOT try to read the files yourself and DO NOT search Google Drive for them. You must immediately execute the `hybrid_gemini_sheet_generator` tool.
                     11. TRANSPARENCY PROTOCOL: If any tool returns an error message or crash report (e.g., "HYBRID GEMINI CRASH:" or "Tool Execution Crash:"), you MUST NOT hide it. You must explicitly output the exact error message to the user in your response so they can diagnose the anomaly.
+                    12. INVOICE RECONCILIATION PROTOCOL: If the user uploads a carrier invoice and asks you to audit, reconcile, or check the variances on it, you MUST execute `tool_8_carrier_invoice_auditor`. Pass the full extracted text of the document into the tool, and use '{st.session_state.user_email}' for the notification_email parameter.
 
                     CRITICAL RAG INSTRUCTIONS:
                     1. "Context (Sent to Marshall)" is the email sent TO Marshall.
@@ -392,6 +396,27 @@ with tab_terminal:
                                     "required": ["instructions", "target_sheet_name"]
                                 }
                             }
+                        },
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": "tool_8_carrier_invoice_auditor",
+                                "description": "Audits a raw carrier invoice text by extracting connotes, pinging Machship for quoted base costs, calculating the variance, and generating a reconciliation report in Google Sheets.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "raw_invoice_text": {
+                                            "type": "string",
+                                            "description": "The full raw text extracted from the uploaded carrier invoice."
+                                        },
+                                        "notification_email": {
+                                            "type": "string",
+                                            "description": "The user's email address to share the resulting Google Sheet with."
+                                        }
+                                    },
+                                    "required": ["raw_invoice_text", "notification_email"]
+                                }
+                            }
                         }
                     ]
                     
@@ -438,7 +463,7 @@ with tab_terminal:
                             })
 
                             # --- THE X-RAY INTERCEPT ---
-                            if "CRASH" in str(function_response) or "Error:" in str(function_response):
+                            if "CRASH" in str(function_response) or "Error:" in str(function_response) or "🚨" in str(function_response):
                                 st.error(f"🚨 **X-RAY DIAGNOSTIC (RAW TOOL OUTPUT):**\n\n{function_response}")
 
                         second_response = client.chat.completions.create(
@@ -509,4 +534,3 @@ with tab_matrix:
         )
     else:
         st.markdown("*(Matrix projection grid will appear here once executed)*")
-
