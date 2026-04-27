@@ -479,4 +479,28 @@ with tab_matrix:
         if st.button("INITIATE MASS PING", use_container_width=True):
             with st.spinner("Flight Computer is mass-pinging Machship... Please stand by."):
                 file_bytes = matrix_file.getvalue()
-                success, result = toolbox.generate_bulk_matrix(file_bytes, margin_target, excluded
+                success, result = toolbox.generate_bulk_matrix(file_bytes, margin_target, excluded_carriers)
+                
+                if success:
+                    st.session_state.latest_matrix = result
+                else:
+                    st.error(result)
+            
+    st.divider()
+    st.markdown("#### Live Matrix Output")
+    
+    if "latest_matrix" in st.session_state:
+        st.dataframe(st.session_state.latest_matrix, use_container_width=True)
+        
+        # Create downloadable CSV
+        csv_buffer = io.StringIO()
+        st.session_state.latest_matrix.to_csv(csv_buffer, index=False)
+        st.download_button(
+            label="Download Completed Matrix (CSV)",
+            data=csv_buffer.getvalue(),
+            file_name="FCA_Quoted_Matrix.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+    else:
+        st.markdown("*(Matrix projection grid will appear here once executed)*")
