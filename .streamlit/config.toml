@@ -1,0 +1,18 @@
+[theme]
+# Forces Light Mode permanently
+base = "light"
+
+# NASA Blue for primary accents (buttons, sliders, loading bars)
+primaryColor = "#0b3d91" 
+
+# Clean white background
+backgroundColor = "#ffffff"
+
+# Very light grey for the sidebar / tabs
+secondaryBackgroundColor = "#f4f6f9"
+
+# NASA Blue for standard text
+textColor = "#0b3d91"
+
+# Set the default font
+font = "sans serif"
