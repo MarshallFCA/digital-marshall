@@ -580,7 +580,7 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
         return False, f"Matrix Engine Crash: {str(e)}"
 
 # ==========================================
-# TOOL 7: HYBRID GEMINI SHEET GENERATOR
+# TOOL 7: HYBRID GEMINI SHEET GENERATOR (PANDAS BYPASS ADDED)
 # ==========================================
 def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> str:
     import google.generativeai as genai
@@ -597,23 +597,20 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         if not uploaded_files:
             return "Error: No files currently uploaded in the Oracle Data Ingestion port. Please upload payloads first."
 
-        # Extract full text/data from ALL uploaded files
+        # Extract full text/data from ALL uploaded files without Pandas crashing on CSVs
         full_data_string = ""
         for uf in uploaded_files:
             file_extension = uf.name.split(".")[-1].lower()
-            uf.seek(0)
             
             if file_extension == "csv":
-                df = pd.read_csv(uf)
-                full_data_string += f"\n=== FILE: {uf.name} ===\n{df.to_csv(index=False)}\n"
+                raw_text = uf.getvalue().decode('utf-8', errors='replace')
+                full_data_string += f"\n=== FILE: {uf.name} ===\n{raw_text}\n"
             elif file_extension in ["xlsx", "xls"]:
+                uf.seek(0)
                 df = pd.read_excel(uf)
                 full_data_string += f"\n=== FILE: {uf.name} ===\n{df.to_csv(index=False)}\n"
             else:
                 return f"Error: The uploaded file {uf.name} must be a CSV or Excel spreadsheet for the Gemini Matrix generator."
-            
-            # Reset file pointer for the rest of the app
-            uf.seek(0)
 
         # 2. Configure Gemini API
         gemini_key = st.secrets.get("GEMINI_API_KEY")
