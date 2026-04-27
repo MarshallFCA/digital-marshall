@@ -728,17 +728,19 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
 
 
 # ==========================================
-# TOOL 8: CARRIER INVOICE AUDITOR
+# TOOL 8: CARRIER INVOICE AUDITOR (MULTI-HUNT UPGRADE)
 # ==========================================
 def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: str) -> str:
     """
     Orchestrates the entire Phase 4 Invoice Reconciliation process.
+    Upgraded with multi-route Machship hunting logic to catch MS numbers, Carrier IDs, and References.
     """
     import google.generativeai as genai
     import json
     import requests
     import pandas as pd
     import streamlit as st
+    import re
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
     
@@ -780,7 +782,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         
         Return ONLY a valid JSON array of objects. Do not include markdown formatting or extra text.
         Each object must have the following keys:
-        - "connote": The carrier consignment note number / reference string (e.g. MS60179596, CIR000000048)
+        - "connote": The primary tracking number. If there is an MS number (e.g., MS123456), use that. If not, extract the carrier's reference or consignment number (e.g., CIR000000048). (string)
         - "billed_amount": The total cost billed by the carrier for this connote (float)
         
         Raw Invoice Text:
@@ -799,30 +801,56 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         if not extracted_items:
             return "Error: Failed to identify any connotes or billed amounts in the provided text."
 
-        # --- 2. MACHSHIP QUOTE LOOKUP & VARIANCE ---
+        # --- 2. MACHSHIP THE HUNT (MULTI-ROUTE SEARCH) & VARIANCE ---
         token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
-        headers = {"token": token, "Content-Type": "application/json"}
-        ms_url = "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true"
+        headers = {"token": token, "Content-Type": "application/json", "Accept": "application/json"}
         
         reconciliation_data = []
         
         for item in extracted_items:
-            connote = item.get("connote", "")
+            connote = str(item.get("connote", "")).strip().upper()
             billed = float(item.get("billed_amount", 0.0))
             quoted = 0.0
+            found_data = None
             
             if connote:
-                try:
+                # PATH A: MS Number Direct Hit
+                if connote.startswith("MS"):
+                    ms_id = re.sub(r"\D", "", connote)
+                    url_ms = f"https://live.machship.com/apiv2/consignments/getConsignment?id={ms_id}"
+                    try:
+                        ms_response = requests.get(url_ms, headers=headers, timeout=15)
+                        if ms_response.status_code == 200:
+                            resp_data = ms_response.json()
+                            if resp_data.get("object"):
+                                found_data = resp_data["object"]
+                    except Exception:
+                        pass
+                
+                # PATH B: Hunt by Carrier ID or Reference
+                if not found_data:
+                    search_routes = [
+                        "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true",
+                        "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1?includeChildCompanies=true",
+                        "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference2?includeChildCompanies=true"
+                    ]
                     payload = [connote]
-                    ms_response = requests.post(ms_url, headers=headers, json=payload, timeout=15)
-                    if ms_response.status_code == 200:
-                        data = ms_response.json()
-                        if data.get("object") and len(data["object"]) > 0:
-                            # Safely extract base cost
-                            c_total = data["object"][0].get('consignmentTotal', {})
-                            quoted = float(c_total.get('totalCost', 0.0))
-                except Exception:
-                    pass # Keep quoted as 0.0 on failure so variance flags it heavily
+                    
+                    for route in search_routes:
+                        try:
+                            hunt_response = requests.post(route, headers=headers, json=payload, timeout=15)
+                            if hunt_response.status_code == 200:
+                                hunt_data = hunt_response.json()
+                                if hunt_data.get("object") and len(hunt_data["object"]) > 0:
+                                    found_data = hunt_data["object"][0]
+                                    break # Stop hunting once found
+                        except Exception:
+                            continue
+                
+                # Extract the base quote if we found the consignment
+                if found_data:
+                    c_total = found_data.get('consignmentTotal', {})
+                    quoted = float(c_total.get('totalCost', 0.0))
                     
             variance = billed - quoted
             flag_status = "FLAG: OVERCHARGE" if variance > 0.01 else "OK"
@@ -837,7 +865,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 "Status": flag_status
             })
 
-        # --- 3. GOOGLE SHEETS GENERATION (Using Tool 7's Shared Drive Logic) ---
+        # --- 3. GOOGLE SHEETS GENERATION ---
         credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
             credentials_dict,
@@ -847,7 +875,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         sheets_service = build("sheets", "v4", credentials=creds)
         drive_service = build("drive", "v3", credentials=creds)
 
-        # Hardcoded Shared Drive Folder ID from Tool 7
         parent_folder_id = "1U8PYxUZMfJql0AYnhc0izJpI0FqveeFR"
         sheet_title = f"Invoice_Reconciliation_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}"
         
@@ -864,7 +891,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         ).execute()
         spreadsheet_id = sheet_file.get('id')
 
-        # Convert Dicts to List of Lists
         headers_list = list(reconciliation_data[0].keys())
         values = [headers_list]
         for row in reconciliation_data:
@@ -878,7 +904,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             body=body
         ).execute()
 
-        # Share it with the user who requested it
         try:
             permission = {'type': 'user', 'role': 'writer', 'emailAddress': notification_email}
             drive_service.permissions().create(
