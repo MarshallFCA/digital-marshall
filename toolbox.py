@@ -431,7 +431,6 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
         company_id = 53031 
 
         # 3. The Ping Function (Runs for a single row)
-        # 3. The Ping Function (Runs for a single row)
         def fetch_route(index, row):
             # Dynamic Column Mapping
             to_sub = get_val(row, ["Destination", "To Suburb", "To", "Suburb"], "")
@@ -594,23 +593,27 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
 
     try:
         # 1. Fetch the Heavy Data safely via Streamlit session state (The Bypass)
-        uploaded_file = st.session_state.get("chat_uploader")
-        if not uploaded_file:
-            return "Error: No file currently uploaded in the Oracle Data Ingestion port. Please upload a payload first."
+        uploaded_files = st.session_state.get("chat_uploader")
+        if not uploaded_files:
+            return "Error: No files currently uploaded in the Oracle Data Ingestion port. Please upload payloads first."
 
-        # Extract full text/data from the file
-        file_extension = uploaded_file.name.split(".")[-1].lower()
-        if file_extension == "csv":
-            df = pd.read_csv(uploaded_file)
-            full_data_string = df.to_csv(index=False)
-        elif file_extension in ["xlsx", "xls"]:
-            df = pd.read_excel(uploaded_file)
-            full_data_string = df.to_csv(index=False)
-        else:
-            return "Error: The uploaded file must be a CSV or Excel spreadsheet for the Gemini Matrix generator."
-
-        # Reset file pointer for the rest of the app
-        uploaded_file.seek(0)
+        # Extract full text/data from ALL uploaded files
+        full_data_string = ""
+        for uf in uploaded_files:
+            file_extension = uf.name.split(".")[-1].lower()
+            uf.seek(0)
+            
+            if file_extension == "csv":
+                df = pd.read_csv(uf)
+                full_data_string += f"\n=== FILE: {uf.name} ===\n{df.to_csv(index=False)}\n"
+            elif file_extension in ["xlsx", "xls"]:
+                df = pd.read_excel(uf)
+                full_data_string += f"\n=== FILE: {uf.name} ===\n{df.to_csv(index=False)}\n"
+            else:
+                return f"Error: The uploaded file {uf.name} must be a CSV or Excel spreadsheet for the Gemini Matrix generator."
+            
+            # Reset file pointer for the rest of the app
+            uf.seek(0)
 
         # 2. Configure Gemini API
         gemini_key = st.secrets.get("GEMINI_API_KEY")
@@ -621,14 +624,14 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         model = genai.GenerativeModel("gemini-1.5-pro")
 
         # 3. Formulate the prompt for Gemini
-        system_instruction = "You are an enterprise data extraction AI. You will receive instructions and raw data. You MUST output your final answer as pure CSV text. Do not include markdown formatting. Do not include conversational text."
-        full_prompt = system_instruction + "\n\nUSER INSTRUCTIONS:\n" + instructions + "\n\nRAW DATA:\n" + full_data_string
+        system_instruction = "You are an enterprise data extraction AI. You will receive instructions and raw data from one or multiple files. You MUST cross-reference the data as instructed and output your final answer as pure CSV text. Do not include markdown formatting. Do not include conversational text."
+        full_prompt = system_instruction + "\n\nUSER INSTRUCTIONS:\n" + instructions + "\n\nRAW DATA BASKET:\n" + full_data_string
 
         # 4. Execute Gemini
         response = model.generate_content(full_prompt)
         gemini_csv_output = response.text.strip()
 
-        # Safely strip any formatting without breaking text rules (ASCII 96 is the forbidden back-tick character)
+        # Safely strip any formatting without breaking text rules
         forbidden_char = chr(96)
         gemini_csv_output = gemini_csv_output.replace(forbidden_char + "csv", "")
         gemini_csv_output = gemini_csv_output.replace(forbidden_char, "")
@@ -687,9 +690,7 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
             ).execute()
 
         sheet_url = "https://docs.google.com/spreadsheets/d/" + spreadsheet_id
-        return "SUCCESS: Hybrid Gemini analysis complete. The heavy dataset was processed and piped into a new Google Sheet. You have been granted access. Title: " + target_sheet_name + " | URL: " + sheet_url
+        return "SUCCESS: Hybrid Gemini multi-file analysis complete. The heavy datasets were processed and piped into a new Google Sheet. You have been granted access. Title: " + target_sheet_name + " | URL: " + sheet_url
 
     except Exception as e:
         return "HYBRID GEMINI CRASH: " + str(e)
-
-
