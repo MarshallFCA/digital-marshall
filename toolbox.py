@@ -580,4 +580,116 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
     except Exception as e:
         return False, f"Matrix Engine Crash: {str(e)}"
 
+# ==========================================
+# TOOL 7: HYBRID GEMINI SHEET GENERATOR
+# ==========================================
+def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> str:
+    import google.generativeai as genai
+    import pandas as pd
+    import io
+    import csv
+    import streamlit as st
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+
+    try:
+        # 1. Fetch the Heavy Data safely via Streamlit session state (The Bypass)
+        uploaded_file = st.session_state.get("chat_uploader")
+        if not uploaded_file:
+            return "Error: No file currently uploaded in the Oracle Data Ingestion port. Please upload a payload first."
+
+        # Extract full text/data from the file
+        file_extension = uploaded_file.name.split(".")[-1].lower()
+        if file_extension == "csv":
+            df = pd.read_csv(uploaded_file)
+            full_data_string = df.to_csv(index=False)
+        elif file_extension in ["xlsx", "xls"]:
+            df = pd.read_excel(uploaded_file)
+            full_data_string = df.to_csv(index=False)
+        else:
+            return "Error: The uploaded file must be a CSV or Excel spreadsheet for the Gemini Matrix generator."
+
+        # Reset file pointer for the rest of the app
+        uploaded_file.seek(0)
+
+        # 2. Configure Gemini API
+        gemini_key = st.secrets.get("GEMINI_API_KEY")
+        if not gemini_key:
+            return "Error: GEMINI_API_KEY is missing from the telemetry secrets."
+
+        genai.configure(api_key=gemini_key)
+        model = genai.GenerativeModel("gemini-1.5-pro")
+
+        # 3. Formulate the prompt for Gemini
+        system_instruction = "You are an enterprise data extraction AI. You will receive instructions and raw data. You MUST output your final answer as pure CSV text. Do not include markdown formatting. Do not include conversational text."
+        full_prompt = system_instruction + "\n\nUSER INSTRUCTIONS:\n" + instructions + "\n\nRAW DATA:\n" + full_data_string
+
+        # 4. Execute Gemini
+        response = model.generate_content(full_prompt)
+        gemini_csv_output = response.text.strip()
+
+        # Safely strip any formatting without breaking text rules (ASCII 96 is the forbidden back-tick character)
+        forbidden_char = chr(96)
+        gemini_csv_output = gemini_csv_output.replace(forbidden_char + "csv", "")
+        gemini_csv_output = gemini_csv_output.replace(forbidden_char, "")
+        gemini_csv_output = gemini_csv_output.strip()
+
+        # 5. Connect to Google Sheets via GCP
+        credentials_dict = dict(st.secrets["gcp_service_account"])
+        creds = service_account.Credentials.from_service_account_info(
+            credentials_dict,
+            scopes=["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/spreadsheets"]
+        )
+
+        sheets_service = build("sheets", "v4", credentials=creds)
+        drive_service = build("drive", "v3", credentials=creds)
+
+        # Parse Gemini CSV output into a list of lists for Google Sheets
+        csv_reader = csv.reader(io.StringIO(gemini_csv_output))
+        values = list(csv_reader)
+
+        if not values:
+            return "Error: Gemini processed the data but returned an empty structural matrix."
+
+        # 6. Create the Spreadsheet
+        spreadsheet_body = {
+            "properties": {
+                "title": target_sheet_name
+            }
+        }
+        request = sheets_service.spreadsheets().create(body=spreadsheet_body, fields="spreadsheetId")
+        response_sheet = request.execute()
+        spreadsheet_id = response_sheet.get("spreadsheetId")
+
+        # 7. Write Data to the Sheet
+        body = {
+            "values": values
+        }
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range="Sheet1",
+            valueInputOption="USER_ENTERED",
+            body=body
+        ).execute()
+
+        # 8. Transfer Ownership / Share
+        human_email = st.session_state.get("user_email", "")
+        if human_email:
+            permission = {
+                "type": "user",
+                "role": "writer",
+                "emailAddress": human_email
+            }
+            drive_service.permissions().create(
+                fileId=spreadsheet_id,
+                body=permission,
+                fields="id"
+            ).execute()
+
+        sheet_url = "https://docs.google.com/spreadsheets/d/" + spreadsheet_id
+        return "SUCCESS: Hybrid Gemini analysis complete. The heavy dataset was processed and piped into a new Google Sheet. You have been granted access. Title: " + target_sheet_name + " | URL: " + sheet_url
+
+    except Exception as e:
+        return "HYBRID GEMINI CRASH: " + str(e)
+
 
