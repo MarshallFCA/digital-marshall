@@ -743,13 +743,36 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
     from googleapiclient.discovery import build
     
     try:
-        # --- 1. GEMINI EXTRACTION ---
+        # --- 1. GEMINI EXTRACTION WITH MODEL AUTO-DETECT ---
         gemini_key = st.secrets.get("GEMINI_API_KEY")
         if not gemini_key:
             return "Error: GEMINI_API_KEY is missing from the telemetry secrets."
         
         genai.configure(api_key=gemini_key)
-        model = genai.GenerativeModel('gemini-1.5-pro')
+        
+        try:
+            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            
+            if 'models/gemini-1.5-pro-latest' in available_models:
+                target_model = 'gemini-1.5-pro-latest'
+            elif 'models/gemini-1.5-pro' in available_models:
+                target_model = 'gemini-1.5-pro'
+            elif 'models/gemini-1.5-flash-latest' in available_models:
+                target_model = 'gemini-1.5-flash-latest'
+            elif 'models/gemini-1.5-flash' in available_models:
+                target_model = 'gemini-1.5-flash'
+            elif 'models/gemini-pro' in available_models:
+                target_model = 'gemini-pro'
+            elif available_models:
+                target_model = available_models[0].replace('models/', '') 
+            else:
+                return "Error: No valid text generation models found for this API key."
+                
+            target_model = target_model.replace('models/', '')
+            model = genai.GenerativeModel(target_model)
+            
+        except Exception as model_err:
+            return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {str(model_err)}"
         
         prompt = f"""
         You are an expert freight data extraction assistant. 
@@ -757,7 +780,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         
         Return ONLY a valid JSON array of objects. Do not include markdown formatting or extra text.
         Each object must have the following keys:
-        - "connote": The carrier consignment note number (string)
+        - "connote": The carrier consignment note number / reference string (e.g. MS60179596, CIR000000048)
         - "billed_amount": The total cost billed by the carrier for this connote (float)
         
         Raw Invoice Text:
