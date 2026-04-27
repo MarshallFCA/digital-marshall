@@ -725,3 +725,150 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
 
     except Exception as e:
         return "HYBRID GEMINI CRASH: " + str(e)
+
+
+# ==========================================
+# TOOL 8: CARRIER INVOICE AUDITOR
+# ==========================================
+def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: str) -> str:
+    """
+    Orchestrates the entire Phase 4 Invoice Reconciliation process.
+    """
+    import google.generativeai as genai
+    import json
+    import requests
+    import pandas as pd
+    import streamlit as st
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    
+    try:
+        # --- 1. GEMINI EXTRACTION ---
+        gemini_key = st.secrets.get("GEMINI_API_KEY")
+        if not gemini_key:
+            return "Error: GEMINI_API_KEY is missing from the telemetry secrets."
+        
+        genai.configure(api_key=gemini_key)
+        model = genai.GenerativeModel('gemini-1.5-pro')
+        
+        prompt = f"""
+        You are an expert freight data extraction assistant. 
+        Analyze the following raw carrier invoice text and extract every single shipment.
+        
+        Return ONLY a valid JSON array of objects. Do not include markdown formatting or extra text.
+        Each object must have the following keys:
+        - "connote": The carrier consignment note number (string)
+        - "billed_amount": The total cost billed by the carrier for this connote (float)
+        
+        Raw Invoice Text:
+        {raw_invoice_text}
+        """
+        
+        try:
+            response = model.generate_content(
+                prompt,
+                generation_config=genai.GenerationConfig(response_mime_type="application/json")
+            )
+            extracted_items = json.loads(response.text)
+        except Exception as e:
+            return f"Error during Gemini invoice extraction: {str(e)}"
+            
+        if not extracted_items:
+            return "Error: Failed to identify any connotes or billed amounts in the provided text."
+
+        # --- 2. MACHSHIP QUOTE LOOKUP & VARIANCE ---
+        token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
+        headers = {"token": token, "Content-Type": "application/json"}
+        ms_url = "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true"
+        
+        reconciliation_data = []
+        
+        for item in extracted_items:
+            connote = item.get("connote", "")
+            billed = float(item.get("billed_amount", 0.0))
+            quoted = 0.0
+            
+            if connote:
+                try:
+                    payload = [connote]
+                    ms_response = requests.post(ms_url, headers=headers, json=payload, timeout=15)
+                    if ms_response.status_code == 200:
+                        data = ms_response.json()
+                        if data.get("object") and len(data["object"]) > 0:
+                            # Safely extract base cost
+                            c_total = data["object"][0].get('consignmentTotal', {})
+                            quoted = float(c_total.get('totalCost', 0.0))
+                except Exception:
+                    pass # Keep quoted as 0.0 on failure so variance flags it heavily
+                    
+            variance = billed - quoted
+            flag_status = "FLAG: OVERCHARGE" if variance > 0.01 else "OK"
+            if quoted == 0.0:
+                flag_status = "FLAG: NO QUOTE FOUND"
+                
+            reconciliation_data.append({
+                "Connote": connote,
+                "Billed Amount ($)": round(billed, 2),
+                "Quoted Amount ($)": round(quoted, 2),
+                "Variance ($)": round(variance, 2),
+                "Status": flag_status
+            })
+
+        # --- 3. GOOGLE SHEETS GENERATION (Using Tool 7's Shared Drive Logic) ---
+        credentials_dict = dict(st.secrets["gcp_service_account"])
+        creds = service_account.Credentials.from_service_account_info(
+            credentials_dict,
+            scopes=["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/spreadsheets"]
+        )
+
+        sheets_service = build("sheets", "v4", credentials=creds)
+        drive_service = build("drive", "v3", credentials=creds)
+
+        # Hardcoded Shared Drive Folder ID from Tool 7
+        parent_folder_id = "1U8PYxUZMfJql0AYnhc0izJpI0FqveeFR"
+        sheet_title = f"Invoice_Reconciliation_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}"
+        
+        file_metadata = {
+            'name': sheet_title,
+            'mimeType': 'application/vnd.google-apps.spreadsheet',
+            'parents': [parent_folder_id]
+        }
+        
+        sheet_file = drive_service.files().create(
+            body=file_metadata, 
+            fields='id',
+            supportsAllDrives=True
+        ).execute()
+        spreadsheet_id = sheet_file.get('id')
+
+        # Convert Dicts to List of Lists
+        headers_list = list(reconciliation_data[0].keys())
+        values = [headers_list]
+        for row in reconciliation_data:
+            values.append([str(row.get(h, "")) for h in headers_list])
+
+        body = {"values": values}
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range="Sheet1",
+            valueInputOption="USER_ENTERED",
+            body=body
+        ).execute()
+
+        # Share it with the user who requested it
+        try:
+            permission = {'type': 'user', 'role': 'writer', 'emailAddress': notification_email}
+            drive_service.permissions().create(
+                fileId=spreadsheet_id, 
+                body=permission, 
+                sendNotificationEmail=True,
+                supportsAllDrives=True
+            ).execute()
+        except Exception as share_err:
+            print(f"Warning: Could not auto-share via email {notification_email}. Error: {share_err}")
+
+        sheet_url = "https://docs.google.com/spreadsheets/d/" + spreadsheet_id
+        return f"SUCCESS: Invoice Reconciliation complete. {len(reconciliation_data)} shipments audited. Report generated in Shared Drive: {sheet_url}"
+
+    except Exception as e:
+        return f"🚨 TOOL 8 CRASH: {str(e)}"
