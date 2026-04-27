@@ -129,7 +129,7 @@ def init_clients():
 
 client, index = init_clients()
 
-# 3. Document Extraction Protocol (PANDAS BYPASS ADDED)
+# 3. Document Extraction Protocol
 def extract_text_from_file(uploaded_file):
     text = ""
     try:
@@ -436,7 +436,11 @@ with tab_terminal:
                                 "name": function_name,
                                 "content": str(function_response),
                             })
-                        
+
+                            # --- THE X-RAY INTERCEPT ---
+                            if "CRASH" in str(function_response) or "Error:" in str(function_response):
+                                st.error(f"🚨 **X-RAY DIAGNOSTIC (RAW TOOL OUTPUT):**\n\n{function_response}")
+
                         second_response = client.chat.completions.create(
                             model="gpt-4o-mini",
                             messages=api_messages,
