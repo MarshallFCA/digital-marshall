@@ -59,35 +59,48 @@ def get_cartoncloud_token():
         return f"Error: {str(e)}"
 
 # ==========================================
-# TOOL 1: XERO FINANCIAL SEARCH
+# TOOL 1: XERO FINANCIAL SEARCH (UPGRADED WITH FALLBACK)
 # ==========================================
 def search_xero_contact(contact_name: str) -> str:
     token = get_xero_token()
     if "Error" in token: return f"Xero Auth {token}" 
     
-    # URL encoded string safety
-    safe_name = requests.utils.quote(contact_name)
-    url = f'https://api.xero.com/api.xro/2.0/Contacts?where=Name.Contains("{safe_name}")'
     headers = { "Authorization": f"Bearer {token}", "Accept": "application/json" }
     
-    try:
+    def fetch_contacts(search_term):
+        safe_name = requests.utils.quote(search_term)
+        url = f'https://api.xero.com/api.xro/2.0/Contacts?where=Name.Contains("{safe_name}")'
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
-        data = response.json()
+        return response.json().get("Contacts", [])
+
+    try:
+        # 1. Try the exact phrase first
+        contacts = fetch_contacts(contact_name)
         
-        if data.get("Contacts"):
-            contact = data["Contacts"][0]
-            name = contact.get("Name", "Unknown")
-            status = contact.get("ContactStatus", "Unknown")
+        # 2. Fallback: If no results, slice the phrase and search by the primary root word (e.g., "Ward")
+        if not contacts and " " in contact_name:
+            first_word = contact_name.split()[0]
+            if len(first_word) > 2:
+                contacts = fetch_contacts(first_word)
+        
+        if contacts:
+            # Return up to top 3 closest matches so the LLM can interpret acronyms correctly
+            results_summary = []
+            for contact in contacts[:3]:
+                name = contact.get("Name", "Unknown")
+                status = contact.get("ContactStatus", "Unknown")
+                balances = contact.get("Balances", {}).get("AccountsReceivable", {})
+                outstanding = balances.get("Outstanding", 0.00)
+                overdue = balances.get("Overdue", 0.00)
+                results_summary.append(f"✅ Xero Record: {name} | Status: {status} | Outstanding: ${outstanding} | Overdue: ${overdue}")
             
-            balances = contact.get("Balances", {}).get("AccountsReceivable", {})
-            outstanding = balances.get("Outstanding", 0.00)
-            overdue = balances.get("Overdue", 0.00)
-            
-            raw_data = json.dumps(contact, indent=2)
-            return f"✅ Xero Record: {name} | Status: {status} | Total Outstanding: ${outstanding} | Overdue: ${overdue}\n\n**Raw Data Available to AI:**\n```json\n{raw_data}\n```"
+            raw_data = json.dumps(contacts[:3], indent=2)
+            summary_string = "\n".join(results_summary)
+            return f"{summary_string}\n\n**Raw Data Available to AI:**\n```json\n{raw_data}\n```"
         else:
-            return f"No contact found in Xero matching '{contact_name}'."
+            return f"No contact found in Xero matching '{contact_name}' or its primary keyword."
+            
     except Exception as e:
         return f"🚨 Xero API Error: {str(e)}"
 
@@ -95,13 +108,11 @@ def search_xero_contact(contact_name: str) -> str:
 # TOOL 2: UNRESTRICTED MACHSHIP SEARCH
 # ==========================================
 def search_machship_connote(connote_number: str) -> str:
-    # Added ["machship"] to map to your TOML headers
     token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
     connote_number = connote_number.strip().upper()
     headers = { "token": token, "Accept": "application/json" }
 
     try:
-        # PATH A: It is an internal Machship number
         if connote_number.startswith("MS"):
             ms_id = re.sub(r"\D", "", connote_number)
             url = f"https://live.machship.com/apiv2/consignments/getConsignment?id={ms_id}"
@@ -117,7 +128,6 @@ def search_machship_connote(connote_number: str) -> str:
                     raw_data = json.dumps(consignment, indent=2)
                     return f"✅ Machship Record (MS): Carrier: {carrier} | Status: {status}\n\n**Raw Data Available to AI:**\n```json\n{raw_data}\n```"
 
-        # PATH B: Carrier ID & Reference Hunt
         headers["Content-Type"] = "application/json"
         search_routes = [
             ("Carrier ID", "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true"),
@@ -153,7 +163,6 @@ def search_transvirtual_connote(connote_number: str) -> str:
     import streamlit as st
 
     try:
-        # 1. Map to the nested TOML structure
         token = st.secrets["transvirtual"]["TRANSVIRTUAL_API_KEY"]
         connote_number = connote_number.strip().upper()
 
@@ -163,17 +172,14 @@ def search_transvirtual_connote(connote_number: str) -> str:
             "Accept": "application/json"
         }
 
-        # STEP 1: Fetch Consignment Details (The Booking Data)
         url_query = "https://api.transvirtual.com.au/api/ConsignmentQuery"
         response_query = requests.post(url_query, headers=headers, json={"ConsignmentNumber": connote_number}, timeout=15)
         full_data = response_query.json().get("Data", {}) if response_query.status_code == 200 else {}
 
-        # STEP 2: The Tracking Extraction
         url_status = "https://api.transvirtual.com.au/api/ConsignmentStatus"
         tracking_data = None
         tracking_log = []
 
-        # 1st Attempt: Standard shape
         payload_status = {"Number": connote_number}
         response_status = requests.post(url_status, headers=headers, json=payload_status, timeout=15)
         
@@ -182,7 +188,6 @@ def search_transvirtual_connote(connote_number: str) -> str:
         else:
             tracking_log.append(f"Standard Payload Failed: HTTP {response_status.status_code}")
             
-            # Fallback: The 4 most common enterprise payload shapes
             test_payloads = [
                 ("Plural Array", {"ConsignmentNumbers": [connote_number]}),
                 ("List Object", {"List": [connote_number]}),
@@ -199,7 +204,6 @@ def search_transvirtual_connote(connote_number: str) -> str:
                 else:
                     tracking_log.append(f"❌ {shape_name} -> HTTP {resp.status_code}")
 
-        # Combine the Data for Digital Marsh
         combined_matrix = {
             "ConsignmentDetails": full_data,
             "TrackingScans": tracking_data if tracking_data else "Failed tracking X-Ray: " + " | ".join(tracking_log)
@@ -408,18 +412,15 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
     from datetime import datetime, timedelta
 
     try:
-        # 1. Read the CSV Payload
         df = pd.read_csv(io.BytesIO(file_bytes))
         pc_db = fetch_australian_postcodes()
         
-        # Helper function to dynamically map messy client columns
         def get_val(row_s, possible_cols, default=""):
             for col in possible_cols:
                 if col in row_s and pd.notna(row_s[col]):
                     return str(row_s[col]).strip()
             return default
             
-        # 2. Setup Dispatch Date (Next Business Day)
         next_day = datetime.now() + timedelta(days=1)
         while next_day.weekday() >= 5:  
             next_day += timedelta(days=1)
@@ -430,28 +431,23 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
         headers = {"token": token, "Content-Type": "application/json"}
         company_id = 53031 
 
-        # 3. The Ping Function (Runs for a single row)
         def fetch_route(index, row):
-            # Dynamic Column Mapping
             to_sub = get_val(row, ["Destination", "To Suburb", "To", "Suburb"], "")
             to_post = get_val(row, ["To PC", "Postcode"], "").replace(".0", "")
             
             from_sub = get_val(row, ["From", "From Suburb", "Origin"], "Seaford")
             from_post = get_val(row, ["From PC", "Origin Postcode"], "3198").replace(".0", "")
             
-            # Suburb Reverse Lookup (Fixes abbreviations like 'SYDN' or 'MELB')
             if len(from_sub) <= 4 and from_post in pc_db:
                 from_sub = pc_db[from_post]
             if len(to_sub) <= 4 and to_post in pc_db:
                 to_sub = pc_db[to_post]
 
-            # Freight Data Extraction
             qty_items = float(get_val(row, ["Items"], 0))
             qty_pallets = float(get_val(row, ["Pallets"], 0))
             weight = float(get_val(row, ["KGS", "Weight", "Total Weight", "Charged KGs"], 0))
             cubic = float(get_val(row, ["Cubic", "Volume"], 0))
 
-            # Determine Item Type
             if qty_pallets > 0:
                 qty = int(qty_pallets)
                 item_name = "Pallet"
@@ -462,12 +458,10 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
                 qty = 1
                 item_name = "Item"
 
-            # Failsafe against empty rows causing divide-by-zero crashes
             if qty <= 0: qty = 1
             weight_per_item = weight / qty if weight > 0 else 1.0
             cubic_per_item = cubic / qty if cubic > 0 else 0.001
             
-            # Machship requires dimensions. We perfectly math the cubic volume back into CM.
             side_m = cubic_per_item ** (1/3)
             side_cm = int(side_m * 100)
             if side_cm < 1: side_cm = 10
@@ -498,17 +492,14 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
                 for r in routes:
                     raw_carrier_name = r.get('carrier', {}).get('name', 'Unknown')
                     
-                    # FILTER: Check against user's excluded carriers
                     if any(ex.lower() in raw_carrier_name.lower() for ex in excluded_carriers):
                         continue
                         
-                    # EXTRACT: Account Name & Service (Corrected JSON Path)
                     acc_node = r.get('companyCarrierAccount') or r.get('carrierAccount') or {}
                     acc_name = acc_node.get('name') or acc_node.get('accountCode') or ''
                     
                     service_name = r.get('companyCarrierAccountService', {}).get('name') or r.get('carrierService', {}).get('name') or ''
                     
-                    # Construct transparent display name
                     display_name = raw_carrier_name
                     if service_name: 
                         display_name += f" - {service_name}"
@@ -517,7 +508,6 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
 
                     c_total = r.get('consignmentTotal') or {}
                     
-                    # Apply dynamic GP margin to base cost
                     base_cost = c_total.get('totalCost')
                     if base_cost is not None:
                         sell_price = float(base_cost) / (1 - (margin_target / 100))
@@ -532,10 +522,7 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
                         })
 
                 if valid_routes:
-                    # Sort by price
                     valid_routes.sort(key=lambda x: x['price'])
-                    
-                    # Ensure we grab 3 unique carriers (not just 3 services from the same carrier)
                     unique_options = []
                     seen_carriers = set()
                     for vr in valid_routes:
@@ -552,14 +539,12 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
             except Exception as e:
                 return index, f"Crash: {str(e)}", []
 
-        # 4. The Multi-Threaded Swarm
         with ThreadPoolExecutor(max_workers=15) as executor:
             future_to_row = {executor.submit(fetch_route, index, row): index for index, row in df.iterrows()}
             
             for future in as_completed(future_to_row):
                 idx, status, options = future.result()
                 
-                # We append the new data directly next to the original client columns!
                 if status != "Success":
                     df.at[idx, "Routing Status"] = status
                 else:
@@ -580,7 +565,7 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
         return False, f"Matrix Engine Crash: {str(e)}"
 
 # ==========================================
-# TOOL 7: HYBRID GEMINI SHEET GENERATOR (HARDCODED FOLDER ID)
+# TOOL 7: HYBRID GEMINI SHEET GENERATOR 
 # ==========================================
 def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> str:
     import google.generativeai as genai
@@ -592,12 +577,10 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
     from googleapiclient.discovery import build
 
     try:
-        # 1. Fetch the Heavy Data safely via Streamlit session state (The Bypass)
         uploaded_files = st.session_state.get("chat_uploader")
         if not uploaded_files:
             return "Error: No files currently uploaded in the Oracle Data Ingestion port. Please upload payloads first."
 
-        # Extract full text/data from ALL uploaded files without Pandas crashing on CSVs
         full_data_string = ""
         for uf in uploaded_files:
             file_extension = uf.name.split(".")[-1].lower()
@@ -612,7 +595,6 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
             else:
                 return f"Error: The uploaded file {uf.name} must be a CSV or Excel spreadsheet for the Gemini Matrix generator."
 
-        # 2. Configure Gemini API (Model Auto-Detect)
         gemini_key = st.secrets.get("GEMINI_API_KEY")
         if not gemini_key:
             return "Error: GEMINI_API_KEY is missing from the telemetry secrets."
@@ -621,7 +603,6 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         
         try:
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            
             if 'models/gemini-1.5-pro-latest' in available_models:
                 target_model = 'gemini-1.5-pro-latest'
             elif 'models/gemini-1.5-pro' in available_models:
@@ -643,21 +624,17 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         except Exception as model_err:
             return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {str(model_err)}"
 
-        # 3. Formulate the prompt for Gemini
         system_instruction = "You are an enterprise data extraction AI. You will receive instructions and raw data from one or multiple files. You MUST cross-reference the data as instructed and output your final answer as pure CSV text. Do not include markdown formatting. Do not include conversational text."
         full_prompt = system_instruction + "\n\nUSER INSTRUCTIONS:\n" + instructions + "\n\nRAW DATA BASKET:\n" + full_data_string
 
-        # 4. Execute Gemini
         response = model.generate_content(full_prompt)
         gemini_csv_output = response.text.strip()
 
-        # Safely strip any formatting without breaking text rules
         forbidden_char = chr(96)
         gemini_csv_output = gemini_csv_output.replace(forbidden_char + "csv", "")
         gemini_csv_output = gemini_csv_output.replace(forbidden_char, "")
         gemini_csv_output = gemini_csv_output.strip()
 
-        # 5. Connect to Google Sheets & Drive via GCP
         credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
             credentials_dict,
@@ -667,17 +644,14 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         sheets_service = build("sheets", "v4", credentials=creds)
         drive_service = build("drive", "v3", credentials=creds)
 
-        # Parse Gemini CSV output into a list of lists for Google Sheets
         csv_reader = csv.reader(io.StringIO(gemini_csv_output))
         values = list(csv_reader)
 
         if not values:
             return "Error: Gemini processed the data but returned an empty structural matrix."
 
-        # 6. Use the EXACT Folder ID provided by Mission Control
         parent_folder_id = "1U8PYxUZMfJql0AYnhc0izJpI0FqveeFR"
 
-        # 7. Create the Spreadsheet INSIDE the target Shared Drive folder using Drive API
         file_metadata = {
             'name': target_sheet_name,
             'mimeType': 'application/vnd.google-apps.spreadsheet',
@@ -691,7 +665,6 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         ).execute()
         spreadsheet_id = sheet_file.get('id')
 
-        # 8. Write Data to the Sheet
         body = {
             "values": values
         }
@@ -702,7 +675,6 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
             body=body
         ).execute()
 
-        # 9. Transfer Ownership / Share (Silent fail if you already have access via Shared Drive)
         human_email = st.session_state.get("user_email", "")
         if human_email:
             try:
@@ -728,13 +700,9 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
 
 
 # ==========================================
-# TOOL 8: CARRIER INVOICE AUDITOR (MULTI-HUNT UPGRADE)
+# TOOL 8: CARRIER INVOICE AUDITOR
 # ==========================================
 def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: str) -> str:
-    """
-    Orchestrates the entire Phase 4 Invoice Reconciliation process.
-    Upgraded with multi-route Machship hunting logic to catch MS numbers, Carrier IDs, and References.
-    """
     import google.generativeai as genai
     import json
     import requests
@@ -745,7 +713,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
     from googleapiclient.discovery import build
     
     try:
-        # --- 1. GEMINI EXTRACTION WITH MODEL AUTO-DETECT ---
         gemini_key = st.secrets.get("GEMINI_API_KEY")
         if not gemini_key:
             return "Error: GEMINI_API_KEY is missing from the telemetry secrets."
@@ -754,7 +721,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         
         try:
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            
             if 'models/gemini-1.5-pro-latest' in available_models:
                 target_model = 'gemini-1.5-pro-latest'
             elif 'models/gemini-1.5-pro' in available_models:
@@ -778,12 +744,12 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         
         prompt = f"""
         You are an expert freight data extraction assistant. 
-        Analyze the following raw carrier invoice text and extract every single shipment.
+        Analyze the following raw carrier invoice text and extract every single shipment into a JSON array.
         
         Return ONLY a valid JSON array of objects. Do not include markdown formatting or extra text.
         Each object must have the following keys:
-        - "connote": The primary tracking number. If there is an MS number (e.g., MS123456), use that. If not, extract the carrier's reference or consignment number (e.g., CIR000000048). (string)
-        - "billed_amount": The total cost billed by the carrier for this connote (float)
+        - "connote": The Carrier's ID or Consignment Number (e.g., CIR000000048). DO NOT extract the MS number (e.g., MS60179596).
+        - "billed_amount": The total cost billed by the carrier for this connote (float). IMPORTANT: If the Total Amount column is missing or the text row is truncated, calculate the final amount by summing the base Freight Amount, Surcharges, and GST.
         
         Raw Invoice Text:
         {raw_invoice_text}
@@ -801,7 +767,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         if not extracted_items:
             return "Error: Failed to identify any connotes or billed amounts in the provided text."
 
-        # --- 2. MACHSHIP THE HUNT (MULTI-ROUTE SEARCH) & VARIANCE ---
         token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
         headers = {"token": token, "Content-Type": "application/json", "Accept": "application/json"}
         
@@ -814,7 +779,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             found_data = None
             
             if connote:
-                # PATH A: MS Number Direct Hit
                 if connote.startswith("MS"):
                     ms_id = re.sub(r"\D", "", connote)
                     url_ms = f"https://live.machship.com/apiv2/consignments/getConsignment?id={ms_id}"
@@ -827,7 +791,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                     except Exception:
                         pass
                 
-                # PATH B: Hunt by Carrier ID or Reference
                 if not found_data:
                     search_routes = [
                         "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true",
@@ -843,11 +806,10 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                                 hunt_data = hunt_response.json()
                                 if hunt_data.get("object") and len(hunt_data["object"]) > 0:
                                     found_data = hunt_data["object"][0]
-                                    break # Stop hunting once found
+                                    break 
                         except Exception:
                             continue
                 
-                # Extract the base quote if we found the consignment
                 if found_data:
                     c_total = found_data.get('consignmentTotal', {})
                     quoted = float(c_total.get('totalCost', 0.0))
@@ -865,7 +827,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 "Status": flag_status
             })
 
-        # --- 3. GOOGLE SHEETS GENERATION ---
         credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
             credentials_dict,
