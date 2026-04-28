@@ -121,14 +121,16 @@ if not st.session_state.logged_in:
 st.markdown("<h1 class='main-header'>Blessed Oracle of Freight</h1>", unsafe_allow_html=True)
 st.success(f"Secure connection established: {st.session_state.user_email}")
 
-# --- THE HEARTBEAT (Prevents Idle Timeouts) ---
-# This invisible JS pings the Streamlit server every 60 seconds to keep the websocket alive.
+# --- AGGRESSIVE HEARTBEAT (Prevents Idle Timeouts via Streamlit Health Ping) ---
 components.html(
     """
     <script>
+    // Pings the Streamlit server health endpoint every 30 seconds to keep container awake
     setInterval(function() {
-        window.parent.postMessage('ping', '*');
-    }, 60000);
+        fetch('/_stcore/health').then(response => {
+            console.log('Heartbeat verified');
+        });
+    }, 30000); 
     </script>
     """,
     height=0, width=0,
@@ -136,7 +138,6 @@ components.html(
 
 # --- LONG-TERM MEMORY PROTOCOL ---
 def get_memory_file_path():
-    # Creates a unique file name based on the user's email (e.g., guan_memory.json)
     safe_email = st.session_state.user_email.replace("@", "_at_").replace(".", "_")
     return f"boof_memory_{safe_email}.json"
 
@@ -159,7 +160,6 @@ def save_memory():
     except Exception as e:
         print(f"Failed to save memory: {e}")
 
-# Load memory into session state if it hasn't been loaded yet
 if "messages" not in st.session_state:
     load_memory()
 
@@ -199,7 +199,6 @@ def extract_text_from_file(uploaded_file):
 with st.sidebar:
     st.markdown("<div class='telemetry-header'>🚀 SYSTEM TELEMETRY</div>", unsafe_allow_html=True)
     
-    # Ping Secrets to determine status
     x_stat = "🟢" if "XERO_CLIENT_ID" in st.secrets.get("xero", {}) else "🔴"
     m_stat = "🟢" if "MACHSHIP_API_TOKEN" in st.secrets.get("machship", {}) else "🔴"
     t_stat = "🟢" if "TRANSVIRTUAL_API_KEY" in st.secrets.get("transvirtual", {}) else "🔴"
@@ -255,13 +254,12 @@ with tab_terminal:
             for uf in uploaded_files:
                 extracted = extract_text_from_file(uf)
                 file_text += f"=== FILE: {uf.name} ===\n{extracted}\n"
-                # Give OpenAI a taste of each file so it knows what's inside
                 file_context += f"=== FILE: {uf.name} ===\n{extracted[:1000]}\n"
         
         full_user_query = prompt + file_context
 
         st.session_state.messages.append({"role": "user", "content": prompt + (" *(Files Attached)*" if uploaded_files else "")})
-        save_memory() # Persist the new message immediately
+        save_memory() 
         
         with chat_log:
             with st.chat_message("user"):
@@ -271,7 +269,6 @@ with tab_terminal:
                 message_placeholder = st.empty()
                 
                 try:
-                    # A. Vector Conversion
                     search_text = prompt
                     if uploaded_files:
                         search_text = f"{prompt} {file_text[:500]}" 
@@ -280,7 +277,6 @@ with tab_terminal:
                         input=search_text, model="text-embedding-3-small"
                     ).data[0].embedding
                     
-                    # B. GSOT Retrieval
                     search_results = index.query(
                         vector=embedded_question, top_k=20, include_metadata=True
                     )
@@ -292,7 +288,6 @@ with tab_terminal:
                         historical_context += f"Context (Sent to Marshall): {metadata.get('context', '')}\n"
                         historical_context += f"Marshall's Action: {metadata.get('marshall_response', '')}\n"
 
-                    # C. Logic Engine Execution
                     system_prompt = f"""You are the Blessed Oracle of Freight, the AI incarnation of Marshall Hughes (Founder, Freight Companies Australia). With 30 years of experience, your purpose is to guide Jim, Guan, and Phil to run FCA with independent, transparent, and forensic precision. You are not a chatty bot; you are a professional auditor and freight strategist.
                     
                     USER CONTEXT: The active user executing commands is {st.session_state.user_email}.
@@ -343,7 +338,7 @@ with tab_terminal:
                             "type": "function",
                             "function": {
                                 "name": "search_xero_contact",
-                                "description": "Searches Xero for a contact by name and returns their details and outstanding invoice summary.",
+                                "description": "Searches Xero for a contact by name (uses a fallback primary keyword search if an exact match fails) and returns up to 3 possible matches along with their outstanding invoice summary.",
                                 "parameters": {
                                     "type": "object",
                                     "properties": {
@@ -470,7 +465,6 @@ with tab_terminal:
                     
                     api_messages = [{"role": "system", "content": system_prompt}]
 
-                    # Only feed the last 15 messages so the token limit doesn't explode over weeks of chat history
                     for msg in st.session_state.messages[-15:-1]:
                         api_messages.append({"role": msg["role"], "content": msg["content"]})
 
@@ -486,7 +480,6 @@ with tab_terminal:
                     
                     response_message = response.choices[0].message
 
-                    # DYNAMIC TOOL EXECUTION (SCALABILITY UPGRADE)
                     if response_message.tool_calls:
                         message_placeholder.markdown("*(Oracle is polling telemetry data...)*")
                         
@@ -511,7 +504,6 @@ with tab_terminal:
                                 "content": str(function_response),
                             })
 
-                            # --- THE X-RAY INTERCEPT ---
                             if "CRASH" in str(function_response) or "Error:" in str(function_response) or "🚨" in str(function_response):
                                 st.error(f"🚨 **X-RAY DIAGNOSTIC (RAW TOOL OUTPUT):**\n\n{function_response}")
 
@@ -526,7 +518,7 @@ with tab_terminal:
 
                     message_placeholder.markdown(full_response)
                     st.session_state.messages.append({"role": "assistant", "content": full_response})
-                    save_memory() # Persist the response immediately
+                    save_memory() 
                     
                 except Exception as e:
                     message_placeholder.error(f"🚨 SYSTEM ANOMALY: {str(e)}")
@@ -572,7 +564,6 @@ with tab_matrix:
     if "latest_matrix" in st.session_state:
         st.dataframe(st.session_state.latest_matrix, use_container_width=True)
         
-        # Create downloadable CSV
         csv_buffer = io.StringIO()
         st.session_state.latest_matrix.to_csv(csv_buffer, index=False)
         st.download_button(
