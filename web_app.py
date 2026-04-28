@@ -1,10 +1,12 @@
 import streamlit as st
+import streamlit.components.v1 as components
 from openai import OpenAI
 from pinecone import Pinecone
 import PyPDF2
 import pandas as pd
 import io
 import json
+import os
 import requests
 from streamlit_oauth import OAuth2Component
 import toolbox
@@ -119,6 +121,48 @@ if not st.session_state.logged_in:
 st.markdown("<h1 class='main-header'>Blessed Oracle of Freight</h1>", unsafe_allow_html=True)
 st.success(f"Secure connection established: {st.session_state.user_email}")
 
+# --- THE HEARTBEAT (Prevents Idle Timeouts) ---
+# This invisible JS pings the Streamlit server every 60 seconds to keep the websocket alive.
+components.html(
+    """
+    <script>
+    setInterval(function() {
+        window.parent.postMessage('ping', '*');
+    }, 60000);
+    </script>
+    """,
+    height=0, width=0,
+)
+
+# --- LONG-TERM MEMORY PROTOCOL ---
+def get_memory_file_path():
+    # Creates a unique file name based on the user's email (e.g., guan_memory.json)
+    safe_email = st.session_state.user_email.replace("@", "_at_").replace(".", "_")
+    return f"boof_memory_{safe_email}.json"
+
+def load_memory():
+    file_path = get_memory_file_path()
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, "r") as f:
+                st.session_state.messages = json.load(f)
+        except Exception:
+            st.session_state.messages = []
+    else:
+        st.session_state.messages = []
+
+def save_memory():
+    file_path = get_memory_file_path()
+    try:
+        with open(file_path, "w") as f:
+            json.dump(st.session_state.messages, f)
+    except Exception as e:
+        print(f"Failed to save memory: {e}")
+
+# Load memory into session state if it hasn't been loaded yet
+if "messages" not in st.session_state:
+    load_memory()
+
 # 2. Database Connection (Cached)
 @st.cache_resource
 def init_clients():
@@ -179,6 +223,12 @@ with st.sidebar:
     uploaded_files = st.file_uploader("", type=['pdf', 'csv', 'txt', 'xlsx', 'xls'], key="chat_uploader", accept_multiple_files=True)
     if uploaded_files:
         st.info(f"Payload acquired: {len(uploaded_files)} file(s) loaded.")
+        
+    st.divider()
+    if st.button("🧹 Clear Chat Memory"):
+        st.session_state.messages = []
+        save_memory()
+        st.rerun()
 
 # --- DUAL CONSOLE SETUP ---
 tab_terminal, tab_matrix = st.tabs(["💬 ORACLE TERMINAL", "📊 MATRIX DASHBOARD"])
@@ -189,9 +239,6 @@ tab_terminal, tab_matrix = st.tabs(["💬 ORACLE TERMINAL", "📊 MATRIX DASHBOA
 with tab_terminal:
     st.markdown("<h3 class='sub-header'>FCA Diagnostic Chat</h3>", unsafe_allow_html=True)
     
-    if "messages" not in st.session_state:
-        st.session_state.messages = []
-
     chat_log = st.container()
 
     with chat_log:
@@ -214,6 +261,7 @@ with tab_terminal:
         full_user_query = prompt + file_context
 
         st.session_state.messages.append({"role": "user", "content": prompt + (" *(Files Attached)*" if uploaded_files else "")})
+        save_memory() # Persist the new message immediately
         
         with chat_log:
             with st.chat_message("user"):
@@ -276,7 +324,7 @@ with tab_terminal:
                        * Prohibition on Hallucination: Never guess. Do not invent data. If you cannot solve a problem, advise the user that you cannot solve the problem.
                        * Linguistics: Utilise Australian/British English exclusively. Do not use the em dash.
                     9. THE HUNT PROTOCOL: If a user asks for the status of a reference number (e.g., FCU000071), you must autonomously search Machship, Transvirtual, and Carton Cloud. If the first tool returns no result, DO NOT stop. Execute the next tool. Only report failure if all three databases come up empty.
-                    10. HYBRID GEMINI PROTOCOL: If the user asks you to analyze a heavy dataset, cross-reference multiple files, audit a large file, or create a spreadsheet from uploaded CSV/Excel files, DO NOT try to read the files yourself and DO NOT search Google Drive for them. You must immediately execute the `hybrid_gemini_sheet_generator` tool. CRITICAL: You are strictly forbidden from executing this tool more than once per response. Execute the tool exactly ONE time, report the success, and stop. Do not double-fire.
+                    10. HYBRID GEMINI PROTOCOL: If the user asks you to analyze a heavy dataset, cross-reference multiple files, audit a large file, or create a spreadsheet from uploaded CSV/Excel files, DO NOT try to read the files yourself and DO NOT search Google Drive for them. You must immediately execute the `hybrid_gemini_sheet_generator` tool.
                     11. TRANSPARENCY PROTOCOL: If any tool returns an error message or crash report (e.g., "HYBRID GEMINI CRASH:" or "Tool Execution Crash:"), you MUST NOT hide it. You must explicitly output the exact error message to the user in your response so they can diagnose the anomaly.
                     12. INVOICE RECONCILIATION PROTOCOL: If the user uploads a carrier invoice and asks you to audit, reconcile, or check the variances on it, you MUST execute `tool_8_carrier_invoice_auditor`. Pass the full extracted text of the document into the tool, and use '{st.session_state.user_email}' for the notification_email parameter.
 
@@ -422,7 +470,8 @@ with tab_terminal:
                     
                     api_messages = [{"role": "system", "content": system_prompt}]
 
-                    for msg in st.session_state.messages[:-1]:
+                    # Only feed the last 15 messages so the token limit doesn't explode over weeks of chat history
+                    for msg in st.session_state.messages[-15:-1]:
                         api_messages.append({"role": msg["role"], "content": msg["content"]})
 
                     api_messages.append({"role": "user", "content": full_user_query})
@@ -477,6 +526,7 @@ with tab_terminal:
 
                     message_placeholder.markdown(full_response)
                     st.session_state.messages.append({"role": "assistant", "content": full_response})
+                    save_memory() # Persist the response immediately
                     
                 except Exception as e:
                     message_placeholder.error(f"🚨 SYSTEM ANOMALY: {str(e)}")
@@ -534,7 +584,3 @@ with tab_matrix:
         )
     else:
         st.markdown("*(Matrix projection grid will appear here once executed)*")
-
-
-
-
