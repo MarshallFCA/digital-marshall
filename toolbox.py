@@ -412,7 +412,12 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
     from datetime import datetime, timedelta
 
     try:
-        df = pd.read_csv(io.BytesIO(file_bytes))
+        # THE IRON STOMACH UPGRADE: Automatically bypass encoding errors
+        try:
+            df = pd.read_csv(io.BytesIO(file_bytes))
+        except UnicodeDecodeError:
+            df = pd.read_csv(io.BytesIO(file_bytes), encoding='cp1252', encoding_errors='replace')
+            
         pc_db = fetch_australian_postcodes()
         
         def get_val(row_s, possible_cols, default=""):
@@ -589,7 +594,12 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
             uf.seek(0)
             try:
                 if file_extension == "csv":
-                    temp_df = pd.read_csv(uf)
+                    # THE IRON STOMACH UPGRADE: Catch and handle encoding errors autonomously
+                    try:
+                        temp_df = pd.read_csv(uf)
+                    except UnicodeDecodeError:
+                        uf.seek(0)
+                        temp_df = pd.read_csv(uf, encoding='cp1252', encoding_errors='replace')
                 elif file_extension in ["xlsx", "xls"]:
                     temp_df = pd.read_excel(uf)
                 else:
