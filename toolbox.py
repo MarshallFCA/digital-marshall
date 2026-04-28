@@ -565,36 +565,46 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
         return False, f"Matrix Engine Crash: {str(e)}"
 
 # ==========================================
-# TOOL 7: HYBRID GEMINI SHEET GENERATOR 
+# TOOL 7: PANDAS ORCHESTRATOR (UPGRADED HYBRID SHEET GENERATOR)
 # ==========================================
 def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> str:
     import google.generativeai as genai
     import pandas as pd
     import io
-    import csv
+    import json
     import streamlit as st
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
 
     try:
+        # 1. Fetch the Heavy Data safely via Streamlit session state
         uploaded_files = st.session_state.get("chat_uploader")
         if not uploaded_files:
             return "Error: No files currently uploaded in the Oracle Data Ingestion port. Please upload payloads first."
 
-        full_data_string = ""
+        # Merge all files into one powerful Pandas DataFrame natively to avoid token limits
+        df_list = []
         for uf in uploaded_files:
             file_extension = uf.name.split(".")[-1].lower()
-            
-            if file_extension == "csv":
-                raw_text = uf.getvalue().decode('utf-8', errors='replace')
-                full_data_string += f"\n=== FILE: {uf.name} ===\n{raw_text}\n"
-            elif file_extension in ["xlsx", "xls"]:
-                uf.seek(0)
-                df = pd.read_excel(uf)
-                full_data_string += f"\n=== FILE: {uf.name} ===\n{df.to_csv(index=False)}\n"
-            else:
-                return f"Error: The uploaded file {uf.name} must be a CSV or Excel spreadsheet for the Gemini Matrix generator."
+            uf.seek(0)
+            try:
+                if file_extension == "csv":
+                    temp_df = pd.read_csv(uf)
+                elif file_extension in ["xlsx", "xls"]:
+                    temp_df = pd.read_excel(uf)
+                else:
+                    continue
+                df_list.append(temp_df)
+            except Exception as read_err:
+                return f"Error reading file {uf.name}: {str(read_err)}"
 
+        if not df_list:
+            return "Error: No valid CSV or Excel files were found to combine."
+
+        # Combine them all
+        main_df = pd.concat(df_list, ignore_index=True)
+
+        # 2. Configure Gemini API
         gemini_key = st.secrets.get("GEMINI_API_KEY")
         if not gemini_key:
             return "Error: GEMINI_API_KEY is missing from the telemetry secrets."
@@ -603,53 +613,68 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         
         try:
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            if 'models/gemini-1.5-pro-latest' in available_models:
-                target_model = 'gemini-1.5-pro-latest'
-            elif 'models/gemini-1.5-pro' in available_models:
-                target_model = 'gemini-1.5-pro'
-            elif 'models/gemini-1.5-flash-latest' in available_models:
-                target_model = 'gemini-1.5-flash-latest'
-            elif 'models/gemini-1.5-flash' in available_models:
-                target_model = 'gemini-1.5-flash'
-            elif 'models/gemini-pro' in available_models:
-                target_model = 'gemini-pro'
-            elif available_models:
-                target_model = available_models[0].replace('models/', '') 
-            else:
-                return "Error: No valid text generation models found for this API key."
-                
-            target_model = target_model.replace('models/', '')
-            model = genai.GenerativeModel(target_model)
-            
+            target_model = 'gemini-1.5-pro' # Default preferred
+            if 'models/gemini-1.5-pro-latest' in available_models: target_model = 'gemini-1.5-pro-latest'
+            model = genai.GenerativeModel(target_model.replace('models/', ''))
         except Exception as model_err:
             return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {str(model_err)}"
 
-        system_instruction = "You are an enterprise data extraction AI. You will receive instructions and raw data from one or multiple files. You MUST cross-reference the data as instructed and output your final answer as pure CSV text. Do not include markdown formatting. Do not include conversational text."
-        full_prompt = system_instruction + "\n\nUSER INSTRUCTIONS:\n" + instructions + "\n\nRAW DATA BASKET:\n" + full_data_string
+        # 3. Formulate the Pandas scripting prompt for Gemini
+        schema_info = main_df.dtypes.to_string()
+        sample_data = main_df.head(3).to_csv(index=False)
 
-        response = model.generate_content(full_prompt)
-        gemini_csv_output = response.text.strip()
+        prompt = f"""
+        You are an expert Python Pandas data architect. 
+        I have a massive DataFrame `df` combining multiple raw reports.
+        
+        Here are the columns and their datatypes:
+        {schema_info}
+        
+        Here is a 3-row sample of the data to understand the context:
+        {sample_data}
+        
+        USER INSTRUCTIONS:
+        {instructions}
+        
+        Task: Write a complete, syntactically correct Python function named `transform_df(df)` that performs all the requested filtering, renaming, calculations, and column selections to satisfy the user's instructions.
+        - The function must take a single argument `df` (the Pandas DataFrame).
+        - The function must return the modified `df`.
+        - Handle any math (e.g., subtracting Supplier Levy from Customer Grand) natively in pandas.
+        - ONLY output the raw Python code block inside ```python ... ```. Do not include markdown explanations.
+        """
 
-        forbidden_char = chr(96)
-        gemini_csv_output = gemini_csv_output.replace(forbidden_char + "csv", "")
-        gemini_csv_output = gemini_csv_output.replace(forbidden_char, "")
-        gemini_csv_output = gemini_csv_output.strip()
+        # 4. Generate Code
+        response = model.generate_content(prompt)
+        response_text = response.text.strip()
 
+        # Safely extract code block
+        code_match = re.search(r"```python(.*?)```", response_text, re.DOTALL)
+        if code_match:
+            code_str = code_match.group(1).strip()
+        else:
+            code_str = response_text.replace("```", "").strip()
+
+        # 5. Execute Code locally on the big DataFrame
+        local_vars = {}
+        try:
+            # We pass 'pd' into the exec environment so Gemini can use pandas functions
+            exec(code_str, {'pd': pd}, local_vars)
+            transform_df = local_vars['transform_df']
+            final_df = transform_df(main_df)
+        except Exception as exec_err:
+            return f"Error executing Pandas transformation based on instructions: {str(exec_err)}\n\nAttempted Code:\n{code_str}"
+
+        # 6. Connect to Google Sheets & Drive via GCP
         credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
             credentials_dict,
-            scopes=["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/spreadsheets"]
+            scopes=["[https://www.googleapis.com/auth/drive](https://www.googleapis.com/auth/drive)", "[https://www.googleapis.com/auth/spreadsheets](https://www.googleapis.com/auth/spreadsheets)"]
         )
 
         sheets_service = build("sheets", "v4", credentials=creds)
         drive_service = build("drive", "v3", credentials=creds)
 
-        csv_reader = csv.reader(io.StringIO(gemini_csv_output))
-        values = list(csv_reader)
-
-        if not values:
-            return "Error: Gemini processed the data but returned an empty structural matrix."
-
+        # 7. Use the EXACT Folder ID provided by Mission Control
         parent_folder_id = "1U8PYxUZMfJql0AYnhc0izJpI0FqveeFR"
 
         file_metadata = {
@@ -665,6 +690,11 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         ).execute()
         spreadsheet_id = sheet_file.get('id')
 
+        # Convert DataFrame to clean list of lists for Google Sheets API
+        final_df = final_df.fillna("") # Replace NaNs with empty strings to prevent API crashes
+        headers_list = final_df.columns.tolist()
+        values = [headers_list] + final_df.values.tolist()
+
         body = {
             "values": values
         }
@@ -675,6 +705,7 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
             body=body
         ).execute()
 
+        # 8. Transfer Ownership / Share
         human_email = st.session_state.get("user_email", "")
         if human_email:
             try:
@@ -692,8 +723,8 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
             except Exception:
                 pass 
 
-        sheet_url = "https://docs.google.com/spreadsheets/d/" + spreadsheet_id
-        return "SUCCESS: Hybrid Gemini multi-file analysis complete. The dataset was piped into a new Google Sheet inside your 'BOOF Exports' Shared Drive folder. Title: " + target_sheet_name + " | URL: " + sheet_url
+        sheet_url = "[https://docs.google.com/spreadsheets/d/](https://docs.google.com/spreadsheets/d/)" + spreadsheet_id
+        return "SUCCESS: Hybrid Engine multi-file analysis complete. The dataset was merged, processed natively, and piped into a new Google Sheet inside your 'BOOF Exports' Shared Drive folder. Title: " + target_sheet_name + " | URL: " + sheet_url
 
     except Exception as e:
         return "HYBRID GEMINI CRASH: " + str(e)
@@ -781,7 +812,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             if connote:
                 if connote.startswith("MS"):
                     ms_id = re.sub(r"\D", "", connote)
-                    url_ms = f"https://live.machship.com/apiv2/consignments/getConsignment?id={ms_id}"
+                    url_ms = f"[https://live.machship.com/apiv2/consignments/getConsignment?id=](https://live.machship.com/apiv2/consignments/getConsignment?id=){ms_id}"
                     try:
                         ms_response = requests.get(url_ms, headers=headers, timeout=15)
                         if ms_response.status_code == 200:
@@ -793,9 +824,9 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 
                 if not found_data:
                     search_routes = [
-                        "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true",
-                        "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1?includeChildCompanies=true",
-                        "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference2?includeChildCompanies=true"
+                        "[https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true](https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true)",
+                        "[https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1?includeChildCompanies=true](https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1?includeChildCompanies=true)",
+                        "[https://live.machship.com/apiv2/consignments/returnConsignmentsByReference2?includeChildCompanies=true](https://live.machship.com/apiv2/consignments/returnConsignmentsByReference2?includeChildCompanies=true)"
                     ]
                     payload = [connote]
                     
@@ -830,7 +861,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
             credentials_dict,
-            scopes=["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/spreadsheets"]
+            scopes=["[https://www.googleapis.com/auth/drive](https://www.googleapis.com/auth/drive)", "[https://www.googleapis.com/auth/spreadsheets](https://www.googleapis.com/auth/spreadsheets)"]
         )
 
         sheets_service = build("sheets", "v4", credentials=creds)
@@ -876,7 +907,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         except Exception as share_err:
             print(f"Warning: Could not auto-share via email {notification_email}. Error: {share_err}")
 
-        sheet_url = "https://docs.google.com/spreadsheets/d/" + spreadsheet_id
+        sheet_url = "[https://docs.google.com/spreadsheets/d/](https://docs.google.com/spreadsheets/d/)" + spreadsheet_id
         return f"SUCCESS: Invoice Reconciliation complete. {len(reconciliation_data)} shipments audited. Report generated in Shared Drive: {sheet_url}"
 
     except Exception as e:
