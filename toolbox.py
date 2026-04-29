@@ -13,7 +13,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
 # ==========================================
-# AUTHENTICATION CACHES
+# AUTHENTICATION CACHES (PERFORMANCE UPGRADE)
 # ==========================================
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_xero_token():
@@ -155,6 +155,10 @@ def search_machship_connote(connote_number: str) -> str:
 # TOOL 3: TRANSVIRTUAL CONSIGNMENT SEARCH
 # ==========================================
 def search_transvirtual_connote(connote_number: str) -> str:
+    import json
+    import requests
+    import streamlit as st
+
     try:
         token = st.secrets["transvirtual"]["TRANSVIRTUAL_API_KEY"]
         connote_number = connote_number.strip().upper()
@@ -399,6 +403,13 @@ def fetch_australian_postcodes():
     return pc_to_suburb
 
 def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
+    import pandas as pd
+    import io
+    import requests
+    import streamlit as st
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from datetime import datetime, timedelta
+
     try:
         try:
             df = pd.read_csv(io.BytesIO(file_bytes))
@@ -413,9 +424,9 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
                     return str(row_s[col]).strip()
             return default
             
-        next_day = datetime.now() + datetime.timedelta(days=1)
+        next_day = datetime.now() + timedelta(days=1)
         while next_day.weekday() >= 5:  
-            next_day += datetime.timedelta(days=1)
+            next_day += timedelta(days=1)
         dispatch_date = next_day.strftime("%Y-%m-%dT09:00:00")
 
         token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
@@ -562,6 +573,15 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
 # ==========================================
 def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> str:
     import google.generativeai as genai
+    import pandas as pd
+    import numpy as np
+    import datetime
+    import re
+    import io
+    import json
+    import streamlit as st
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
 
     try:
         uploaded_files = st.session_state.get("chat_uploader")
@@ -643,9 +663,11 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         
         Task: Write a complete, syntactically correct Python function named `transform_df(df)` that performs all the requested filtering, renaming, calculations, and column selections.
         - The function must take a single argument `df` (the Pandas DataFrame) and return the modified `df`.
-        - CRITICAL DATA TYPE HANDLING: Currency fields (e.g., "$1,234.56") are loaded as strings. Before doing any math (addition, subtraction), you MUST clean them and convert to float: `df['Col'] = df['Col'].astype(str).str.replace(r'[$,]', '', regex=True).astype(float)`.
-        - CRITICAL DATE HANDLING: Convert dates before calculating durations using `pd.to_datetime(df['Col'], format='mixed', errors='coerce')` or `dayfirst=True`. Durations should be calculated and converted to `.dt.days` or strings.
-        - CRITICAL: DO NOT truncate the dataset. Do not use `.head()` or `.iloc`. You must process and return all rows.
+        - Handle any math natively in pandas.
+        - CRITICAL CURRENCY HANDLING: Currency fields (e.g., "$1,234.56") are loaded as strings. Before doing math, clean them: `df['Col'] = df['Col'].astype(str).str.replace(r'[$,]', '', regex=True).astype(float)`.
+        - CRITICAL DATE HANDLING: The data uses Australian dates (DD/MM/YYYY). ALWAYS use `pd.to_datetime(df['Col'], dayfirst=True, errors='coerce')`. 
+        - CRITICAL MATH & DURATIONS: Calculate date durations using `(date2 - date1).dt.days`. If a required column for any calculation does not exist in the DataFrame, DO NOT CRASH. Create the target output column and fill it with `np.nan`.
+        - CRITICAL ROW RETENTION: DO NOT use `.dropna()` on the dataset. DO NOT truncate or use `.head()`. Keep all rows. If a date filter is requested, ensure you used `dayfirst=True` so you don't accidentally drop valid Australian dates.
         - You have full access to `import pandas as pd`, `import numpy as np`, `import datetime`, and `import re`.
         - ONLY output the raw Python code block inside ```python ... ```. Do not include markdown explanations.
         """
@@ -766,7 +788,7 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
                 pass 
 
         sheet_url = "[https://docs.google.com/spreadsheets/d/](https://docs.google.com/spreadsheets/d/)" + spreadsheet_id
-        return f"SUCCESS: Hybrid Engine multi-file analysis complete. The dataset was merged, processed natively, and piped into a new Google Sheet inside your 'BOOF Exports' Shared Drive folder. Title: " + target_sheet_name + " | URL: " + sheet_url
+        return "SUCCESS: Hybrid Engine multi-file analysis complete. The dataset was merged, processed natively, and piped into a new Google Sheet inside your 'BOOF Exports' Shared Drive folder. Title: " + target_sheet_name + " | URL: " + sheet_url
 
     except Exception as e:
         return "HYBRID GEMINI CRASH: " + str(e)
@@ -776,6 +798,13 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
 # ==========================================
 def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: str) -> str:
     import google.generativeai as genai
+    import json
+    import requests
+    import pandas as pd
+    import streamlit as st
+    import re
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
     
     try:
         gemini_key = st.secrets.get("GEMINI_API_KEY")
