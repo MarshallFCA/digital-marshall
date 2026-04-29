@@ -224,7 +224,7 @@ def search_and_read_google_drive(search_query: str) -> str:
         credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
             credentials_dict,
-            scopes=['https://www.googleapis.com/auth/drive.readonly']
+            scopes=["https://www.google" + "apis.com/auth/drive.readonly"]
         )
         service = build('drive', 'v3', credentials=creds)
 
@@ -685,9 +685,12 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
             return f"Error executing Pandas transformation based on instructions: {str(exec_err)}\n\nAttempted Code:\n{code_str}"
 
         credentials_dict = dict(st.secrets["gcp_service_account"])
+        
+        # OBFUSCATED SCOPES TO PREVENT MARKDOWN CORRUPTION DURING COPY-PASTE
+        api_base = "[https://www.google](https://www.google)" + "[apis.com/auth](https://apis.com/auth)"
         creds = service_account.Credentials.from_service_account_info(
             credentials_dict,
-            scopes=["[https://www.googleapis.com/auth/drive](https://www.googleapis.com/auth/drive)", "[https://www.googleapis.com/auth/spreadsheets](https://www.googleapis.com/auth/spreadsheets)"]
+            scopes=[f"{api_base}/drive", f"{api_base}/spreadsheets"]
         )
 
         sheets_service = build("sheets", "v4", credentials=creds)
@@ -713,7 +716,6 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         
         values = [headers_list] + final_df.astype(str).values.tolist()
 
-        # BULLETPROOF GRID EXPANSION: Force Google Sheets to expand before writing
         try:
             sheet_metadata = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
             sheet_id = sheet_metadata['sheets'][0]['properties']['sheetId']
@@ -909,9 +911,12 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             })
 
         credentials_dict = dict(st.secrets["gcp_service_account"])
+        
+        # OBFUSCATED SCOPES TO PREVENT MARKDOWN CORRUPTION DURING COPY-PASTE
+        api_base = "[https://www.google](https://www.google)" + "[apis.com/auth](https://apis.com/auth)"
         creds = service_account.Credentials.from_service_account_info(
             credentials_dict,
-            scopes=["[https://www.googleapis.com/auth/drive](https://www.googleapis.com/auth/drive)", "[https://www.googleapis.com/auth/spreadsheets](https://www.googleapis.com/auth/spreadsheets)"]
+            scopes=[f"{api_base}/drive", f"{api_base}/spreadsheets"]
         )
 
         sheets_service = build("sheets", "v4", credentials=creds)
