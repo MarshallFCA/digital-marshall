@@ -687,7 +687,7 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
             credentials_dict,
-            scopes=["[https://www.googleapis.com/auth/drive](https://www.googleapis.com/auth/drive)", "[https://www.googleapis.com/auth/spreadsheets](https://www.googleapis.com/auth/spreadsheets)"]
+            scopes=["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/spreadsheets"]
         )
 
         sheets_service = build("sheets", "v4", credentials=creds)
@@ -884,7 +884,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
             credentials_dict,
-            scopes=["[https://www.googleapis.com/auth/drive](https://www.googleapis.com/auth/drive)", "[https://www.googleapis.com/auth/spreadsheets](https://www.googleapis.com/auth/spreadsheets)"]
+            scopes=["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/spreadsheets"]
         )
 
         sheets_service = build("sheets", "v4", credentials=creds)
