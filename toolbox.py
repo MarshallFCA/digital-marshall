@@ -59,7 +59,7 @@ def get_cartoncloud_token():
         return f"Error: {str(e)}"
 
 # ==========================================
-# TOOL 1: XERO FINANCIAL SEARCH (UPGRADED WITH FALLBACK)
+# TOOL 1: XERO FINANCIAL SEARCH
 # ==========================================
 def search_xero_contact(contact_name: str) -> str:
     token = get_xero_token()
@@ -75,17 +75,14 @@ def search_xero_contact(contact_name: str) -> str:
         return response.json().get("Contacts", [])
 
     try:
-        # 1. Try the exact phrase first
         contacts = fetch_contacts(contact_name)
         
-        # 2. Fallback: If no results, slice the phrase and search by the primary root word (e.g., "Ward")
         if not contacts and " " in contact_name:
             first_word = contact_name.split()[0]
             if len(first_word) > 2:
                 contacts = fetch_contacts(first_word)
         
         if contacts:
-            # Return up to top 3 closest matches so the LLM can interpret acronyms correctly
             results_summary = []
             for contact in contacts[:3]:
                 name = contact.get("Name", "Unknown")
@@ -412,7 +409,6 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
     from datetime import datetime, timedelta
 
     try:
-        # THE IRON STOMACH UPGRADE: Automatically bypass encoding errors
         try:
             df = pd.read_csv(io.BytesIO(file_bytes))
         except UnicodeDecodeError:
@@ -582,19 +578,16 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
     from googleapiclient.discovery import build
 
     try:
-        # 1. Fetch the Heavy Data safely via Streamlit session state
         uploaded_files = st.session_state.get("chat_uploader")
         if not uploaded_files:
             return "Error: No files currently uploaded in the Oracle Data Ingestion port. Please upload payloads first."
 
-        # Merge all files into one powerful Pandas DataFrame natively to avoid token limits
         df_list = []
         for uf in uploaded_files:
             file_extension = uf.name.split(".")[-1].lower()
             uf.seek(0)
             try:
                 if file_extension == "csv":
-                    # THE IRON STOMACH UPGRADE: Catch and handle encoding errors autonomously
                     try:
                         temp_df = pd.read_csv(uf)
                     except UnicodeDecodeError:
@@ -611,10 +604,8 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         if not df_list:
             return "Error: No valid CSV or Excel files were found to combine."
 
-        # Combine them all
         main_df = pd.concat(df_list, ignore_index=True)
 
-        # 2. Configure Gemini API
         gemini_key = st.secrets.get("GEMINI_API_KEY")
         if not gemini_key:
             return "Error: GEMINI_API_KEY is missing from the telemetry secrets."
@@ -623,13 +614,31 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         
         try:
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            target_model = 'gemini-1.5-pro' # Default preferred
-            if 'models/gemini-1.5-pro-latest' in available_models: target_model = 'gemini-1.5-pro-latest'
-            model = genai.GenerativeModel(target_model.replace('models/', ''))
+            target_model = None
+            preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest', 'models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest', 'models/gemini-pro']
+            
+            for pref in preferred:
+                if pref in available_models:
+                    target_model = pref
+                    break
+                    
+            if not target_model:
+                for m in available_models:
+                    if 'gemini-1.5-pro' in m:
+                        target_model = m
+                        break
+            
+            if not target_model and available_models:
+                target_model = available_models[0]
+                
+            if not target_model:
+                return "Error: No valid text generation models found for this API key."
+                
+            target_model = target_model.replace('models/', '')
+            model = genai.GenerativeModel(target_model)
         except Exception as model_err:
             return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {str(model_err)}"
 
-        # 3. Formulate the Pandas scripting prompt for Gemini
         schema_info = main_df.dtypes.to_string()
         sample_data = main_df.head(3).to_csv(index=False)
 
@@ -653,28 +662,23 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         - ONLY output the raw Python code block inside ```python ... ```. Do not include markdown explanations.
         """
 
-        # 4. Generate Code
         response = model.generate_content(prompt)
         response_text = response.text.strip()
 
-        # Safely extract code block
         code_match = re.search(r"```python(.*?)```", response_text, re.DOTALL)
         if code_match:
             code_str = code_match.group(1).strip()
         else:
             code_str = response_text.replace("```", "").strip()
 
-        # 5. Execute Code locally on the big DataFrame
         local_vars = {}
         try:
-            # We pass 'pd' into the exec environment so Gemini can use pandas functions
             exec(code_str, {'pd': pd}, local_vars)
             transform_df = local_vars['transform_df']
             final_df = transform_df(main_df)
         except Exception as exec_err:
             return f"Error executing Pandas transformation based on instructions: {str(exec_err)}\n\nAttempted Code:\n{code_str}"
 
-        # 6. Connect to Google Sheets & Drive via GCP
         credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
             credentials_dict,
@@ -684,7 +688,6 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         sheets_service = build("sheets", "v4", credentials=creds)
         drive_service = build("drive", "v3", credentials=creds)
 
-        # 7. Use the EXACT Folder ID provided by Mission Control
         parent_folder_id = "1U8PYxUZMfJql0AYnhc0izJpI0FqveeFR"
 
         file_metadata = {
@@ -700,8 +703,7 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         ).execute()
         spreadsheet_id = sheet_file.get('id')
 
-        # Convert DataFrame to clean list of lists for Google Sheets API
-        final_df = final_df.fillna("") # Replace NaNs with empty strings to prevent API crashes
+        final_df = final_df.fillna("") 
         headers_list = final_df.columns.tolist()
         values = [headers_list] + final_df.values.tolist()
 
@@ -715,7 +717,6 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
             body=body
         ).execute()
 
-        # 8. Transfer Ownership / Share
         human_email = st.session_state.get("user_email", "")
         if human_email:
             try:
@@ -762,24 +763,28 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         
         try:
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            if 'models/gemini-1.5-pro-latest' in available_models:
-                target_model = 'gemini-1.5-pro-latest'
-            elif 'models/gemini-1.5-pro' in available_models:
-                target_model = 'gemini-1.5-pro'
-            elif 'models/gemini-1.5-flash-latest' in available_models:
-                target_model = 'gemini-1.5-flash-latest'
-            elif 'models/gemini-1.5-flash' in available_models:
-                target_model = 'gemini-1.5-flash'
-            elif 'models/gemini-pro' in available_models:
-                target_model = 'gemini-pro'
-            elif available_models:
-                target_model = available_models[0].replace('models/', '') 
-            else:
+            target_model = None
+            preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest', 'models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest', 'models/gemini-pro']
+            
+            for pref in preferred:
+                if pref in available_models:
+                    target_model = pref
+                    break
+                    
+            if not target_model:
+                for m in available_models:
+                    if 'gemini-1.5-pro' in m:
+                        target_model = m
+                        break
+            
+            if not target_model and available_models:
+                target_model = available_models[0]
+                
+            if not target_model:
                 return "Error: No valid text generation models found for this API key."
                 
             target_model = target_model.replace('models/', '')
             model = genai.GenerativeModel(target_model)
-            
         except Exception as model_err:
             return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {str(model_err)}"
         
