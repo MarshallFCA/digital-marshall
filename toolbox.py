@@ -572,7 +572,7 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
 def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> str:
     import google.generativeai as genai
     import pandas as pd
-    import numpy as np  # Fully available to the exec context now
+    import numpy as np
     import datetime
     import re
     import io
@@ -662,6 +662,7 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         Task: Write a complete, syntactically correct Python function named `transform_df(df)` that performs all the requested filtering, renaming, calculations, and column selections.
         - The function must take a single argument `df` (the Pandas DataFrame) and return the modified `df`.
         - Handle any math natively in pandas.
+        - CRITICAL: DO NOT truncate the dataset. Do not use `.head()` or `.iloc`. You must process and return all rows.
         - You have full access to `import pandas as pd`, `import numpy as np`, `import datetime`, and `import re`. Use them if needed.
         - ONLY output the raw Python code block inside ```python ... ```. Do not include markdown explanations.
         """
@@ -677,7 +678,6 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
 
         local_vars = {}
         try:
-            # Fully upgraded Execution Sandbox
             exec(code_str, {'pd': pd, 'np': np, 'datetime': datetime, 're': re}, local_vars)
             transform_df = local_vars['transform_df']
             final_df = transform_df(main_df)
@@ -687,7 +687,7 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
             credentials_dict,
-            scopes=["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/spreadsheets"]
+            scopes=["[https://www.googleapis.com/auth/drive](https://www.googleapis.com/auth/drive)", "[https://www.googleapis.com/auth/spreadsheets](https://www.googleapis.com/auth/spreadsheets)"]
         )
 
         sheets_service = build("sheets", "v4", credentials=creds)
@@ -711,15 +711,42 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         final_df = final_df.fillna("") 
         headers_list = final_df.columns.tolist()
         
-        # Convert any unexpected objects (like timestamps) to string formats so JSON doesn't crash
         values = [headers_list] + final_df.astype(str).values.tolist()
+
+        # BULLETPROOF GRID EXPANSION: Force Google Sheets to expand before writing
+        try:
+            sheet_metadata = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+            sheet_id = sheet_metadata['sheets'][0]['properties']['sheetId']
+            
+            requests_body = {
+                "requests": [
+                    {
+                        "updateSheetProperties": {
+                            "properties": {
+                                "sheetId": sheet_id,
+                                "gridProperties": {
+                                    "rowCount": max(1000, len(values) + 100),
+                                    "columnCount": max(26, len(headers_list) + 5)
+                                }
+                            },
+                            "fields": "gridProperties(rowCount,columnCount)"
+                        }
+                    }
+                ]
+            }
+            sheets_service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body=requests_body
+            ).execute()
+        except Exception as e:
+            print(f"Grid expansion warning: {e}")
 
         body = {
             "values": values
         }
         sheets_service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
-            range="Sheet1",
+            range="Sheet1!A1",
             valueInputOption="USER_ENTERED",
             body=body
         ).execute()
@@ -884,7 +911,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
             credentials_dict,
-            scopes=["https://www.googleapis.com/auth/drive", "https://www.googleapis.com/auth/spreadsheets"]
+            scopes=["[https://www.googleapis.com/auth/drive](https://www.googleapis.com/auth/drive)", "[https://www.googleapis.com/auth/spreadsheets](https://www.googleapis.com/auth/spreadsheets)"]
         )
 
         sheets_service = build("sheets", "v4", credentials=creds)
@@ -912,9 +939,37 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             values.append([str(row.get(h, "")) for h in headers_list])
 
         body = {"values": values}
+        
+        try:
+            sheet_metadata = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+            sheet_id = sheet_metadata['sheets'][0]['properties']['sheetId']
+            
+            requests_body = {
+                "requests": [
+                    {
+                        "updateSheetProperties": {
+                            "properties": {
+                                "sheetId": sheet_id,
+                                "gridProperties": {
+                                    "rowCount": max(1000, len(values) + 100),
+                                    "columnCount": max(26, len(headers_list) + 5)
+                                }
+                            },
+                            "fields": "gridProperties(rowCount,columnCount)"
+                        }
+                    }
+                ]
+            }
+            sheets_service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body=requests_body
+            ).execute()
+        except Exception as e:
+            print(f"Grid expansion warning: {e}")
+
         sheets_service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
-            range="Sheet1",
+            range="Sheet1!A1",
             valueInputOption="USER_ENTERED",
             body=body
         ).execute()
