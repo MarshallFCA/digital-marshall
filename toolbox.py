@@ -4,6 +4,8 @@ import re
 import json
 import io
 import pandas as pd
+import numpy as np
+import datetime
 import PyPDF2
 import streamlit as st
 from google.oauth2 import service_account
@@ -16,7 +18,6 @@ from googleapiclient.http import MediaIoBaseDownload
 @st.cache_data(ttl=1800, show_spinner=False)  # Cache for 30 mins
 def get_xero_token():
     try:
-        # Added ["xero"] to map to your TOML headers
         client_id = st.secrets["xero"]["XERO_CLIENT_ID"]
         client_secret = st.secrets["xero"]["XERO_CLIENT_SECRET"]
         credentials = f"{client_id}:{client_secret}"
@@ -571,6 +572,9 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
 def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> str:
     import google.generativeai as genai
     import pandas as pd
+    import numpy as np  # Fully available to the exec context now
+    import datetime
+    import re
     import io
     import json
     import streamlit as st
@@ -655,10 +659,10 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         USER INSTRUCTIONS:
         {instructions}
         
-        Task: Write a complete, syntactically correct Python function named `transform_df(df)` that performs all the requested filtering, renaming, calculations, and column selections to satisfy the user's instructions.
-        - The function must take a single argument `df` (the Pandas DataFrame).
-        - The function must return the modified `df`.
-        - Handle any math (e.g., subtracting Supplier Levy from Customer Grand) natively in pandas.
+        Task: Write a complete, syntactically correct Python function named `transform_df(df)` that performs all the requested filtering, renaming, calculations, and column selections.
+        - The function must take a single argument `df` (the Pandas DataFrame) and return the modified `df`.
+        - Handle any math natively in pandas.
+        - You have full access to `import pandas as pd`, `import numpy as np`, `import datetime`, and `import re`. Use them if needed.
         - ONLY output the raw Python code block inside ```python ... ```. Do not include markdown explanations.
         """
 
@@ -673,7 +677,8 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
 
         local_vars = {}
         try:
-            exec(code_str, {'pd': pd}, local_vars)
+            # Fully upgraded Execution Sandbox
+            exec(code_str, {'pd': pd, 'np': np, 'datetime': datetime, 're': re}, local_vars)
             transform_df = local_vars['transform_df']
             final_df = transform_df(main_df)
         except Exception as exec_err:
@@ -705,7 +710,9 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
 
         final_df = final_df.fillna("") 
         headers_list = final_df.columns.tolist()
-        values = [headers_list] + final_df.values.tolist()
+        
+        # Convert any unexpected objects (like timestamps) to string formats so JSON doesn't crash
+        values = [headers_list] + final_df.astype(str).values.tolist()
 
         body = {
             "values": values
@@ -785,6 +792,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 
             target_model = target_model.replace('models/', '')
             model = genai.GenerativeModel(target_model)
+            
         except Exception as model_err:
             return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {str(model_err)}"
         
