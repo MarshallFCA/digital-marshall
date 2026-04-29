@@ -221,10 +221,13 @@ def search_transvirtual_connote(connote_number: str) -> str:
 # ==========================================
 def search_and_read_google_drive(search_query: str) -> str:
     try:
+        # BASE64 ENCODED SCOPE TO PREVENT COPY/PASTE CORRUPTION
+        drive_ro_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZS5yZWFkb25seQ==").decode()
+        
         credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
             credentials_dict,
-            scopes=["https://www.google" + "apis.com/auth/drive.readonly"]
+            scopes=[drive_ro_scope]
         )
         service = build('drive', 'v3', credentials=creds)
 
@@ -684,13 +687,14 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         except Exception as exec_err:
             return f"Error executing Pandas transformation based on instructions: {str(exec_err)}\n\nAttempted Code:\n{code_str}"
 
-        credentials_dict = dict(st.secrets["gcp_service_account"])
+        # BASE64 ENCODED SCOPES TO COMPLETELY DEFEAT ALL CHAT MARKDOWN PARSERS
+        drive_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==").decode()
+        sheets_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9zcHJlYWRzaGVldHM=").decode()
         
-        # OBFUSCATED SCOPES TO PREVENT MARKDOWN CORRUPTION DURING COPY-PASTE
-        api_base = "[https://www.google](https://www.google)" + "[apis.com/auth](https://apis.com/auth)"
+        credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
             credentials_dict,
-            scopes=[f"{api_base}/drive", f"{api_base}/spreadsheets"]
+            scopes=[drive_scope, sheets_scope]
         )
 
         sheets_service = build("sheets", "v4", credentials=creds)
@@ -910,13 +914,14 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 "Status": flag_status
             })
 
-        credentials_dict = dict(st.secrets["gcp_service_account"])
+        # BASE64 ENCODED SCOPES TO COMPLETELY DEFEAT ALL CHAT MARKDOWN PARSERS
+        drive_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==").decode()
+        sheets_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9zcHJlYWRzaGVldHM=").decode()
         
-        # OBFUSCATED SCOPES TO PREVENT MARKDOWN CORRUPTION DURING COPY-PASTE
-        api_base = "[https://www.google](https://www.google)" + "[apis.com/auth](https://apis.com/auth)"
+        credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
             credentials_dict,
-            scopes=[f"{api_base}/drive", f"{api_base}/spreadsheets"]
+            scopes=[drive_scope, sheets_scope]
         )
 
         sheets_service = build("sheets", "v4", credentials=creds)
