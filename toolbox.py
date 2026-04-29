@@ -221,7 +221,7 @@ def search_transvirtual_connote(connote_number: str) -> str:
 # ==========================================
 def search_and_read_google_drive(search_query: str) -> str:
     try:
-        # BASE64 ENCODED SCOPE TO PREVENT COPY/PASTE CORRUPTION
+        # Base64 encoded scope
         drive_ro_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZS5yZWFkb25seQ==").decode()
         
         credentials_dict = dict(st.secrets["gcp_service_account"])
@@ -715,10 +715,13 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         ).execute()
         spreadsheet_id = sheet_file.get('id')
 
-        final_df = final_df.fillna("") 
-        headers_list = final_df.columns.tolist()
+        # === THE NAN ANNIHILATOR ===
+        # Force all data to string to avoid JSON type errors, then eradicate stringified NaNs
+        final_df = final_df.astype(str)
+        final_df = final_df.replace(["nan", "NaN", "<NA>", "NaT", "None"], "")
         
-        values = [headers_list] + final_df.astype(str).values.tolist()
+        headers_list = final_df.columns.tolist()
+        values = [headers_list] + final_df.values.tolist()
 
         try:
             sheet_metadata = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
@@ -914,7 +917,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 "Status": flag_status
             })
 
-        # BASE64 ENCODED SCOPES TO COMPLETELY DEFEAT ALL CHAT MARKDOWN PARSERS
+        # BASE64 ENCODED SCOPES
         drive_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==").decode()
         sheets_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9zcHJlYWRzaGVldHM=").decode()
         
