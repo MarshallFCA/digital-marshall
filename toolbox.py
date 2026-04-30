@@ -855,13 +855,190 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         {raw_invoice_text}
         """
         
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(response_mime_type="application/json")
+        )
+        response_text = response.text.strip()
+        
+        # Failsafe: Strip rogue markdown injections ignoring the mime_type parameter
+        code_match = re.search(r"`" + r"``(?:json)?\s*(.*?)\s*`" + r"``", response_text, re.DOTALL | re.IGNORECASE)
+        if code_match:
+            json_str = code_match.group(1).strip()
+        else:
+            json_str = response_text.strip()
+
         try:
-            response = model.generate_content(
-                prompt,
-                generation_config=genai.GenerationConfig(response_mime_type="application/json")
-            )
-            response_text = response.text.strip()
+            invoice_items = json.loads(json_str)
+        except json.JSONDecodeError as e:
+            return f"Error: Failed to parse JSON payload. JSONDecodeError: {str(e)}\n\nRaw Fragment:\n{json_str}"
+
+        # Setup API Telemetry & Auth for Machship Loop
+        ms_token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
+        ms_headers = { "token": ms_token, "Content-Type": "application/json" }
+        reconciliation_data = []
+
+        search_urls = [
+            "[https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true](https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true)",
+            "[https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1?includeChildCompanies=true](https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1?includeChildCompanies=true)",
+            "[https://live.machship.com/apiv2/consignments/returnConsignmentsByReference2?includeChildCompanies=true](https://live.machship.com/apiv2/consignments/returnConsignmentsByReference2?includeChildCompanies=true)"
+        ]
+
+        # Process each extracted item
+        for item in invoice_items:
+            connote = item.get("connote", "")
+            billed_amount = float(item.get("billed_amount", 0.0))
+            expected_amount = 0.0
+            diagnostic_log = []
+            found = False
+
+            if not connote:
+                diagnostic_log.append("Missing connote parameter from extracted payload.")
+            else:
+                for url in search_urls:
+                    try:
+                        resp = requests.post(url, headers=ms_headers, json=[connote], timeout=15)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            if data.get("object") and len(data["object"]) > 0:
+                                consignment = data["object"][0]
+                                cost = consignment.get("consignmentTotal", {}).get("totalCost")
+                                if cost is not None:
+                                    expected_amount = float(cost)
+                                else:
+                                    diagnostic_log.append("Machship record found, but 'totalCost' node is missing/null.")
+                                found = True
+                                break
+                            else:
+                                diagnostic_log.append(f"Not found via {url.split('/')[-1].split('?')[0]}")
+                        else:
+                            diagnostic_log.append(f"HTTP {resp.status_code} via {url.split('/')[-1].split('?')[0]}")
+                    except requests.exceptions.Timeout:
+                        diagnostic_log.append(f"Timeout via {url.split('/')[-1].split('?')[0]}")
+                    except Exception as loop_e:
+                        diagnostic_log.append(f"Exception via {url.split('/')[-1].split('?')[0]}: {str(loop_e)}")
+
+                if not found:
+                    diagnostic_log.append("Failed to locate connote across all Machship search routes.")
+
+            # Calculate Variance & Diagnostics String
+            variance = billed_amount - expected_amount
+            diag_string = "Clean" if not diagnostic_log else " | ".join(diagnostic_log)
+
+            reconciliation_data.append({
+                "Carrier Connote": connote,
+                "Billed Amount": billed_amount,
+                "Expected Amount": expected_amount,
+                "Variance": variance,
+                "Diagnostics": diag_string
+            })
+
+        # Process DataFrame for Export
+        df = pd.DataFrame(reconciliation_data)
+
+        # Base 64 GCP Scopes Implementation
+        drive_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==").decode()
+        sheets_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9zcHJlYWRzaGVldHM=").decode()
+        
+        credentials_dict = dict(st.secrets["gcp_service_account"])
+        creds = service_account.Credentials.from_service_account_info(
+            credentials_dict,
+            scopes=[drive_scope, sheets_scope]
+        )
+
+        sheets_service = build("sheets", "v4", credentials=creds)
+        drive_service = build("drive", "v3", credentials=creds)
+
+        parent_folder_id = "1U8PYxUZMfJql0AYnhc0izJpI0FqveeFR"
+        timestamp_str = pd.Timestamp.now().strftime("%Y%m%d_%H%M")
+        target_sheet_name = f"Invoice Audit Output - {timestamp_str}"
+
+        file_metadata = {
+            'name': target_sheet_name,
+            'mimeType': 'application/vnd.google-apps.spreadsheet',
+            'parents': [parent_folder_id]
+        }
+        
+        sheet_file = drive_service.files().create(
+            body=file_metadata, 
+            fields='id',
+            supportsAllDrives=True
+        ).execute()
+        spreadsheet_id = sheet_file.get('id')
+
+        # The NaN Rule: Cell-by-cell iteration
+        headers_list = df.columns.tolist()
+        raw_values = df.values.tolist()
+        
+        scrubbed_values = [headers_list]
+        for row in raw_values:
+            clean_row = []
+            for item in row:
+                if pd.isna(item):
+                    clean_row.append("")
+                else:
+                    item_str = str(item)
+                    if item_str.lower() in ["nan", "nat", "<na>", "none"]:
+                        clean_row.append("")
+                    else:
+                        clean_row.append(item_str)
+            scrubbed_values.append(clean_row)
+
+        # Grid Expansion Payload
+        try:
+            sheet_metadata = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+            sheet_id = sheet_metadata['sheets'][0]['properties']['sheetId']
             
-            # Failsafe: Strip rogue markdown injections ignoring the mime_type parameter
-            code_match = re.search(r"
-http://googleusercontent.com/immersive_entry_chip/0
+            requests_body = {
+                "requests": [
+                    {
+                        "updateSheetProperties": {
+                            "properties": {
+                                "sheetId": sheet_id,
+                                "gridProperties": {
+                                    "rowCount": max(1000, len(scrubbed_values) + 100),
+                                    "columnCount": max(26, len(headers_list) + 5)
+                                }
+                            },
+                            "fields": "gridProperties(rowCount,columnCount)"
+                        }
+                    }
+                ]
+            }
+            sheets_service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body=requests_body
+            ).execute()
+        except Exception as grid_e:
+            print(f"Grid expansion warning: {grid_e}")
+
+        # Push Data to Grid
+        body = { "values": scrubbed_values }
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range="Sheet1!A1",
+            valueInputOption="USER_ENTERED",
+            body=body
+        ).execute()
+
+        if notification_email:
+            try:
+                permission = {
+                    "type": "user",
+                    "role": "writer",
+                    "emailAddress": notification_email
+                }
+                drive_service.permissions().create(
+                    fileId=spreadsheet_id,
+                    body=permission,
+                    fields="id",
+                    supportsAllDrives=True
+                ).execute()
+            except Exception:
+                pass 
+
+        sheet_url = "[https://docs.google.com/spreadsheets/d/](https://docs.google.com/spreadsheets/d/)" + spreadsheet_id
+        return f"SUCCESS: Invoice Auditor complete. Processed {len(invoice_items)} records. Diagnostics updated. View Sheet: {sheet_url}"
+
+    except Exception as base_e:
+        return f"TOOL 8 CRITICAL CRASH: {str(base_e)}"
