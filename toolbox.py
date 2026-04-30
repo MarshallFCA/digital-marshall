@@ -23,7 +23,7 @@ def get_xero_token():
         credentials = f"{client_id}:{client_secret}"
         encoded_credentials = base64.b64encode(credentials.encode()).decode()
         
-        url = "https://identity.xero.com/connect/token"
+        url = base64.b64decode("aHR0cHM6Ly9pZGVudGl0eS54ZXJvLmNvbS9jb25uZWN0L3Rva2Vu").decode()
         headers = {
             "Authorization": f"Basic {encoded_credentials}",
             "Content-Type": "application/x-www-form-urlencoded"
@@ -41,7 +41,7 @@ def get_cartoncloud_token():
     try:
         client_id = st.secrets["cartoncloud"]["client_id"].strip()
         client_secret = st.secrets["cartoncloud"]["client_secret"].strip()
-        base_url = "https://api.cartoncloud.com"
+        base_url = base64.b64decode("aHR0cHM6Ly9hcGkuY2FydG9uY2xvdWQuY29t").decode()
 
         credentials = f"{client_id}:{client_secret}"
         encoded_credentials = base64.b64encode(credentials.encode('utf-8')).decode('utf-8')
@@ -69,7 +69,8 @@ def search_xero_contact(contact_name: str) -> str:
     
     def fetch_contacts(search_term):
         safe_name = requests.utils.quote(search_term)
-        url = f'https://api.xero.com/api.xro/2.0/Contacts?where=Name.Contains("{safe_name}")'
+        base_url = base64.b64decode("aHR0cHM6Ly9hcGkueGVyby5jb20vYXBpLnhyby8yLjAvQ29udGFjdHM/d2hlcmU9TmFtZS5Db250YWlucygi").decode()
+        url = f'{base_url}{safe_name}")'
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
         return response.json().get("Contacts", [])
@@ -112,7 +113,8 @@ def search_machship_connote(connote_number: str) -> str:
     try:
         if connote_number.startswith("MS"):
             ms_id = re.sub(r"\D", "", connote_number)
-            url = f"https://live.machship.com/apiv2/consignments/getConsignment?id={ms_id}"
+            base_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0Q29uc2lnbm1lbnQ/aWQ9").decode()
+            url = f"{base_url}{ms_id}"
             response = requests.get(url, headers=headers, timeout=15)
             
             if response.status_code == 200:
@@ -127,9 +129,9 @@ def search_machship_connote(connote_number: str) -> str:
 
         headers["Content-Type"] = "application/json"
         search_routes = [
-            ("Carrier ID", "https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true"),
-            ("Reference 1", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1?includeChildCompanies=true"),
-            ("Reference 2", "https://live.machship.com/apiv2/consignments/returnConsignmentsByReference2?includeChildCompanies=true")
+            ("Carrier ID", base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlDYXJyaWVyQ29uc2lnbm1lbnRJZD9pbmNsdWRlQ2hpbGRDb21wYW5pZXM9dHJ1ZQ==").decode()),
+            ("Reference 1", base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl").decode()),
+            ("Reference 2", base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl").decode())
         ]
         payload = [connote_number]
 
@@ -169,11 +171,11 @@ def search_transvirtual_connote(connote_number: str) -> str:
             "Accept": "application/json"
         }
 
-        url_query = "https://api.transvirtual.com.au/api/ConsignmentQuery"
+        url_query = base64.b64decode("aHR0cHM6Ly9hcGkudHJhbnN2aXJ0dWFsLmNvbS5hdS9hcGkvQ29uc2lnbm1lbnRRdWVyeQ==").decode()
         response_query = requests.post(url_query, headers=headers, json={"ConsignmentNumber": connote_number}, timeout=15)
         full_data = response_query.json().get("Data", {}) if response_query.status_code == 200 else {}
 
-        url_status = "https://api.transvirtual.com.au/api/ConsignmentStatus"
+        url_status = base64.b64decode("aHR0cHM6Ly9hcGkudHJhbnN2aXJ0dWFsLmNvbS5hdS9hcGkvQ29uc2lnbm1lbnRTdGF0dXM=").decode()
         tracking_data = None
         tracking_log = []
 
@@ -298,7 +300,7 @@ def search_and_read_google_drive(search_query: str) -> str:
 def search_cartoncloud_order(reference_number: str) -> str:
     try:
         tenant_id = st.secrets["cartoncloud"]["tenant_id"].strip()
-        base_url = "https://api.cartoncloud.com"
+        base_url = base64.b64decode("aHR0cHM6Ly9hcGkuY2FydG9uY2xvdWQuY29t").decode()
         
         access_token = get_cartoncloud_token()
         if "Error" in access_token: return f"Carton Cloud Auth {access_token}"
@@ -386,7 +388,7 @@ def search_cartoncloud_order(reference_number: str) -> str:
 def fetch_australian_postcodes():
     import requests
     import csv
-    url = "https://raw.githubusercontent.com/matthewproctor/australianpostcodes/master/australian_postcodes.csv"
+    url = base64.b64decode("aHR0cHM6Ly9yYXcuZ2l0aHVidXNlcmNvbnRlbnQuY29tL21hdHRoZXdwcm9jdG9yL2F1c3RyYWxpYW5wb3N0Y29kZXMvbWFzdGVyL2F1c3RyYWxpYW5fcG9zdGNvZGVzLmNzdg==").decode()
     pc_to_suburb = {}
     try:
         resp = requests.get(url, timeout=10)
@@ -430,7 +432,7 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
         dispatch_date = next_day.strftime("%Y-%m-%dT09:00:00")
 
         token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
-        url = "https://live.machship.com/apiv2/routes/returnroutes"
+        url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9yb3V0ZXMvcmV0dXJucm91dGVz").decode()
         headers = {"token": token, "Content-Type": "application/json"}
         company_id = 53031 
 
@@ -878,13 +880,13 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         ms_headers = { "token": ms_token, "Content-Type": "application/json" }
         reconciliation_data = []
 
-        # CLEAN API URLS: Bypassing UI auto-link formatting using string concatenation
-        base_ms_url = "https://" + "live.machship.com/apiv2/consignments/"
-        search_urls = [
-            base_ms_url + "returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true",
-            base_ms_url + "returnConsignmentsByReference1?includeChildCompanies=true",
-            base_ms_url + "returnConsignmentsByReference2?includeChildCompanies=true"
+        # CLEAN API URLS: Decoded from Base64 to strictly prevent IDEs and Markdown engines from auto-linking strings
+        b64_urls = [
+            "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlDYXJyaWVyQ29uc2lnbm1lbnRJZD9pbmNsdWRlQ2hpbGRDb21wYW5pZXM9dHJ1ZQ==",
+            "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl",
+            "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl"
         ]
+        search_urls = [base64.b64decode(u).decode() for u in b64_urls]
 
         # Ensure we are iterating over a list
         if not isinstance(invoice_items, list):
