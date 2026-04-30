@@ -917,11 +917,18 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                             data = resp.json()
                             if data.get("object") and len(data["object"]) > 0:
                                 consignment = data["object"][0]
-                                cost = consignment.get("consignmentTotal", {}).get("totalCost")
+                                
+                                # STRICT BUY-COST EXTRACTION: Only check 'cost' nodes, NEVER 'sell' or 'price'
+                                c_total = consignment.get("consignmentTotal") or {}
+                                cost = c_total.get("totalCost")
+                                if cost is None: cost = c_total.get("cost")
+                                if cost is None: cost = consignment.get("totalCost")
+                                if cost is None: cost = consignment.get("cost")
+                                
                                 if cost is not None:
                                     expected_amount = float(cost)
                                 else:
-                                    diagnostic_log.append("Machship record found, but 'totalCost' node is missing/null.")
+                                    diagnostic_log.append("Machship record found, but 'cost' (buy price) nodes are missing/null.")
                                 found = True
                                 break
                             else:
