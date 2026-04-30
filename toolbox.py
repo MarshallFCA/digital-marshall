@@ -920,8 +920,12 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                                 
                                 # STRICT BUY-COST EXTRACTION: Only check 'cost' nodes, NEVER 'sell' or 'price'
                                 c_total = consignment.get("consignmentTotal") or {}
-                                cost = c_total.get("totalCost")
+                                # The primary node in Machship for Total Buy Cost (incl Tax) is totalCostPrice
+                                cost = c_total.get("totalCostPrice")
+                                if cost is None: cost = c_total.get("totalCostBeforeTax")
+                                if cost is None: cost = c_total.get("totalCost")
                                 if cost is None: cost = c_total.get("cost")
+                                if cost is None: cost = consignment.get("totalCostPrice")
                                 if cost is None: cost = consignment.get("totalCost")
                                 if cost is None: cost = consignment.get("cost")
                                 
