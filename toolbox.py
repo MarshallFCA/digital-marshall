@@ -878,11 +878,12 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         ms_headers = { "token": ms_token, "Content-Type": "application/json" }
         reconciliation_data = []
 
-        # CLEAN API URLS: Removed markdown formatting causing connection adapter failures
+        # CLEAN API URLS: Bypassing UI auto-link formatting using string concatenation
+        base_ms_url = "https://" + "live.machship.com/apiv2/consignments/"
         search_urls = [
-            "[https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true](https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true)",
-            "[https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1?includeChildCompanies=true](https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1?includeChildCompanies=true)",
-            "[https://live.machship.com/apiv2/consignments/returnConsignmentsByReference2?includeChildCompanies=true](https://live.machship.com/apiv2/consignments/returnConsignmentsByReference2?includeChildCompanies=true)"
+            base_ms_url + "returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true",
+            base_ms_url + "returnConsignmentsByReference1?includeChildCompanies=true",
+            base_ms_url + "returnConsignmentsByReference2?includeChildCompanies=true"
         ]
 
         # Ensure we are iterating over a list
