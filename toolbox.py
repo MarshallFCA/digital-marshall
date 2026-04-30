@@ -928,7 +928,8 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                                 if cost is not None:
                                     expected_amount = float(cost)
                                 else:
-                                    diagnostic_log.append("Machship record found, but 'cost' (buy price) nodes are missing/null.")
+                                    raw_json_dump = json.dumps(consignment)
+                                    diagnostic_log.append(f"Machship record found, but 'cost' (buy price) nodes are missing/null. RAW JSON PAYLOAD: {raw_json_dump}")
                                 found = True
                                 break
                             else:
