@@ -852,6 +852,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         Each object must have the following keys:
         - "connote": The Carrier's ID or Consignment Number (e.g., CIR000000048). DO NOT extract the MS number (e.g., MS60179596).
         - "billed_amount": The total cost billed by the carrier for this connote (float). IMPORTANT: If the Total Amount column is missing or the text row is truncated, calculate the final amount by summing the base Freight Amount, Surcharges, and GST.
+        - "raw_invoice_line": The exact, complete line of text from the raw invoice that corresponds to this shipment. We need this to analyze weights and surcharges later.
         
         Raw Invoice Text:
         {raw_invoice_text}
@@ -875,10 +876,14 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         except json.JSONDecodeError as e:
             return f"Error: Failed to parse JSON payload. JSONDecodeError: {str(e)}\n\nRaw Fragment:\n{json_str}"
 
+        # Extract headers from the invoice to assist the second AI prompt
+        invoice_header_sample = raw_invoice_text.split('\n')[0][:500] if raw_invoice_text else "N/A"
+
         # Setup API Telemetry & Auth for Machship Loop
         ms_token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
         ms_headers = { "token": ms_token, "Content-Type": "application/json" }
         reconciliation_data = []
+        analysis_batch = []
 
         # CLEAN API URLS: Decoded from Base64 to strictly prevent IDEs and Markdown engines from auto-linking strings
         b64_urls = [
@@ -895,6 +900,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         # Process each extracted item
         for item in invoice_items:
             connote = item.get("connote", "") or ""
+            raw_invoice_line = item.get("raw_invoice_line", "N/A")
             
             # Robust extraction of billed_amount to handle missing data or NoneTypes safely
             raw_billed = item.get("billed_amount", 0.0)
@@ -906,6 +912,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             expected_amount = 0.0
             diagnostic_log = []
             found = False
+            ms_metrics = {}
 
             if not connote:
                 diagnostic_log.append("Missing connote parameter from extracted payload.")
@@ -917,10 +924,17 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                             data = resp.json()
                             if data.get("object") and len(data["object"]) > 0:
                                 consignment = data["object"][0]
+                                c_total = consignment.get("consignmentTotal") or {}
+                                
+                                # Extracted precise metrics to feed into the Variance AI
+                                ms_metrics = {
+                                    "machship_weight": consignment.get("totalWeight", 0),
+                                    "machship_base_cost": c_total.get("totalBaseCostPrice", 0),
+                                    "machship_fuel_levy": c_total.get("costFuelLevyPrice", 0),
+                                    "machship_surcharges": c_total.get("totalConsignmentCarrierSurchargesCostPrice", 0)
+                                }
                                 
                                 # STRICT BUY-COST EXTRACTION: Only check 'cost' nodes, NEVER 'sell' or 'price'
-                                c_total = consignment.get("consignmentTotal") or {}
-                                # The primary node in Machship for Total Buy Cost (incl Tax) is totalCostPrice
                                 cost = c_total.get("totalCostPrice")
                                 if cost is None: cost = c_total.get("totalCostBeforeTax")
                                 if cost is None: cost = c_total.get("totalCost")
@@ -952,16 +966,80 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             variance = billed_amount - expected_amount
             diag_string = "Clean" if not diagnostic_log else " | ".join(diagnostic_log)
 
-            reconciliation_data.append({
+            row_data = {
                 "Carrier Connote": connote,
                 "Billed Amount": billed_amount,
                 "Expected Amount": expected_amount,
                 "Variance": variance,
+                "AI Variance Analysis": "Pending Analysis",
                 "Diagnostics": diag_string
-            })
+            }
+            reconciliation_data.append(row_data)
+
+            # Queue items with a variance > 10 cents for Batch AI Analysis
+            if found and abs(variance) > 0.10:
+                analysis_batch.append({
+                    "connote": connote,
+                    "variance": variance,
+                    "carrier_invoice_line": raw_invoice_line,
+                    "machship_metrics": ms_metrics
+                })
+
+        # --- BATCH AI ANALYSIS FOR VARIANCES ---
+        ai_reasons = {}
+        if len(analysis_batch) > 0:
+            batch_prompt = f"""
+            You are an expert freight auditor. I am providing a JSON array of consignments that have a cost variance between the Carrier Invoice and the internal WMS (Machship).
+            
+            For each consignment, compare the 'carrier_invoice_line' text against the 'machship_metrics'. Look specifically for differences in Charge Weight, Fuel Levy, Base Freight, or unexpected Surcharges.
+            To help you parse the carrier line, here are the original CSV headers: {invoice_header_sample}
+            
+            Return ONLY a valid JSON array of objects with these keys:
+            - "connote": The connote number.
+            - "variance_reason": A concise, 1-2 sentence explanation of why the variance occurred (e.g., "Carrier charged 50kg, Machship expected 34.5kg", or "Carrier added an unexpected manual handling surcharge").
+            
+            Variance Data:
+            {json.dumps(analysis_batch, indent=2)}
+            """
+            
+            try:
+                analysis_resp = model.generate_content(
+                    batch_prompt,
+                    generation_config=genai.GenerationConfig(response_mime_type="application/json")
+                )
+                analysis_text = analysis_resp.text.strip()
+                
+                # Failsafe Markdown stripper
+                amatch = re.search(r"`" + r"``(?:json)?\s*(.*?)\s*`" + r"``", analysis_text, re.DOTALL | re.IGNORECASE)
+                if amatch:
+                    analysis_text = amatch.group(1).strip()
+                else:
+                    analysis_text = analysis_text.strip()
+
+                analysis_results = json.loads(analysis_text)
+                for res in analysis_results:
+                    ai_reasons[res.get("connote", "")] = res.get("variance_reason", "AI could not determine reason.")
+            except Exception as e:
+                print(f"Batch AI Analysis Failed: {e}")
+
+        # Map the AI findings back to the master dataset
+        for row in reconciliation_data:
+            c_connote = row["Carrier Connote"]
+            if row["Variance"] == 0 or abs(row["Variance"]) <= 0.10:
+                row["AI Variance Analysis"] = "No significant variance."
+            elif c_connote in ai_reasons:
+                row["AI Variance Analysis"] = ai_reasons[c_connote]
+            elif row["Diagnostics"] != "Clean" and "Not found" in row["Diagnostics"]:
+                row["AI Variance Analysis"] = "Cannot analyze - not found in Machship."
+            else:
+                row["AI Variance Analysis"] = "AI Analysis Failed or Skipped."
 
         # Process DataFrame for Export
         df = pd.DataFrame(reconciliation_data)
+        
+        # Ensure column ordering includes the new AI Analysis
+        col_order = ["Carrier Connote", "Billed Amount", "Expected Amount", "Variance", "AI Variance Analysis", "Diagnostics"]
+        df = df[col_order]
 
         # Base 64 GCP Scopes Implementation
         drive_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==").decode()
