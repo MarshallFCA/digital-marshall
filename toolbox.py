@@ -13,7 +13,7 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
 # ==========================================
-# AUTHENTICATION CACHES (PERFORMANCE UPGRADE)
+# AUTHENTICATION CACHES
 # ==========================================
 @st.cache_data(ttl=1800, show_spinner=False)
 def get_xero_token():
@@ -664,9 +664,9 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         Task: Write a complete, syntactically correct Python function named `transform_df(df)` that performs all the requested filtering, renaming, calculations, and column selections.
         - The function must take a single argument `df` (the Pandas DataFrame) and return the modified `df`.
         - Handle any math natively in pandas.
-        - CRITICAL CURRENCY HANDLING: Currency fields (e.g., "$1,234.56") are loaded as strings. Before doing math, clean them: `df['Col'] = df['Col'].astype(str).str.replace(r'[$,]', '', regex=True).astype(float)`.
-        - CRITICAL DATE HANDLING: The data uses Australian dates (DD/MM/YYYY). ALWAYS use `pd.to_datetime(df['Col'], dayfirst=True, errors='coerce')`. 
-        - CRITICAL MATH & DURATIONS: Calculate date durations using `(date2 - date1).dt.days`. If a required column for any calculation does not exist in the DataFrame, DO NOT CRASH. Create the target output column and fill it with `np.nan`.
+        - CRITICAL DATA TYPE HANDLING: If you need to do math on a column, FORCE it to numeric first. For currency fields (e.g., "$1,234.56"), you MUST clean them: `df['Col'] = pd.to_numeric(df['Col'].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce')`. Do this for EVERY column involved in a calculation.
+        - CRITICAL DATE HANDLING: The data uses Australian dates and may contain timezone strings (e.g., '2/04/2026 2:24 PM AEDT'). You MUST strip the timezone text before converting: `df['Col'] = pd.to_datetime(df['Col'].astype(str).str.replace(r' (AEDT|AEST|AWST|ACST)', '', regex=True), dayfirst=True, errors='coerce')`. 
+        - CRITICAL MATH & DURATIONS: Calculate date durations using `(date2 - date1).dt.days`. If you need weekday calculation, use `np.busday_count(date1.values.astype('datetime64[D]'), date2.values.astype('datetime64[D]'))` ensuring to mask out NaT values first. If a required column for any calculation does not exist in the DataFrame (e.g., "Pickup Complete"), DO NOT CRASH. Create the target output column and fill it with `np.nan`.
         - CRITICAL ROW RETENTION: DO NOT use `.dropna()` on the dataset. DO NOT truncate or use `.head()`. Keep all rows. If a date filter is requested, ensure you used `dayfirst=True` so you don't accidentally drop valid Australian dates.
         - You have full access to `import pandas as pd`, `import numpy as np`, `import datetime`, and `import re`.
         - ONLY output the raw Python code block inside ```python ... ```. Do not include markdown explanations.
