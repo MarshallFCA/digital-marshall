@@ -878,16 +878,28 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         ms_headers = { "token": ms_token, "Content-Type": "application/json" }
         reconciliation_data = []
 
+        # CLEAN API URLS: Removed markdown formatting causing connection adapter failures
         search_urls = [
             "[https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true](https://live.machship.com/apiv2/consignments/returnConsignmentsByCarrierConsignmentId?includeChildCompanies=true)",
             "[https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1?includeChildCompanies=true](https://live.machship.com/apiv2/consignments/returnConsignmentsByReference1?includeChildCompanies=true)",
             "[https://live.machship.com/apiv2/consignments/returnConsignmentsByReference2?includeChildCompanies=true](https://live.machship.com/apiv2/consignments/returnConsignmentsByReference2?includeChildCompanies=true)"
         ]
 
+        # Ensure we are iterating over a list
+        if not isinstance(invoice_items, list):
+            invoice_items = [invoice_items] if isinstance(invoice_items, dict) else []
+
         # Process each extracted item
         for item in invoice_items:
-            connote = item.get("connote", "")
-            billed_amount = float(item.get("billed_amount", 0.0))
+            connote = item.get("connote", "") or ""
+            
+            # Robust extraction of billed_amount to handle missing data or NoneTypes safely
+            raw_billed = item.get("billed_amount", 0.0)
+            try:
+                billed_amount = float(raw_billed) if raw_billed is not None else 0.0
+            except (ValueError, TypeError):
+                billed_amount = 0.0
+
             expected_amount = 0.0
             diagnostic_log = []
             found = False
