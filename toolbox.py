@@ -1058,8 +1058,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
 
             row_data = {
                 "Carrier Connote": connote,
-                "Carrier Name": carrier_name,
-                "Invoice Number": invoice_number,
                 "Billed Amount": billed_amount,
                 "Expected Amount": expected_amount,
                 "Variance": variance,
@@ -1127,37 +1125,38 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
 
         # ==============================================================
         # TOOL 9: AUTO-TRIGGER HUBSPOT INTEGRATION FOR VARIANCES > $10
+        # CURRENTLY COMMENTED OUT AS PER USER INSTRUCTION
         # ==============================================================
-        hubspot_service_key = None
-        try:
-            hubspot_service_key = st.secrets["hubspot"]["service_key"]
-        except (KeyError, FileNotFoundError):
-            pass
-
-        if hubspot_service_key:
-            for row in reconciliation_data:
-                variance_val = row.get("Variance", 0.0)
-                ai_analysis_result = row.get("AI Variance Analysis", "")
-                
-                if variance_val > 10.00 and ai_analysis_result not in ["Pending Analysis", "No discrepancy (Undercharge or Exact Match).", "Cannot analyze - not found in Machship.", "AI Analysis Skipped."]:
-                    payload = {
-                        "connote": row["Carrier Connote"],
-                        "variance_amount": variance_val,
-                        "analysis": ai_analysis_result,
-                        "carrier_name": row["Carrier Name"],
-                        "invoice_number": row["Invoice Number"]
-                    }
-                    hs_res = create_hubspot_dispute_ticket(payload, hubspot_service_key)
-                    
-                    if hs_res.get("status") == "success":
-                        row["Diagnostics"] = f"{row['Diagnostics']} | HS Ticket: {hs_res.get('ticket_id')}"
-                    else:
-                        error_log = hs_res.get("logs", ["Unknown Error"])[-1]
-                        row["Diagnostics"] = f"{row['Diagnostics']} | HS Error: {error_log}"
+        # hubspot_service_key = None
+        # try:
+        #     hubspot_service_key = st.secrets["hubspot"]["service_key"]
+        # except (KeyError, FileNotFoundError):
+        #     pass
+        # 
+        # if hubspot_service_key:
+        #     for row in reconciliation_data:
+        #         variance_val = row.get("Variance", 0.0)
+        #         ai_analysis_result = row.get("AI Variance Analysis", "")
+        #         
+        #         if variance_val > 10.00 and ai_analysis_result not in ["Pending Analysis", "No discrepancy (Undercharge or Exact Match).", "Cannot analyze - not found in Machship.", "AI Analysis Skipped."]:
+        #             payload = {
+        #                 "connote": row["Carrier Connote"],
+        #                 "variance_amount": variance_val,
+        #                 "analysis": ai_analysis_result,
+        #                 "carrier_name": row.get("Carrier Name", "Unknown"),
+        #                 "invoice_number": row.get("Invoice Number", "Unknown")
+        #             }
+        #             hs_res = create_hubspot_dispute_ticket(payload, hubspot_service_key)
+        #             
+        #             if hs_res.get("status") == "success":
+        #                 row["Diagnostics"] = f"{row['Diagnostics']} | HS Ticket: {hs_res.get('ticket_id')}"
+        #             else:
+        #                 error_log = hs_res.get("logs", ["Unknown Error"])[-1]
+        #                 row["Diagnostics"] = f"{row['Diagnostics']} | HS Error: {error_log}"
         # ==============================================================
 
         df = pd.DataFrame(reconciliation_data)
-        col_order = ["Carrier Connote", "Invoice Number", "Carrier Name", "Billed Amount", "Expected Amount", "Variance", "AI Variance Analysis", "Diagnostics"]
+        col_order = ["Carrier Connote", "Billed Amount", "Expected Amount", "Variance", "AI Variance Analysis", "Diagnostics"]
         df = df[col_order]
 
         drive_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==").decode()
@@ -1258,7 +1257,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 pass 
 
         sheet_url = f"[https://docs.google.com/spreadsheets/d/](https://docs.google.com/spreadsheets/d/){spreadsheet_id}"
-        return f"SUCCESS: Invoice Auditor complete. Processed {len(invoice_items)} records natively. HubSpot checks complete. View Sheet: {sheet_url}"
+        return f"SUCCESS: Invoice Auditor complete. Processed {len(invoice_items)} records natively. View Sheet: {sheet_url}"
 
     except Exception as base_e:
         return f"TOOL 8 CRITICAL CRASH: {str(base_e)}"
