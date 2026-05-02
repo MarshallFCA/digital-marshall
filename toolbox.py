@@ -889,27 +889,55 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         except Exception as model_err:
             return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {str(model_err)}"
             
-        # 1. 100% ROBUST PANDAS INGESTION
-        try:
-            df_raw = pd.read_csv(io.StringIO(raw_invoice_text), sep=None, engine='python')
-        except Exception as e:
-            return f"Error: Could not parse the uploaded text into tabular data. {str(e)}"
+        # 1. BYPASS LLM PAYLOAD LIMITS BY READING SESSION STATE DIRECTLY
+        df_raw = None
+        uploaded_files = st.session_state.get("chat_uploader")
+        
+        if uploaded_files:
+            for uf in uploaded_files:
+                uf.seek(0)
+                try:
+                    if uf.name.lower().endswith('.csv'):
+                        df_raw = pd.read_csv(uf, sep=None, engine='python')
+                    elif uf.name.lower().endswith(('.xls', '.xlsx')):
+                        df_raw = pd.read_excel(uf)
+                    if df_raw is not None and not df_raw.empty:
+                        break # Process the first valid uploaded file
+                except:
+                    continue
+        
+        # Fallback to LLM text only if the user didn't upload a file through the UI
+        if df_raw is None or df_raw.empty:
+            try:
+                df_raw = pd.read_csv(io.StringIO(raw_invoice_text), sep='\t')
+                if len(df_raw.columns) < 3:
+                    df_raw = pd.read_csv(io.StringIO(raw_invoice_text), sep=',')
+                if len(df_raw.columns) < 3:
+                    df_raw = pd.read_csv(io.StringIO(raw_invoice_text), sep=None, engine='python')
+            except Exception as e:
+                return f"Error: Could not parse the text into tabular data. {str(e)}"
             
         csv_headers = list(df_raw.columns)
         
-        # 2. DETERMINISTIC HEADER MAPPING (No AI Hallucinations)
+        # 2. DETERMINISTIC HEADER MAPPING
         connote_col = None
         amount_col = None
         
         for col in csv_headers:
-            cl = col.lower()
-            if not connote_col and ('connote' in cl or 'consignment' in cl or 'reference' in cl):
+            cl = str(col).lower().strip()
+            if not connote_col and cl in ['connote', 'consignment no', 'consignment number', 'reference', 'carrier connote', 'consignment']:
                 connote_col = col
-            if not amount_col and (('total' in cl and 'amount' in cl) or 'billed' in cl or 'charge' in cl):
+            if not amount_col and cl in ['total amount', 'charge total', 'billed amount', 'total cost', 'amount']:
                 amount_col = col
                 
         if not connote_col: connote_col = csv_headers[7] if len(csv_headers)>7 else csv_headers[0]
-        if not amount_col: amount_col = csv_headers[-3] if len(csv_headers)>3 else csv_headers[-1]
+        if not amount_col: 
+            for col in csv_headers:
+                cl = str(col).lower().strip()
+                if 'total' in cl and ('amount' in cl or 'cost' in cl):
+                    amount_col = col
+                    break
+            if not amount_col: amount_col = csv_headers[-3] if len(csv_headers)>3 else csv_headers[-1]
 
         # 3. FAST PANDAS EXTRACTION
         invoice_items = []
@@ -1009,6 +1037,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             if not found:
                 diagnostic_log.append("Failed to locate connote in Machship.")
 
+            # MATHEMATICAL FIX: Positive Variance = Overcharge (Carrier billed more than expected)
             variance = billed_amount - expected_amount
             diag_string = "Clean" if not diagnostic_log else " | ".join(diagnostic_log)
 
@@ -1022,7 +1051,8 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             }
             reconciliation_data.append(row_data)
 
-            if found and abs(variance) > 0.10:
+            # ONLY append for forensic analysis if the Carrier actually OVERCHARGED > 10 cents
+            if found and variance > 0.10:
                 analysis_batch.append({
                     "connote": connote,
                     "variance": variance,
@@ -1069,8 +1099,10 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
 
         for row in reconciliation_data:
             c_connote = row["Carrier Connote"]
-            if row["Variance"] == 0 or abs(row["Variance"]) <= 0.10:
-                row["AI Variance Analysis"] = "No significant variance."
+            
+            # Map findings strictly based on the new Profit/Loss rule
+            if row["Variance"] <= 0.10:
+                row["AI Variance Analysis"] = "No discrepancy (Undercharge or Exact Match)."
             elif c_connote in ai_reasons:
                 row["AI Variance Analysis"] = ai_reasons[c_connote]
             elif row["Diagnostics"] != "Clean" and "Not found" in row["Diagnostics"]:
@@ -1092,10 +1124,11 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 variance_val = row.get("Variance", 0.0)
                 ai_analysis_result = row.get("AI Variance Analysis", "")
                 
-                if abs(variance_val) > 10.00 and ai_analysis_result not in ["Pending Analysis", "No significant variance.", "Cannot analyze - not found in Machship.", "AI Analysis Skipped."]:
+                # ONLY create ticket for true OVERCHARGES > $10.00
+                if variance_val > 10.00 and ai_analysis_result not in ["Pending Analysis", "No discrepancy (Undercharge or Exact Match).", "Cannot analyze - not found in Machship.", "AI Analysis Skipped."]:
                     payload = {
                         "connote": row["Carrier Connote"],
-                        "variance_amount": abs(variance_val),
+                        "variance_amount": variance_val, # Absolute math no longer needed
                         "analysis": ai_analysis_result
                     }
                     hs_res = create_hubspot_dispute_ticket(payload, hubspot_service_key)
