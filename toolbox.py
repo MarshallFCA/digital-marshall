@@ -11,6 +11,7 @@ import streamlit as st
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
+from email.mime.text import MIMEText
 
 # ==========================================
 # AUTHENTICATION CACHES
@@ -790,7 +791,7 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
                 pass 
 
         sheet_url = "[https://docs.google.com/spreadsheets/d/](https://docs.google.com/spreadsheets/d/)" + spreadsheet_id
-        return f"SUCCESS: Hybrid Engine multi-file analysis complete. The dataset was merged, processed natively, and piped into a new Google Sheet inside your 'BOOF Exports' Shared Drive folder. Title: {target_sheet_name} | URL: {sheet_url}"
+        return f"SUCCESS: Hybrid Engine multi-file analysis complete. The dataset was merged, processed natively, and piped into a new Google Sheet inside your BOOF Exports Shared Drive folder. Title: {target_sheet_name} | URL: {sheet_url}"
 
     except Exception as e:
         return f"HYBRID GEMINI CRASH: {str(e)}"
@@ -822,7 +823,6 @@ def create_hubspot_dispute_ticket(variance_data: dict, service_key: str) -> dict
     carrier_name = variance_data.get("carrier_name", "Unknown Carrier")
     invoice_number = variance_data.get("invoice_number", "Unknown Invoice")
     
-    # EXPANDED SCHEMA: Injects data directly into the Custom Properties.
     raw_properties = {
         "hs_pipeline": "0",
         "hs_pipeline_stage": "1",
@@ -896,7 +896,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         except Exception as model_err:
             return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {str(model_err)}"
             
-        # 1. BYPASS LLM PAYLOAD LIMITS BY READING SESSION STATE DIRECTLY
         df_raw = None
         uploaded_files = st.session_state.get("chat_uploader")
         
@@ -925,7 +924,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             
         csv_headers = list(df_raw.columns)
         
-        # 2. DETERMINISTIC HEADER MAPPING (Now includes Invoice Number)
         connote_col = None
         amount_col = None
         invoice_col = None
@@ -950,7 +948,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         if not invoice_col:
             invoice_col = csv_headers[5] if len(csv_headers)>5 else None
 
-        # 3. FAST PANDAS EXTRACTION
         invoice_items = []
         for index, row in df_raw.iterrows():
             c_val = str(row.get(connote_col, "")).strip()
@@ -973,7 +970,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 "raw_invoice_line": raw_line_str
             })
 
-        # 4. MACHSHIP API RECONCILIATION
         ms_token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
         ms_headers = { "token": ms_token, "Content-Type": "application/json" }
         reconciliation_data = []
@@ -1074,25 +1070,9 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                     "machship_metrics": ms_metrics
                 })
 
-        # 5. STRICT BATCH AI ANALYSIS
         ai_reasons = {}
         if len(analysis_batch) > 0:
-            batch_prompt = f"""
-            You are a forensic freight auditor. I am providing a JSON array of {len(analysis_batch)} consignments that have a cost variance.
-            
-            Compare the 'carrier_invoice_line' text against the 'machship_metrics'. Look explicitly for:
-            1. Discrepancies in Weight or Volume.
-            2. Missing or Added Surcharges.
-            3. Base rate mismatches.
-            
-            CRITICAL INSTRUCTION: You MUST return exactly {len(analysis_batch)} JSON objects in your array. Do NOT skip any items. Do NOT summarize. Every item passed to you must have a matching response object.
-            
-            Return ONLY a valid JSON array of objects with keys: "connote" and "variance_reason".
-            Use concise, bulleted format with literal '\\n' for lines.
-            
-            Variance Data:
-            {json.dumps(analysis_batch, indent=2)}
-            """
+            batch_prompt = f"You are a forensic freight auditor. I am providing a JSON array of {len(analysis_batch)} consignments that have a cost variance. Compare the carrier_invoice_line text against the machship_metrics. Look explicitly for Discrepancies in Weight or Volume, Missing or Added Surcharges, and Base rate mismatches. CRITICAL INSTRUCTION: You MUST return exactly {len(analysis_batch)} JSON objects in your array. Do NOT skip any items. Do NOT summarize. Return ONLY a valid JSON array of objects with keys: connote and variance_reason. Variance Data: {json.dumps(analysis_batch)}"
             
             try:
                 analysis_resp = model.generate_content(
@@ -1101,9 +1081,9 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 )
                 analysis_text = analysis_resp.text.strip()
                 
-                amatch = re.search(r"`{3}(?:json)?\s*(.*?)\s*`{3}", analysis_text, re.DOTALL | re.IGNORECASE)
+                amatch = re.search(r"\[.*\]", analysis_text, re.DOTALL | re.IGNORECASE)
                 if amatch:
-                    analysis_text = amatch.group(1).strip()
+                    analysis_text = amatch.group(0).strip()
 
                 analysis_results = json.loads(analysis_text)
                 for res in analysis_results:
@@ -1122,38 +1102,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 row["AI Variance Analysis"] = "Cannot analyze - not found in Machship."
             else:
                 row["AI Variance Analysis"] = "AI Analysis Skipped."
-
-        # ==============================================================
-        # TOOL 9: AUTO-TRIGGER HUBSPOT INTEGRATION FOR VARIANCES > $10
-        # CURRENTLY COMMENTED OUT AS PER USER INSTRUCTION
-        # ==============================================================
-        # hubspot_service_key = None
-        # try:
-        #     hubspot_service_key = st.secrets["hubspot"]["service_key"]
-        # except (KeyError, FileNotFoundError):
-        #     pass
-        # 
-        # if hubspot_service_key:
-        #     for row in reconciliation_data:
-        #         variance_val = row.get("Variance", 0.0)
-        #         ai_analysis_result = row.get("AI Variance Analysis", "")
-        #         
-        #         if variance_val > 10.00 and ai_analysis_result not in ["Pending Analysis", "No discrepancy (Undercharge or Exact Match).", "Cannot analyze - not found in Machship.", "AI Analysis Skipped."]:
-        #             payload = {
-        #                 "connote": row["Carrier Connote"],
-        #                 "variance_amount": variance_val,
-        #                 "analysis": ai_analysis_result,
-        #                 "carrier_name": row.get("Carrier Name", "Unknown"),
-        #                 "invoice_number": row.get("Invoice Number", "Unknown")
-        #             }
-        #             hs_res = create_hubspot_dispute_ticket(payload, hubspot_service_key)
-        #             
-        #             if hs_res.get("status") == "success":
-        #                 row["Diagnostics"] = f"{row['Diagnostics']} | HS Ticket: {hs_res.get('ticket_id')}"
-        #             else:
-        #                 error_log = hs_res.get("logs", ["Unknown Error"])[-1]
-        #                 row["Diagnostics"] = f"{row['Diagnostics']} | HS Error: {error_log}"
-        # ==============================================================
 
         df = pd.DataFrame(reconciliation_data)
         col_order = ["Carrier Connote", "Billed Amount", "Expected Amount", "Variance", "AI Variance Analysis", "Diagnostics"]
@@ -1261,3 +1209,142 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
 
     except Exception as base_e:
         return f"TOOL 8 CRITICAL CRASH: {str(base_e)}"
+
+# ==========================================
+# TOOL 10: TEMPORAL ANOMALY DETECTOR
+# ==========================================
+def create_hubspot_alert_ticket(ms_number, carrier_name, action_taken, service_key):
+    url = base64.b64decode("aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRz").decode()
+    headers = {
+        "Authorization": f"Bearer {service_key}",
+        "Content-Type": "application/json"
+    }
+    raw_properties = {
+        "hs_pipeline": "0",
+        "hs_pipeline_stage": "1",
+        "subject": f"Freight Alert: {ms_number} ({carrier_name})",
+        "content": f"Status: Carrier Silence Detected (Suspected Missed Pickup).\nAction Taken: {action_taken}\nTime Flagged: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "hs_ticket_priority": "HIGH"
+    }
+    clean_properties = sanitize_hubspot_payload(raw_properties)
+    payload = { "properties": clean_properties }
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
+        response.raise_for_status()
+        return response.json().get("id")
+    except Exception as e:
+        return f"Error: {str(e)}"
+
+def send_carrier_email(carrier_name, ms_number, target_date_str, sender_email):
+    try:
+        gmail_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9nbWFpbC5zZW5k").decode()
+        credentials_dict = dict(st.secrets["gcp_service_account"])
+        creds = service_account.Credentials.from_service_account_info(
+            credentials_dict,
+            scopes=[gmail_scope],
+            subject=sender_email
+        )
+        service = build('gmail', 'v1', credentials=creds)
+        
+        message_text = f"Notification of Missed Pickup.\nMS Number: {ms_number}\nCarrier: {carrier_name}\n\nPlease prioritize collection on {target_date_str}."
+        message = MIMEText(message_text)
+        message['to'] = "dispatch@example-carrier.com"
+        message['subject'] = f"Missed Pickup Rebook Request - {ms_number}"
+        
+        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
+        body = {'raw': raw_message}
+        
+        service.users().messages().send(userId='me', body=body).execute()
+        return True
+    except Exception as e:
+        print(f"Gmail Dispatch Error: {e}")
+        return False
+
+def tool_10_temporal_anomaly_detector():
+    diagnostic_logs = []
+    
+    now = datetime.datetime.now()
+    if now.weekday() == 0:
+        prev_bday = now - datetime.timedelta(days=3)
+    elif now.weekday() == 6:
+        prev_bday = now - datetime.timedelta(days=2)
+    else:
+        prev_bday = now - datetime.timedelta(days=1)
+        
+    cutoff_threshold = prev_bday.replace(hour=17, minute=0, second=0, microsecond=0)
+    
+    if now.weekday() == 4:
+        next_bday = now + datetime.timedelta(days=3)
+    elif now.weekday() == 5:
+        next_bday = now + datetime.timedelta(days=2)
+    else:
+        next_bday = now + datetime.timedelta(days=1)
+        
+    rebook_target_date = next_bday.replace(hour=9, minute=0, second=0, microsecond=0)
+    rebook_target_str = rebook_target_date.strftime("%Y-%m-%dT09:00:00")
+    rebook_display_str = rebook_target_date.strftime("%Y-%m-%d 09:00 AM")
+
+    try:
+        ms_token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
+        active_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQWN0aXZl").decode()
+        edit_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZWRpdA==").decode()
+        hs_key = st.secrets.get("hubspot", {}).get("service_key")
+        sender_email = st.secrets.get("gcp_service_account", {}).get("admin_email", "admin@fca.net.au")
+        
+        headers = { "token": ms_token, "Content-Type": "application/json" }
+        resp = requests.post(active_url, headers=headers, json={}, timeout=15)
+        resp.raise_for_status()
+        active_data = resp.json().get('object', [])
+        
+        anomalies = []
+        for item in active_data:
+            status_name = item.get('status', {}).get('name', '').lower()
+            if status_name in ['booked', 'manifested']:
+                creation_str = item.get('creationDate') or item.get('despatchDateTimeLocal')
+                if creation_str:
+                    try:
+                        creation_dt = datetime.datetime.strptime(creation_str.split('.')[0], "%Y-%m-%dT%H:%M:%S")
+                        if creation_dt < cutoff_threshold:
+                            anomalies.append(item)
+                    except Exception:
+                        pass
+                        
+        if not anomalies:
+            return "Sweep Complete. No temporal anomalies detected."
+            
+        action_summary = []
+        for anomaly in anomalies:
+            ms_number = anomaly.get('consignmentNumber')
+            carrier_name = anomaly.get('carrier', {}).get('name', 'Unknown Carrier')
+            
+            rebook_payload = {
+                "id": anomaly.get('id'),
+                "despatchDateTimeLocal": rebook_target_str
+            }
+            
+            action_taken = ""
+            api_success = False
+            try:
+                edit_resp = requests.post(edit_url, headers=headers, json=rebook_payload, timeout=15)
+                if edit_resp.status_code == 200:
+                    api_success = True
+                    action_taken = f"API Rebook Successful for {rebook_display_str}."
+            except Exception:
+                pass
+                
+            if not api_success:
+                email_sent = send_carrier_email(carrier_name, ms_number, rebook_display_str, sender_email)
+                if email_sent:
+                    action_taken = f"API Unsupported: Dispatch Email Sent for {rebook_display_str}."
+                else:
+                    action_taken = "CRITICAL: API and Email Failsafe both failed."
+                    
+            if hs_key:
+                create_hubspot_alert_ticket(ms_number, carrier_name, action_taken, hs_key)
+                
+            action_summary.append(f"{ms_number} ({carrier_name}): {action_taken}")
+            
+        return f"Sweep Complete. Processed {len(anomalies)} missed pickups.\n" + "\n".join(action_summary)
+
+    except Exception as e:
+        return f"TOOL 10 CRITICAL CRASH: {str(e)}"
