@@ -1011,7 +1011,8 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             
             Return ONLY a valid JSON array of objects with these keys:
             - "connote": The connote number.
-            - "variance_reason": A detailed, natural language explanation of exactly why the variance occurred based on your comparison. Be definitive.
+            - "variance_reason": A highly readable, structured explanation of exactly why the variance occurred. DO NOT write a wall of text. Use a concise, bulleted format using literal '\\n' characters to separate lines. Example format:
+            BOTTOM LINE: Carrier re-weighed and re-cubed the freight.\\n- WEIGHT: Billed 50kg vs WMS 48.4kg\\n- CUBIC: Billed 0.13m3 vs WMS 0.12m3\\n- SURCHARGES: Carrier added unquoted $13.40 fee.
             
             Variance Data:
             {json.dumps(analysis_batch, indent=2)}
@@ -1157,7 +1158,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             except Exception:
                 pass 
 
-        sheet_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
+        sheet_url = f"[https://docs.google.com/spreadsheets/d/](https://docs.google.com/spreadsheets/d/){spreadsheet_id}"
         return f"SUCCESS: Invoice Auditor complete. Processed {len(invoice_items)} records. Diagnostics updated. View Sheet: {sheet_url}"
 
     except Exception as base_e:
