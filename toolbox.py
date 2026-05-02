@@ -795,7 +795,6 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
     except Exception as e:
         return f"HYBRID GEMINI CRASH: {str(e)}"
 
-
 # ==========================================
 # TOOL 9: HUBSPOT DISPUTE INTEGRATION
 # ==========================================
@@ -876,6 +875,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
     import json
     import requests
     import pandas as pd
+    import io
     import streamlit as st
     import re
     import base64
@@ -892,65 +892,81 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         try:
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
             target_model = None
-            preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest', 'models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest', 'models/gemini-pro']
+            preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest', 'models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest']
             
             for pref in preferred:
                 if pref in available_models:
                     target_model = pref
                     break
                     
-            if not target_model:
-                for m in available_models:
-                    if 'gemini-1.5-pro' in m:
-                        target_model = m
-                        break
-            
             if not target_model and available_models:
                 target_model = available_models[0]
-                
-            if not target_model:
-                return "Error: No valid text generation models found for this API key."
                 
             target_model = target_model.replace('models/', '')
             model = genai.GenerativeModel(target_model)
             
         except Exception as model_err:
             return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {str(model_err)}"
+            
+        # 1. READ CSV SAFELY INTO PANDAS (Handles commas or tabs dynamically)
+        try:
+            try:
+                df_raw = pd.read_csv(io.StringIO(raw_invoice_text), sep='\t')
+                if len(df_raw.columns) < 2:
+                    df_raw = pd.read_csv(io.StringIO(raw_invoice_text), sep=',')
+            except:
+                df_raw = pd.read_csv(io.StringIO(raw_invoice_text), sep=None, engine='python')
+        except Exception as e:
+            return f"Error: Could not parse the uploaded text into tabular data. {str(e)}"
+            
+        csv_headers = list(df_raw.columns)
         
-        prompt = f"""
-        You are an expert freight data extraction assistant. 
-        Analyze the following raw carrier invoice text and extract every single shipment into a JSON array.
+        # 2. SEMANTIC HEADER MAPPING VIA AI
+        mapping_prompt = f"""
+        You are a data extraction assistant. I am passing you a list of column headers from a carrier freight invoice.
+        Headers: {csv_headers}
         
-        Return ONLY a valid JSON array of objects. Do not include markdown formatting or extra text.
-        Each object must have the following keys:
-        - "connote": The Carrier's ID or Consignment Number (e.g., CIR000000048). DO NOT extract the MS number.
-        - "billed_amount": The total cost billed by the carrier for this connote (float). IMPORTANT: If the Total Amount column is missing or the text row is truncated, calculate the final amount by summing the base Freight Amount, Surcharges, and GST.
-        - "raw_invoice_line": The exact, complete line of text from the raw invoice that corresponds to this shipment. We need this to analyze weights and surcharges later.
+        Identify which exact column header represents the Consignment Number (Connote) and which represents the Total Billed Amount (the final cost).
         
-        Raw Invoice Text:
-        {raw_invoice_text}
+        Return ONLY a JSON object with these two exact keys:
+        - "connote_col": The exact string of the connote header.
+        - "amount_col": The exact string of the total billed amount header.
         """
         
-        response = model.generate_content(
-            prompt,
+        mapping_resp = model.generate_content(
+            mapping_prompt,
             generation_config=genai.GenerationConfig(response_mime_type="application/json")
         )
-        response_text = response.text.strip()
         
-        # Failsafe: Strip rogue markdown injections ignoring the mime_type parameter using a safe regex without literal backticks
-        code_match = re.search(r"`{3}(?:json)?\s*(.*?)\s*`{3}", response_text, re.DOTALL | re.IGNORECASE)
-        if code_match:
-            json_str = code_match.group(1).strip()
-        else:
-            json_str = response_text.strip()
-
         try:
-            invoice_items = json.loads(json_str)
-        except json.JSONDecodeError as e:
-            return f"Error: Failed to parse JSON payload. JSONDecodeError: {str(e)}\n\nRaw Fragment:\n{json_str}"
+            mapping_data = json.loads(mapping_resp.text.strip())
+            connote_col = mapping_data.get("connote_col")
+            amount_col = mapping_data.get("amount_col")
+        except:
+            # Failsafe fallback based on standard formats
+            connote_col = "Consignment No" if "Consignment No" in csv_headers else csv_headers[7] if len(csv_headers)>7 else csv_headers[0]
+            amount_col = "Total Amount" if "Total Amount" in csv_headers else csv_headers[-3] if len(csv_headers)>3 else csv_headers[-1]
 
-        # Extract headers from the invoice to assist the second AI prompt
-        invoice_header_sample = raw_invoice_text.split('\n')[0][:500] if raw_invoice_text else "N/A"
+        # 3. FAST PANDAS EXTRACTION
+        invoice_items = []
+        for index, row in df_raw.iterrows():
+            c_val = str(row.get(connote_col, "")).strip()
+            if pd.isna(c_val) or c_val.lower() == "nan" or not c_val:
+                continue
+                
+            a_val = str(row.get(amount_col, "0"))
+            try:
+                clean_amount = float(re.sub(r'[^\d.]', '', a_val))
+            except:
+                clean_amount = 0.0
+                
+            raw_line_str = " | ".join([f"{k}: {v}" for k, v in row.items() if not pd.isna(v)])
+            
+            invoice_items.append({
+                "connote": c_val,
+                "billed_amount": clean_amount,
+                "raw_invoice_line": raw_line_str
+            })
 
         # Setup API Telemetry & Auth for Machship Loop
         ms_token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
@@ -966,87 +982,72 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         ]
         search_urls = [base64.b64decode(u).decode() for u in b64_urls]
 
-        # Ensure we are iterating over a list
-        if not isinstance(invoice_items, list):
-            invoice_items = [invoice_items] if isinstance(invoice_items, dict) else []
-
         # Process each extracted item
         for item in invoice_items:
-            connote = item.get("connote", "") or ""
+            connote = item.get("connote", "")
             raw_invoice_line = item.get("raw_invoice_line", "N/A")
-            
-            raw_billed = item.get("billed_amount", 0.0)
-            try:
-                billed_amount = float(raw_billed) if raw_billed is not None else 0.0
-            except (ValueError, TypeError):
-                billed_amount = 0.0
+            billed_amount = item.get("billed_amount", 0.0)
 
             expected_amount = 0.0
             diagnostic_log = []
             found = False
             ms_metrics = {}
 
-            if not connote:
-                diagnostic_log.append("Missing connote parameter from extracted payload.")
-            else:
-                for url in search_urls:
-                    try:
-                        resp = requests.post(url, headers=ms_headers, json=[connote], timeout=15)
-                        if resp.status_code == 200:
-                            data = resp.json()
-                            if data.get("object") and len(data["object"]) > 0:
-                                consignment = data["object"][0]
-                                c_total = consignment.get("consignmentTotal") or {}
-                                
-                                # Extract deeper metrics for natural language analysis
-                                surcharge_list = c_total.get("consignmentCarrierSurcharges", [])
-                                surcharge_names = [s.get("carrierSurcharge", {}).get("name", "Unknown Surcharge") for s in surcharge_list]
-                                
-                                item_list = consignment.get("items", [])
-                                item_summary = []
-                                for it in item_list:
-                                    qty = it.get("quantity", 0)
-                                    wgt = it.get("weight", 0)
-                                    item_summary.append(f"{qty}x {wgt}kg")
-                                
-                                ms_metrics = {
-                                    "machship_weight": consignment.get("totalWeight", 0),
-                                    "machship_cubic": consignment.get("totalVolume", 0),
-                                    "machship_base_cost": c_total.get("totalBaseCostPrice", 0),
-                                    "machship_fuel_levy": c_total.get("costFuelLevyPrice", 0),
-                                    "machship_surcharges_total": c_total.get("totalConsignmentCarrierSurchargesCostPrice", 0),
-                                    "machship_surcharge_names": surcharge_names,
-                                    "machship_items": item_summary
-                                }
-                                
-                                # STRICT BUY-COST EXTRACTION
-                                cost = c_total.get("totalCostPrice")
-                                if cost is None: cost = c_total.get("totalCostBeforeTax")
-                                if cost is None: cost = c_total.get("totalCost")
-                                if cost is None: cost = c_total.get("cost")
-                                if cost is None: cost = consignment.get("totalCostPrice")
-                                if cost is None: cost = consignment.get("totalCost")
-                                if cost is None: cost = consignment.get("cost")
-                                
-                                if cost is not None:
-                                    expected_amount = float(cost)
-                                else:
-                                    diagnostic_log.append("Machship record found, but 'cost' nodes are missing/null.")
-                                found = True
-                                break
+            for url in search_urls:
+                try:
+                    resp = requests.post(url, headers=ms_headers, json=[connote], timeout=15)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if data.get("object") and len(data["object"]) > 0:
+                            consignment = data["object"][0]
+                            c_total = consignment.get("consignmentTotal") or {}
+                            
+                            surcharge_list = c_total.get("consignmentCarrierSurcharges", [])
+                            surcharge_names = [s.get("carrierSurcharge", {}).get("name", "Unknown Surcharge") for s in surcharge_list]
+                            
+                            item_list = consignment.get("items", [])
+                            item_summary = []
+                            for it in item_list:
+                                qty = it.get("quantity", 0)
+                                wgt = it.get("weight", 0)
+                                item_summary.append(f"{qty}x {wgt}kg")
+                            
+                            ms_metrics = {
+                                "machship_weight": consignment.get("totalWeight", 0),
+                                "machship_cubic": consignment.get("totalVolume", 0),
+                                "machship_base_cost": c_total.get("totalBaseCostPrice", 0),
+                                "machship_fuel_levy": c_total.get("costFuelLevyPrice", 0),
+                                "machship_surcharges_total": c_total.get("totalConsignmentCarrierSurchargesCostPrice", 0),
+                                "machship_surcharge_names": surcharge_names,
+                                "machship_items": item_summary
+                            }
+                            
+                            cost = c_total.get("totalCostPrice")
+                            if cost is None: cost = c_total.get("totalCostBeforeTax")
+                            if cost is None: cost = c_total.get("totalCost")
+                            if cost is None: cost = c_total.get("cost")
+                            if cost is None: cost = consignment.get("totalCostPrice")
+                            if cost is None: cost = consignment.get("totalCost")
+                            if cost is None: cost = consignment.get("cost")
+                            
+                            if cost is not None:
+                                expected_amount = float(cost)
                             else:
-                                diagnostic_log.append(f"Not found via {url.split('/')[-1].split('?')[0]}")
+                                diagnostic_log.append("Machship 'cost' nodes missing.")
+                            found = True
+                            break
                         else:
-                            diagnostic_log.append(f"HTTP {resp.status_code} via {url.split('/')[-1].split('?')[0]}")
-                    except requests.exceptions.Timeout:
-                        diagnostic_log.append(f"Timeout via {url.split('/')[-1].split('?')[0]}")
-                    except Exception as loop_e:
-                        diagnostic_log.append(f"Exception via {url.split('/')[-1].split('?')[0]}: {str(loop_e)}")
+                            diagnostic_log.append(f"Not found via {url.split('/')[-1].split('?')[0]}")
+                    else:
+                        diagnostic_log.append(f"HTTP {resp.status_code}")
+                except requests.exceptions.Timeout:
+                    diagnostic_log.append(f"Timeout")
+                except Exception as loop_e:
+                    diagnostic_log.append(f"Error: {str(loop_e)}")
 
-                if not found:
-                    diagnostic_log.append("Failed to locate connote across all Machship search routes.")
+            if not found:
+                diagnostic_log.append("Failed to locate connote in Machship.")
 
-            # Calculate Variance & Diagnostics String
             variance = billed_amount - expected_amount
             diag_string = "Clean" if not diagnostic_log else " | ".join(diagnostic_log)
 
@@ -1060,7 +1061,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             }
             reconciliation_data.append(row_data)
 
-            # Queue items with a variance > 10 cents for Batch AI Analysis
             if found and abs(variance) > 0.10:
                 analysis_batch.append({
                     "connote": connote,
@@ -1073,19 +1073,17 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         ai_reasons = {}
         if len(analysis_batch) > 0:
             batch_prompt = f"""
-            You are a forensic freight auditor. I am providing a JSON array of consignments that have a cost variance between the Carrier Invoice and the internal WMS (Machship).
+            You are a forensic freight auditor. I am providing a JSON array of consignments that have a cost variance between the Carrier Invoice and the WMS (Machship).
             
-            For each consignment, perform a forensic natural language investigation comparing the 'carrier_invoice_line' text against the granular 'machship_metrics'. Look explicitly for:
-            1. Discrepancies in Charge Weight or Cubic Volume (Did the carrier re-weigh the freight?).
-            2. Missing or Added Surcharges (Did the carrier add a specific fee like 'Residential', 'Tailgate', or 'Manual Handling' that is not listed in the machship_surcharge_names?).
+            Compare the 'carrier_invoice_line' text against the 'machship_metrics'. Look explicitly for:
+            1. Discrepancies in Weight or Volume.
+            2. Missing or Added Surcharges.
             3. Base rate mismatches.
             
-            To help you parse the carrier line, here are the original CSV headers: {invoice_header_sample}
+            Original Headers: {csv_headers}
             
-            Return ONLY a valid JSON array of objects with these keys:
-            - "connote": The connote number.
-            - "variance_reason": A highly readable, structured explanation of exactly why the variance occurred. DO NOT write a wall of text. Use a concise, bulleted format using literal '\\n' characters to separate lines. Example format:
-            BOTTOM LINE: Carrier re-weighed and re-cubed the freight.\\n- WEIGHT: Billed 50kg vs WMS 48.4kg\\n- CUBIC: Billed 0.13m3 vs WMS 0.12m3\\n- SURCHARGES: Carrier added unquoted $13.40 fee.
+            Return ONLY a valid JSON array of objects with keys: "connote" and "variance_reason".
+            Use concise, bulleted format with literal '\\n' for lines.
             
             Variance Data:
             {json.dumps(analysis_batch, indent=2)}
@@ -1098,12 +1096,9 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 )
                 analysis_text = analysis_resp.text.strip()
                 
-                # Failsafe: using regex matching without literal triple backticks in code
                 amatch = re.search(r"`{3}(?:json)?\s*(.*?)\s*`{3}", analysis_text, re.DOTALL | re.IGNORECASE)
                 if amatch:
                     analysis_text = amatch.group(1).strip()
-                else:
-                    analysis_text = analysis_text.strip()
 
                 analysis_results = json.loads(analysis_text)
                 for res in analysis_results:
@@ -1111,7 +1106,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             except Exception as e:
                 print(f"Batch AI Analysis Failed: {e}")
 
-        # Map the AI findings back to the master dataset
         for row in reconciliation_data:
             c_connote = row["Carrier Connote"]
             if row["Variance"] == 0 or abs(row["Variance"]) <= 0.10:
@@ -1121,7 +1115,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             elif row["Diagnostics"] != "Clean" and "Not found" in row["Diagnostics"]:
                 row["AI Variance Analysis"] = "Cannot analyze - not found in Machship."
             else:
-                row["AI Variance Analysis"] = "AI Analysis Failed or Skipped."
+                row["AI Variance Analysis"] = "AI Analysis Skipped."
 
         # ==============================================================
         # TOOL 9: AUTO-TRIGGER HUBSPOT INTEGRATION FOR VARIANCES > $10
@@ -1137,7 +1131,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 variance_val = row.get("Variance", 0.0)
                 ai_analysis_result = row.get("AI Variance Analysis", "")
                 
-                if abs(variance_val) > 10.00 and ai_analysis_result not in ["Pending Analysis", "No significant variance.", "Cannot analyze - not found in Machship.", "AI Analysis Failed or Skipped."]:
+                if abs(variance_val) > 10.00 and ai_analysis_result not in ["Pending Analysis", "No significant variance.", "Cannot analyze - not found in Machship.", "AI Analysis Skipped."]:
                     payload = {
                         "connote": row["Carrier Connote"],
                         "variance_amount": abs(variance_val),
@@ -1152,14 +1146,10 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                         row["Diagnostics"] = f"{row['Diagnostics']} | HS Error: {error_log}"
         # ==============================================================
 
-        # Process DataFrame for Export
         df = pd.DataFrame(reconciliation_data)
-        
-        # Ensure column ordering includes the new AI Analysis
         col_order = ["Carrier Connote", "Billed Amount", "Expected Amount", "Variance", "AI Variance Analysis", "Diagnostics"]
         df = df[col_order]
 
-        # Base 64 GCP Scopes Implementation
         drive_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==").decode()
         sheets_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9zcHJlYWRzaGVldHM=").decode()
         
@@ -1189,7 +1179,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         ).execute()
         spreadsheet_id = sheet_file.get('id')
 
-        # The NaN Rule: Cell-by-cell iteration
         headers_list = df.columns.tolist()
         raw_values = df.values.tolist()
         
@@ -1207,7 +1196,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                         clean_row.append(item_str)
             scrubbed_values.append(clean_row)
 
-        # Grid Expansion Payload
         try:
             sheet_metadata = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
             sheet_id = sheet_metadata['sheets'][0]['properties']['sheetId']
@@ -1235,7 +1223,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         except Exception as grid_e:
             print(f"Grid expansion warning: {grid_e}")
 
-        # Push Data to Grid
         body = { "values": scrubbed_values }
         sheets_service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
@@ -1261,7 +1248,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 pass 
 
         sheet_url = f"[https://docs.google.com/spreadsheets/d/](https://docs.google.com/spreadsheets/d/){spreadsheet_id}"
-        return f"SUCCESS: Invoice Auditor complete. Processed {len(invoice_items)} records. Diagnostics updated. View Sheet: {sheet_url}"
+        return f"SUCCESS: Invoice Auditor complete. Processed {len(invoice_items)} records natively. HubSpot checks complete. View Sheet: {sheet_url}"
 
     except Exception as base_e:
         return f"TOOL 8 CRITICAL CRASH: {str(base_e)}"
