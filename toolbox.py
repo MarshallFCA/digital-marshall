@@ -799,10 +799,6 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
 # TOOL 9: HUBSPOT DISPUTE INTEGRATION
 # ==========================================
 def sanitize_hubspot_payload(payload_dict: dict) -> dict:
-    """
-    Strictly iterates cell-by-cell to convert missing values, NaN, or NaT into empty strings.
-    Prevents HubSpot API rejections due to malformed null types.
-    """
     sanitized = {}
     for key, value in payload_dict.items():
         if pd.isna(value) or value is None:
@@ -812,10 +808,7 @@ def sanitize_hubspot_payload(payload_dict: dict) -> dict:
     return sanitized
 
 def create_hubspot_dispute_ticket(variance_data: dict, service_key: str) -> dict:
-    """
-    Pushes variance disputes from Tool 8 into the HubSpot Service Ticket Pipeline.
-    """
-    url = "[https://api.hubapi.com/crm/v3/objects/tickets](https://api.hubapi.com/crm/v3/objects/tickets)"
+    url = base64.b64decode("aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRz").decode()
     headers = {
         "Authorization": f"Bearer {service_key}",
         "Content-Type": "application/json"
@@ -835,37 +828,25 @@ def create_hubspot_dispute_ticket(variance_data: dict, service_key: str) -> dict
     }
     
     clean_properties = sanitize_hubspot_payload(raw_properties)
-    
-    payload = {
-        "properties": clean_properties
-    }
+    payload = { "properties": clean_properties }
     
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=15)
-        diagnostic_logs.append(f"HTTP {response.status_code}: POST {url}")
-        
+        diagnostic_logs.append(f"HTTP {response.status_code}: POST Hubspot Tickets Endpoint")
         response.raise_for_status()
         
         data = response.json()
         ticket_id = data.get("id")
         diagnostic_logs.append(f"SUCCESS: HubSpot Ticket created. ID: {ticket_id}")
         
-        return {
-            "status": "success",
-            "ticket_id": ticket_id,
-            "logs": diagnostic_logs
-        }
+        return { "status": "success", "ticket_id": ticket_id, "logs": diagnostic_logs }
         
     except requests.exceptions.RequestException as e:
         diagnostic_logs.append(f"EXCEPTION: {str(e)}")
         if e.response is not None and e.response.text:
             diagnostic_logs.append(f"RESPONSE PAYLOAD: {e.response.text}")
             
-        return {
-            "status": "failed",
-            "ticket_id": None,
-            "logs": diagnostic_logs
-        }
+        return { "status": "failed", "ticket_id": None, "logs": diagnostic_logs }
 
 # ==========================================
 # TOOL 8: CARRIER INVOICE AUDITOR
@@ -908,44 +889,27 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         except Exception as model_err:
             return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {str(model_err)}"
             
-        # 1. READ CSV SAFELY INTO PANDAS (Handles commas or tabs dynamically)
+        # 1. 100% ROBUST PANDAS INGESTION
         try:
-            try:
-                df_raw = pd.read_csv(io.StringIO(raw_invoice_text), sep='\t')
-                if len(df_raw.columns) < 2:
-                    df_raw = pd.read_csv(io.StringIO(raw_invoice_text), sep=',')
-            except:
-                df_raw = pd.read_csv(io.StringIO(raw_invoice_text), sep=None, engine='python')
+            df_raw = pd.read_csv(io.StringIO(raw_invoice_text), sep=None, engine='python')
         except Exception as e:
             return f"Error: Could not parse the uploaded text into tabular data. {str(e)}"
             
         csv_headers = list(df_raw.columns)
         
-        # 2. SEMANTIC HEADER MAPPING VIA AI
-        mapping_prompt = f"""
-        You are a data extraction assistant. I am passing you a list of column headers from a carrier freight invoice.
-        Headers: {csv_headers}
+        # 2. DETERMINISTIC HEADER MAPPING (No AI Hallucinations)
+        connote_col = None
+        amount_col = None
         
-        Identify which exact column header represents the Consignment Number (Connote) and which represents the Total Billed Amount (the final cost).
-        
-        Return ONLY a JSON object with these two exact keys:
-        - "connote_col": The exact string of the connote header.
-        - "amount_col": The exact string of the total billed amount header.
-        """
-        
-        mapping_resp = model.generate_content(
-            mapping_prompt,
-            generation_config=genai.GenerationConfig(response_mime_type="application/json")
-        )
-        
-        try:
-            mapping_data = json.loads(mapping_resp.text.strip())
-            connote_col = mapping_data.get("connote_col")
-            amount_col = mapping_data.get("amount_col")
-        except:
-            # Failsafe fallback based on standard formats
-            connote_col = "Consignment No" if "Consignment No" in csv_headers else csv_headers[7] if len(csv_headers)>7 else csv_headers[0]
-            amount_col = "Total Amount" if "Total Amount" in csv_headers else csv_headers[-3] if len(csv_headers)>3 else csv_headers[-1]
+        for col in csv_headers:
+            cl = col.lower()
+            if not connote_col and ('connote' in cl or 'consignment' in cl or 'reference' in cl):
+                connote_col = col
+            if not amount_col and (('total' in cl and 'amount' in cl) or 'billed' in cl or 'charge' in cl):
+                amount_col = col
+                
+        if not connote_col: connote_col = csv_headers[7] if len(csv_headers)>7 else csv_headers[0]
+        if not amount_col: amount_col = csv_headers[-3] if len(csv_headers)>3 else csv_headers[-1]
 
         # 3. FAST PANDAS EXTRACTION
         invoice_items = []
@@ -956,7 +920,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 
             a_val = str(row.get(amount_col, "0"))
             try:
-                clean_amount = float(re.sub(r'[^\d.]', '', a_val))
+                clean_amount = float(re.sub(r'[^\d.-]', '', a_val))
             except:
                 clean_amount = 0.0
                 
@@ -968,13 +932,12 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 "raw_invoice_line": raw_line_str
             })
 
-        # Setup API Telemetry & Auth for Machship Loop
+        # 4. MACHSHIP API RECONCILIATION
         ms_token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
         ms_headers = { "token": ms_token, "Content-Type": "application/json" }
         reconciliation_data = []
         analysis_batch = []
 
-        # CLEAN API URLS
         b64_urls = [
             "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlDYXJyaWVyQ29uc2lnbm1lbnRJZD9pbmNsdWRlQ2hpbGRDb21wYW5pZXM9dHJ1ZQ==",
             "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl",
@@ -982,7 +945,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         ]
         search_urls = [base64.b64decode(u).decode() for u in b64_urls]
 
-        # Process each extracted item
         for item in invoice_items:
             connote = item.get("connote", "")
             raw_invoice_line = item.get("raw_invoice_line", "N/A")
@@ -1016,7 +978,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                                 "machship_weight": consignment.get("totalWeight", 0),
                                 "machship_cubic": consignment.get("totalVolume", 0),
                                 "machship_base_cost": c_total.get("totalBaseCostPrice", 0),
-                                "machship_fuel_levy": c_total.get("costFuelLevyPrice", 0),
                                 "machship_surcharges_total": c_total.get("totalConsignmentCarrierSurchargesCostPrice", 0),
                                 "machship_surcharge_names": surcharge_names,
                                 "machship_items": item_summary
@@ -1069,18 +1030,18 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                     "machship_metrics": ms_metrics
                 })
 
-        # --- BATCH AI ANALYSIS FOR VARIANCES ---
+        # 5. STRICT BATCH AI ANALYSIS
         ai_reasons = {}
         if len(analysis_batch) > 0:
             batch_prompt = f"""
-            You are a forensic freight auditor. I am providing a JSON array of consignments that have a cost variance between the Carrier Invoice and the WMS (Machship).
+            You are a forensic freight auditor. I am providing a JSON array of {len(analysis_batch)} consignments that have a cost variance.
             
             Compare the 'carrier_invoice_line' text against the 'machship_metrics'. Look explicitly for:
             1. Discrepancies in Weight or Volume.
             2. Missing or Added Surcharges.
             3. Base rate mismatches.
             
-            Original Headers: {csv_headers}
+            CRITICAL INSTRUCTION: You MUST return exactly {len(analysis_batch)} JSON objects in your array. Do NOT skip any items. Do NOT summarize. Every item passed to you must have a matching response object.
             
             Return ONLY a valid JSON array of objects with keys: "connote" and "variance_reason".
             Use concise, bulleted format with literal '\\n' for lines.
