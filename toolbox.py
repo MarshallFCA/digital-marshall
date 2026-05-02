@@ -819,12 +819,19 @@ def create_hubspot_dispute_ticket(variance_data: dict, service_key: str) -> dict
     connote = variance_data.get("connote", "Unknown Connote")
     variance_amount = variance_data.get("variance_amount", 0.0)
     analysis = variance_data.get("analysis", "No forensic analysis provided.")
+    carrier_name = variance_data.get("carrier_name", "Unknown Carrier")
+    invoice_number = variance_data.get("invoice_number", "Unknown Invoice")
     
+    # EXPANDED SCHEMA: Injects data directly into the Custom Properties.
     raw_properties = {
         "hs_pipeline": "0",
         "hs_pipeline_stage": "1",
-        "subject": f"Dispute: Connote {connote} (Var: ${variance_amount:.2f})",
-        "content": f"Automated BOOF Variance Analysis:\n\n{analysis}"
+        "subject": f"Dispute: {carrier_name} - Connote {connote} (Var: ${variance_amount:.2f})",
+        "content": f"Automated BOOF Variance Analysis:\n\n{analysis}",
+        "carrier_name": carrier_name,
+        "variance_amount": variance_amount,
+        "invoice_number": invoice_number,
+        "dispute_status": "Action Required"
     }
     
     clean_properties = sanitize_hubspot_payload(raw_properties)
@@ -902,11 +909,10 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                     elif uf.name.lower().endswith(('.xls', '.xlsx')):
                         df_raw = pd.read_excel(uf)
                     if df_raw is not None and not df_raw.empty:
-                        break # Process the first valid uploaded file
+                        break
                 except:
                     continue
         
-        # Fallback to LLM text only if the user didn't upload a file through the UI
         if df_raw is None or df_raw.empty:
             try:
                 df_raw = pd.read_csv(io.StringIO(raw_invoice_text), sep='\t')
@@ -919,9 +925,10 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             
         csv_headers = list(df_raw.columns)
         
-        # 2. DETERMINISTIC HEADER MAPPING
+        # 2. DETERMINISTIC HEADER MAPPING (Now includes Invoice Number)
         connote_col = None
         amount_col = None
+        invoice_col = None
         
         for col in csv_headers:
             cl = str(col).lower().strip()
@@ -929,6 +936,8 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 connote_col = col
             if not amount_col and cl in ['total amount', 'charge total', 'billed amount', 'total cost', 'amount']:
                 amount_col = col
+            if not invoice_col and 'invoice' in cl and ('number' in cl or 'no' in cl):
+                invoice_col = col
                 
         if not connote_col: connote_col = csv_headers[7] if len(csv_headers)>7 else csv_headers[0]
         if not amount_col: 
@@ -938,6 +947,8 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                     amount_col = col
                     break
             if not amount_col: amount_col = csv_headers[-3] if len(csv_headers)>3 else csv_headers[-1]
+        if not invoice_col:
+            invoice_col = csv_headers[5] if len(csv_headers)>5 else None
 
         # 3. FAST PANDAS EXTRACTION
         invoice_items = []
@@ -952,11 +963,13 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             except:
                 clean_amount = 0.0
                 
+            i_val = str(row.get(invoice_col, "Unknown")).strip() if invoice_col else "Unknown"
             raw_line_str = " | ".join([f"{k}: {v}" for k, v in row.items() if not pd.isna(v)])
             
             invoice_items.append({
                 "connote": c_val,
                 "billed_amount": clean_amount,
+                "invoice_number": i_val,
                 "raw_invoice_line": raw_line_str
             })
 
@@ -977,8 +990,10 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             connote = item.get("connote", "")
             raw_invoice_line = item.get("raw_invoice_line", "N/A")
             billed_amount = item.get("billed_amount", 0.0)
+            invoice_number = item.get("invoice_number", "Unknown")
 
             expected_amount = 0.0
+            carrier_name = "Unknown Carrier"
             diagnostic_log = []
             found = False
             ms_metrics = {}
@@ -992,6 +1007,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                             consignment = data["object"][0]
                             c_total = consignment.get("consignmentTotal") or {}
                             
+                            carrier_name = consignment.get("carrier", {}).get("name", "Unknown Carrier")
                             surcharge_list = c_total.get("consignmentCarrierSurcharges", [])
                             surcharge_names = [s.get("carrierSurcharge", {}).get("name", "Unknown Surcharge") for s in surcharge_list]
                             
@@ -1037,12 +1053,13 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             if not found:
                 diagnostic_log.append("Failed to locate connote in Machship.")
 
-            # MATHEMATICAL FIX: Positive Variance = Overcharge (Carrier billed more than expected)
             variance = billed_amount - expected_amount
             diag_string = "Clean" if not diagnostic_log else " | ".join(diagnostic_log)
 
             row_data = {
                 "Carrier Connote": connote,
+                "Carrier Name": carrier_name,
+                "Invoice Number": invoice_number,
                 "Billed Amount": billed_amount,
                 "Expected Amount": expected_amount,
                 "Variance": variance,
@@ -1051,7 +1068,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             }
             reconciliation_data.append(row_data)
 
-            # ONLY append for forensic analysis if the Carrier actually OVERCHARGED > 10 cents
             if found and variance > 0.10:
                 analysis_batch.append({
                     "connote": connote,
@@ -1100,7 +1116,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         for row in reconciliation_data:
             c_connote = row["Carrier Connote"]
             
-            # Map findings strictly based on the new Profit/Loss rule
             if row["Variance"] <= 0.10:
                 row["AI Variance Analysis"] = "No discrepancy (Undercharge or Exact Match)."
             elif c_connote in ai_reasons:
@@ -1124,12 +1139,13 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 variance_val = row.get("Variance", 0.0)
                 ai_analysis_result = row.get("AI Variance Analysis", "")
                 
-                # ONLY create ticket for true OVERCHARGES > $10.00
                 if variance_val > 10.00 and ai_analysis_result not in ["Pending Analysis", "No discrepancy (Undercharge or Exact Match).", "Cannot analyze - not found in Machship.", "AI Analysis Skipped."]:
                     payload = {
                         "connote": row["Carrier Connote"],
-                        "variance_amount": variance_val, # Absolute math no longer needed
-                        "analysis": ai_analysis_result
+                        "variance_amount": variance_val,
+                        "analysis": ai_analysis_result,
+                        "carrier_name": row["Carrier Name"],
+                        "invoice_number": row["Invoice Number"]
                     }
                     hs_res = create_hubspot_dispute_ticket(payload, hubspot_service_key)
                     
@@ -1141,7 +1157,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         # ==============================================================
 
         df = pd.DataFrame(reconciliation_data)
-        col_order = ["Carrier Connote", "Billed Amount", "Expected Amount", "Variance", "AI Variance Analysis", "Diagnostics"]
+        col_order = ["Carrier Connote", "Invoice Number", "Carrier Name", "Billed Amount", "Expected Amount", "Variance", "AI Variance Analysis", "Diagnostics"]
         df = df[col_order]
 
         drive_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==").decode()
