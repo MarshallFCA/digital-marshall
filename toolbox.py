@@ -1348,3 +1348,128 @@ def tool_10_temporal_anomaly_detector():
 
     except Exception as e:
         return f"TOOL 10 CRITICAL CRASH: {str(e)}"
+
+# ==========================================
+# TOOL 11: TRANSIT DELAY AUTO-QUERY ENGINE
+# ==========================================
+CARRIER_EMAIL_MATRIX = {
+    # Replace these placeholders with the final matrix pulled via BOOF extraction
+    "Placeholder Carrier": "support@example.com"
+}
+
+def tool_11_transit_delay_engine():
+    """
+    Executes the autonomous sweep for delayed consignments. 
+    Intended to be triggered by GCP Cloud Scheduler at 05:00 AEST (Mon-Fri).
+    """
+    now = datetime.datetime.now()
+    
+    # 1. Determine Temporal Target (Previous Business Day)
+    # If running at 5am Monday, we evaluate freight due on Friday
+    if now.weekday() == 0: 
+        target_date = now - datetime.timedelta(days=3)
+    # If running at 5am Sunday (unexpected, but safe-guarded), evaluate Friday
+    elif now.weekday() == 6: 
+        target_date = now - datetime.timedelta(days=2)
+    # Tuesday-Saturday evaluate yesterday
+    else: 
+        target_date = now - datetime.timedelta(days=1)
+        
+    target_date_str = target_date.strftime('%Y-%m-%d')
+    
+    try:
+        # Load API Tokens and Service Accounts natively
+        ms_token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
+        hs_key = st.secrets.get("hubspot", {}).get("service_key")
+        sender_email = st.secrets.get("gcp_service_account", {}).get("admin_email", "admin@fca.net.au")
+        
+        # 2. Fetch Active Consignments
+        active_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQWN0aXZl").decode()
+        headers = { "token": ms_token, "Content-Type": "application/json" }
+        resp = requests.post(active_url, headers=headers, json={}, timeout=15)
+        resp.raise_for_status()
+        active_data = resp.json().get('object', [])
+        
+        # 3. Filter for Exceptions
+        success_statuses = ['delivered', 'on board for delivery', 'partially delivered', 'awaiting collection', 'completed']
+        delayed_freight = []
+        
+        for item in active_data:
+            eta_raw = item.get('expectedDeliveryDate', '')
+            eta = eta_raw.split('T')[0] if eta_raw else ''
+            status = item.get('status', {}).get('name', '').lower()
+            
+            if eta == target_date_str and status not in success_statuses:
+                delayed_freight.append(item)
+                
+        if not delayed_freight:
+            return f"Sweep Complete. No transit delays detected for target date {target_date_str}."
+            
+        action_summary = []
+        
+        # Build Gmail Service Instance using existing GCP Service Account logic
+        gmail_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9nbWFpbC5zZW5k").decode()
+        credentials_dict = dict(st.secrets["gcp_service_account"])
+        creds = service_account.Credentials.from_service_account_info(
+            credentials_dict,
+            scopes=[gmail_scope],
+            subject=sender_email
+        )
+        gmail_service = build('gmail', 'v1', credentials=creds)
+        
+        hs_url = base64.b64decode("aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRz").decode()
+        
+        # 4. Action & CRM Sync
+        for freight in delayed_freight:
+            ms_number = freight.get('consignmentNumber')
+            carrier_name = freight.get('carrier', {}).get('name', 'Unknown Carrier')
+            status_display = freight.get('status', {}).get('name', 'Unknown Status')
+            
+            carrier_email = CARRIER_EMAIL_MATRIX.get(carrier_name)
+            action_taken = ""
+            
+            if not carrier_email:
+                action_taken = f"Skipped: Carrier '{carrier_name}' not mapped in Routing Matrix."
+            else:
+                # A. Dispatch Gmail Inquiry
+                try:
+                    message_text = (
+                        f"Hello,\n\n"
+                        f"We are requesting a formal status update on consignment {ms_number}. "
+                        f"It was due for delivery on {target_date_str} but is currently showing as '{status_display}'.\n\n"
+                        f"Please investigate and provide an updated ETA.\n\n"
+                        f"Thank you,\nAutomated Freight Terminal"
+                    )
+                    message = MIMEText(message_text)
+                    message['to'] = carrier_email
+                    message['subject'] = f"Tracking Inquiry: Delayed Consignment {ms_number}"
+                    
+                    raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
+                    gmail_service.users().messages().send(userId='me', body={'raw': raw_message}).execute()
+                    action_taken = f"Email dispatched to {carrier_email}."
+                except Exception as e:
+                    action_taken = f"Gmail Dispatch Failed: {str(e)}"
+                    
+                # B. Sync to HubSpot (Re-using Tool 9's sanitize_hubspot_payload function)
+                if hs_key:
+                    hs_headers = { "Authorization": f"Bearer {hs_key}", "Content-Type": "application/json" }
+                    raw_properties = {
+                        "hs_pipeline": "0",  
+                        "hs_pipeline_stage": "1",  
+                        "subject": f"Dispatched Carrier Query: {ms_number} ({carrier_name})",
+                        "content": f"An autonomous query was dispatched regarding a delayed delivery.\n\nConsignment: {ms_number}\nOriginal ETA: {target_date_str}\nCurrent Status: {status_display}\nAction: {action_taken}",
+                        "hs_ticket_priority": "MEDIUM"
+                    }
+                    
+                    clean_properties = sanitize_hubspot_payload(raw_properties)
+                    try:
+                        requests.post(hs_url, headers=hs_headers, json={"properties": clean_properties}, timeout=15)
+                    except Exception:
+                        pass # Silently fail HS sync to preserve main loop operation
+                        
+            action_summary.append(f"{ms_number} ({carrier_name}): {action_taken}")
+            
+        return f"Sweep Complete. Processed {len(delayed_freight)} delayed consignments for {target_date_str}.\n" + "\n".join(action_summary)
+        
+    except Exception as e:
+        return f"TOOL 11 CRITICAL CRASH: {str(e)}"
