@@ -795,6 +795,79 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
     except Exception as e:
         return f"HYBRID GEMINI CRASH: {str(e)}"
 
+
+# ==========================================
+# TOOL 9: HUBSPOT DISPUTE INTEGRATION
+# ==========================================
+def sanitize_hubspot_payload(payload_dict: dict) -> dict:
+    """
+    Strictly iterates cell-by-cell to convert missing values, NaN, or NaT into empty strings.
+    Prevents HubSpot API rejections due to malformed null types.
+    """
+    sanitized = {}
+    for key, value in payload_dict.items():
+        if pd.isna(value) or value is None:
+            sanitized[key] = ""
+        else:
+            sanitized[key] = str(value)
+    return sanitized
+
+def create_hubspot_dispute_ticket(variance_data: dict, service_key: str) -> dict:
+    """
+    Pushes variance disputes from Tool 8 into the HubSpot Service Ticket Pipeline.
+    """
+    url = "[https://api.hubapi.com/crm/v3/objects/tickets](https://api.hubapi.com/crm/v3/objects/tickets)"
+    headers = {
+        "Authorization": f"Bearer {service_key}",
+        "Content-Type": "application/json"
+    }
+    
+    diagnostic_logs = []
+    
+    connote = variance_data.get("connote", "Unknown Connote")
+    variance_amount = variance_data.get("variance_amount", 0.0)
+    analysis = variance_data.get("analysis", "No forensic analysis provided.")
+    
+    raw_properties = {
+        "hs_pipeline": "0",
+        "hs_pipeline_stage": "1",
+        "subject": f"Dispute: Connote {connote} (Var: ${variance_amount:.2f})",
+        "content": f"Automated BOOF Variance Analysis:\n\n{analysis}"
+    }
+    
+    clean_properties = sanitize_hubspot_payload(raw_properties)
+    
+    payload = {
+        "properties": clean_properties
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
+        diagnostic_logs.append(f"HTTP {response.status_code}: POST {url}")
+        
+        response.raise_for_status()
+        
+        data = response.json()
+        ticket_id = data.get("id")
+        diagnostic_logs.append(f"SUCCESS: HubSpot Ticket created. ID: {ticket_id}")
+        
+        return {
+            "status": "success",
+            "ticket_id": ticket_id,
+            "logs": diagnostic_logs
+        }
+        
+    except requests.exceptions.RequestException as e:
+        diagnostic_logs.append(f"EXCEPTION: {str(e)}")
+        if e.response is not None and e.response.text:
+            diagnostic_logs.append(f"RESPONSE PAYLOAD: {e.response.text}")
+            
+        return {
+            "status": "failed",
+            "ticket_id": None,
+            "logs": diagnostic_logs
+        }
+
 # ==========================================
 # TOOL 8: CARRIER INVOICE AUDITOR
 # ==========================================
@@ -1049,6 +1122,35 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 row["AI Variance Analysis"] = "Cannot analyze - not found in Machship."
             else:
                 row["AI Variance Analysis"] = "AI Analysis Failed or Skipped."
+
+        # ==============================================================
+        # TOOL 9: AUTO-TRIGGER HUBSPOT INTEGRATION FOR VARIANCES > $10
+        # ==============================================================
+        hubspot_service_key = None
+        try:
+            hubspot_service_key = st.secrets["hubspot"]["service_key"]
+        except (KeyError, FileNotFoundError):
+            pass
+
+        if hubspot_service_key:
+            for row in reconciliation_data:
+                variance_val = row.get("Variance", 0.0)
+                ai_analysis_result = row.get("AI Variance Analysis", "")
+                
+                if abs(variance_val) > 10.00 and ai_analysis_result not in ["Pending Analysis", "No significant variance.", "Cannot analyze - not found in Machship.", "AI Analysis Failed or Skipped."]:
+                    payload = {
+                        "connote": row["Carrier Connote"],
+                        "variance_amount": abs(variance_val),
+                        "analysis": ai_analysis_result
+                    }
+                    hs_res = create_hubspot_dispute_ticket(payload, hubspot_service_key)
+                    
+                    if hs_res.get("status") == "success":
+                        row["Diagnostics"] = f"{row['Diagnostics']} | HS Ticket: {hs_res.get('ticket_id')}"
+                    else:
+                        error_log = hs_res.get("logs", ["Unknown Error"])[-1]
+                        row["Diagnostics"] = f"{row['Diagnostics']} | HS Error: {error_log}"
+        # ==============================================================
 
         # Process DataFrame for Export
         df = pd.DataFrame(reconciliation_data)
