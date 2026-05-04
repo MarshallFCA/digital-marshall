@@ -1286,16 +1286,32 @@ def tool_10_temporal_anomaly_detector():
 
     try:
         ms_token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
-        active_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQWN0aXZl").decode()
+        
+        base_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0UmVjZW50bHlDcmVhdGVkT3JVcGRhdGVkQ29uc2lnbm1lbnRz").decode()
         edit_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZWRpdA==").decode()
         hs_key = st.secrets.get("hubspot", {}).get("service_key")
         sender_email = st.secrets.get("gcp_service_account", {}).get("admin_email", "admin@fca.net.au")
         
+        from_date = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%S')
         headers = { "token": ms_token, "Content-Type": "application/json" }
-        resp = requests.post(active_url, headers=headers, json={}, timeout=15)
-        resp.raise_for_status()
-        active_data = resp.json().get('object', [])
         
+        active_data = []
+        start_index = 0
+        while True:
+            fetch_url = f"{base_url}?fromDateUtc={from_date}&retrieveSize=200&startIndex={start_index}"
+            resp = requests.get(fetch_url, headers=headers, timeout=15)
+            resp.raise_for_status()
+            
+            page_data = resp.json().get('object', [])
+            if not page_data:
+                break
+                
+            active_data.extend(page_data)
+            
+            if len(page_data) < 200:
+                break
+            start_index += 200
+            
         anomalies = []
         for item in active_data:
             status_name = item.get('status', {}).get('name', '').lower()
@@ -1392,12 +1408,28 @@ def tool_11_transit_delay_engine(dry_run: bool = False):
             
         genai.configure(api_key=gemini_key)
         
-        # 2. Fetch Active Consignments
-        active_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQWN0aXZl").decode()
+        # 2. Fetch Active Consignments via Valid Endpoint
+        base_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0UmVjZW50bHlDcmVhdGVkT3JVcGRhdGVkQ29uc2lnbm1lbnRz").decode()
+        
+        from_date = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%S')
         headers = { "token": ms_token, "Content-Type": "application/json" }
-        resp = requests.post(active_url, headers=headers, json={}, timeout=15)
-        resp.raise_for_status()
-        active_data = resp.json().get('object', [])
+        
+        active_data = []
+        start_index = 0
+        while True:
+            fetch_url = f"{base_url}?fromDateUtc={from_date}&retrieveSize=200&startIndex={start_index}"
+            resp = requests.get(fetch_url, headers=headers, timeout=15)
+            resp.raise_for_status()
+            
+            page_data = resp.json().get('object', [])
+            if not page_data:
+                break
+                
+            active_data.extend(page_data)
+            
+            if len(page_data) < 200:
+                break
+            start_index += 200
         
         # 3. Filter for Exceptions & Extract Geodata
         success_statuses = ['delivered', 'on board for delivery', 'partially delivered', 'awaiting collection', 'completed']
@@ -1409,7 +1441,6 @@ def tool_11_transit_delay_engine(dry_run: bool = False):
             status = item.get('status', {}).get('name', '').lower()
             
             if eta == target_date_str and status not in success_statuses:
-                # Extract Destination Logic
                 to_node = item.get('despatch', {}).get('toLocation', {})
                 if not to_node:
                     to_node = item.get('toLocation', {})
@@ -1458,13 +1489,16 @@ def tool_11_transit_delay_engine(dry_run: bool = False):
                 llm_text = amatch.group(0).strip()
                 
             routed_map = json.loads(llm_text)
-            email_dict = {r.get('ms_number'): r.get('routed_email') for r in routed_map}
+            
+            if isinstance(routed_map, list):
+                email_dict = {r.get('ms_number'): r.get('routed_email') for r in routed_map}
+            else:
+                email_dict = {}
         except Exception as e:
             return f"TOOL 11 CRITICAL CRASH (LLM Routing Engine Failed): {str(e)}"
             
         action_summary = []
         
-        # Build Gmail Service Instance
         gmail_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9nbWFpbC5zZW5k").decode()
         credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
@@ -1525,7 +1559,7 @@ def tool_11_transit_delay_engine(dry_run: bool = False):
                         try:
                             requests.post(hs_url, headers=hs_headers, json={"properties": clean_properties}, timeout=15)
                         except Exception:
-                            pass # Silently fail HS sync to preserve main loop operation
+                            pass 
                         
             action_summary.append(f"{ms_number} ({carrier_name}): {action_taken}")
             
