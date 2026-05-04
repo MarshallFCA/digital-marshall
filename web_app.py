@@ -26,7 +26,7 @@ st.set_page_config(page_title="Blessed Oracle of Freight", page_icon="🚀", lay
 st.markdown("""
     <style>
     /* Import Poppins from Google Fonts */
-    @import url('[https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700;900&display=swap](https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700;900&display=swap)');
+    @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700;900&display=swap');
 
     /* Globally apply Poppins to all standard text elements */
     .stApp, p, h1, h2, h3, h4, h5, h6, li, label, input, button, .stMarkdown, div[data-testid="stText"] {
@@ -87,16 +87,17 @@ if not st.session_state.logged_in:
     oauth2 = OAuth2Component(
         GOOGLE_CLIENT_ID, 
         GOOGLE_CLIENT_SECRET, 
-        "[https://accounts.google.com/o/oauth2/v2/auth](https://accounts.google.com/o/oauth2/v2/auth)", 
-        "[https://oauth2.googleapis.com/token](https://oauth2.googleapis.com/token)", 
-        "[https://oauth2.googleapis.com/token](https://oauth2.googleapis.com/token)", 
-        "[https://oauth2.googleapis.com/revoke](https://oauth2.googleapis.com/revoke)"
+        "https://accounts.google.com/o/oauth2/v2/auth", 
+        "https://oauth2.googleapis.com/token", 
+        "https://oauth2.googleapis.com/token", 
+        "https://oauth2.googleapis.com/revoke"
     )
     
+    # Reverted redirect_uri to the original, functioning endpoint
     result = oauth2.authorize_button(
         name="Sign in with Google",
-        icon="[https://www.google.com/favicon.ico](https://www.google.com/favicon.ico)",
-        redirect_uri="[https://webapppy-btaeqf2mvhcbsm9ydkh8s4.streamlit.app/](https://webapppy-btaeqf2mvhcbsm9ydkh8s4.streamlit.app/)",
+        icon="https://www.google.com/favicon.ico",
+        redirect_uri="https://webapppy-btaeqf2mvhcbsm9ydkh8s4.streamlit.app/",
         scope="openid email profile",
         key="google_login",
         use_container_width=True
@@ -104,7 +105,7 @@ if not st.session_state.logged_in:
     
     if result and "token" in result:
         access_token = result["token"]["access_token"]
-        user_info = requests.get(f"[https://www.googleapis.com/oauth2/v1/userinfo?access_token=](https://www.googleapis.com/oauth2/v1/userinfo?access_token=){access_token}").json()
+        user_info = requests.get(f"https://www.googleapis.com/oauth2/v1/userinfo?access_token={access_token}").json()
         user_email = user_info.get("email", "")
         
         if user_email.endswith("@freightcompaniesaustralia.com.au"):
