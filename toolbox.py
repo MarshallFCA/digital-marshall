@@ -1360,11 +1360,12 @@ ENTER YOUR RULES HERE IN PLAIN ENGLISH. FOR EXAMPLE:
 - Northline: If delivering to WA, email wa@northline.com.au. All others email info@northline.com.au.
 """
 
-def tool_11_transit_delay_engine():
+def tool_11_transit_delay_engine(dry_run: bool = False):
     """
     Executes the autonomous sweep for delayed consignments. 
     Intended to be triggered by GCP Cloud Scheduler at 05:00 AEST (Mon-Fri).
     Includes LLM logic to deduce specific regional routing emails based on delivery location.
+    Accepts a 'dry_run' boolean to prevent external API dispatch during testing.
     """
     import google.generativeai as genai
     now = datetime.datetime.now()
@@ -1487,41 +1488,44 @@ def tool_11_transit_delay_engine():
             if carrier_email == "UNMAPPED":
                 action_taken = f"Skipped: LLM could not deduce routing logic for '{carrier_name}' to '{destination}'."
             else:
-                # A. Dispatch Gmail Inquiry
-                try:
-                    message_text = (
-                        f"Hello,\n\n"
-                        f"We are requesting a formal status update on consignment {ms_number}. "
-                        f"It was due for delivery on {target_date_str} but is currently showing as '{status_display}'.\n\n"
-                        f"Please investigate and provide an updated ETA.\n\n"
-                        f"Thank you,\nAutomated Freight Terminal"
-                    )
-                    message = MIMEText(message_text)
-                    message['to'] = carrier_email
-                    message['subject'] = f"Tracking Inquiry: Delayed Consignment {ms_number}"
-                    
-                    raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
-                    gmail_service.users().messages().send(userId='me', body={'raw': raw_message}).execute()
-                    action_taken = f"Email dynamically routed and dispatched to {carrier_email}."
-                except Exception as e:
-                    action_taken = f"Gmail Dispatch Failed: {str(e)}"
-                    
-                # B. Sync to HubSpot
-                if hs_key:
-                    hs_headers = { "Authorization": f"Bearer {hs_key}", "Content-Type": "application/json" }
-                    raw_properties = {
-                        "hs_pipeline": "0",  
-                        "hs_pipeline_stage": "1",  
-                        "subject": f"Dispatched Carrier Query: {ms_number} ({carrier_name})",
-                        "content": f"An autonomous query was dispatched regarding a delayed delivery.\n\nConsignment: {ms_number}\nDestination: {destination}\nOriginal ETA: {target_date_str}\nCurrent Status: {status_display}\nAction: {action_taken}",
-                        "hs_ticket_priority": "MEDIUM"
-                    }
-                    
-                    clean_properties = sanitize_hubspot_payload(raw_properties)
+                if dry_run:
+                    action_taken = f"[DRY RUN SAFE MODE] Would dynamically route email to {carrier_email} and sync to HubSpot."
+                else:
+                    # A. Dispatch Gmail Inquiry
                     try:
-                        requests.post(hs_url, headers=hs_headers, json={"properties": clean_properties}, timeout=15)
-                    except Exception:
-                        pass # Silently fail HS sync to preserve main loop operation
+                        message_text = (
+                            f"Hello,\n\n"
+                            f"We are requesting a formal status update on consignment {ms_number}. "
+                            f"It was due for delivery on {target_date_str} but is currently showing as '{status_display}'.\n\n"
+                            f"Please investigate and provide an updated ETA.\n\n"
+                            f"Thank you,\nAutomated Freight Terminal"
+                        )
+                        message = MIMEText(message_text)
+                        message['to'] = carrier_email
+                        message['subject'] = f"Tracking Inquiry: Delayed Consignment {ms_number}"
+                        
+                        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
+                        gmail_service.users().messages().send(userId='me', body={'raw': raw_message}).execute()
+                        action_taken = f"Email dynamically routed and dispatched to {carrier_email}."
+                    except Exception as e:
+                        action_taken = f"Gmail Dispatch Failed: {str(e)}"
+                        
+                    # B. Sync to HubSpot
+                    if hs_key:
+                        hs_headers = { "Authorization": f"Bearer {hs_key}", "Content-Type": "application/json" }
+                        raw_properties = {
+                            "hs_pipeline": "0",  
+                            "hs_pipeline_stage": "1",  
+                            "subject": f"Dispatched Carrier Query: {ms_number} ({carrier_name})",
+                            "content": f"An autonomous query was dispatched regarding a delayed delivery.\n\nConsignment: {ms_number}\nDestination: {destination}\nOriginal ETA: {target_date_str}\nCurrent Status: {status_display}\nAction: {action_taken}",
+                            "hs_ticket_priority": "MEDIUM"
+                        }
+                        
+                        clean_properties = sanitize_hubspot_payload(raw_properties)
+                        try:
+                            requests.post(hs_url, headers=hs_headers, json={"properties": clean_properties}, timeout=15)
+                        except Exception:
+                            pass # Silently fail HS sync to preserve main loop operation
                         
             action_summary.append(f"{ms_number} ({carrier_name}): {action_taken}")
             
