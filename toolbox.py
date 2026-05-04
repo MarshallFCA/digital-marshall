@@ -1352,36 +1352,44 @@ def tool_10_temporal_anomaly_detector():
 # ==========================================
 # TOOL 11: TRANSIT DELAY AUTO-QUERY ENGINE
 # ==========================================
-CARRIER_EMAIL_MATRIX = {
-    # Replace these placeholders with the final matrix pulled via BOOF extraction
-    "Placeholder Carrier": "support@example.com"
-}
+CARRIER_ROUTING_RULES = """
+ENTER YOUR RULES HERE IN PLAIN ENGLISH. FOR EXAMPLE:
+- COPE: If delivering to VIC or TAS, email cope.vic@example.com.au. If NSW, email cope.nsw@example.com.au. If QLD, email cope.qld@example.com.au.
+- TNT: Always email support@tnt.com.au regardless of state.
+- FedEx: Always email aus.customerservice@fedex.com.au.
+- Northline: If delivering to WA, email wa@northline.com.au. All others email info@northline.com.au.
+"""
 
 def tool_11_transit_delay_engine():
     """
     Executes the autonomous sweep for delayed consignments. 
     Intended to be triggered by GCP Cloud Scheduler at 05:00 AEST (Mon-Fri).
+    Includes LLM logic to deduce specific regional routing emails based on delivery location.
     """
+    import google.generativeai as genai
     now = datetime.datetime.now()
     
     # 1. Determine Temporal Target (Previous Business Day)
-    # If running at 5am Monday, we evaluate freight due on Friday
     if now.weekday() == 0: 
         target_date = now - datetime.timedelta(days=3)
-    # If running at 5am Sunday (unexpected, but safe-guarded), evaluate Friday
     elif now.weekday() == 6: 
         target_date = now - datetime.timedelta(days=2)
-    # Tuesday-Saturday evaluate yesterday
     else: 
         target_date = now - datetime.timedelta(days=1)
         
     target_date_str = target_date.strftime('%Y-%m-%d')
     
     try:
-        # Load API Tokens and Service Accounts natively
+        # Load API Tokens and Service Accounts
         ms_token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
         hs_key = st.secrets.get("hubspot", {}).get("service_key")
         sender_email = st.secrets.get("gcp_service_account", {}).get("admin_email", "admin@fca.net.au")
+        gemini_key = st.secrets.get("GEMINI_API_KEY")
+        
+        if not gemini_key:
+            return "TOOL 11 CRITICAL CRASH: GEMINI_API_KEY is missing from telemetry secrets."
+            
+        genai.configure(api_key=gemini_key)
         
         # 2. Fetch Active Consignments
         active_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQWN0aXZl").decode()
@@ -1390,7 +1398,7 @@ def tool_11_transit_delay_engine():
         resp.raise_for_status()
         active_data = resp.json().get('object', [])
         
-        # 3. Filter for Exceptions
+        # 3. Filter for Exceptions & Extract Geodata
         success_statuses = ['delivered', 'on board for delivery', 'partially delivered', 'awaiting collection', 'completed']
         delayed_freight = []
         
@@ -1400,14 +1408,62 @@ def tool_11_transit_delay_engine():
             status = item.get('status', {}).get('name', '').lower()
             
             if eta == target_date_str and status not in success_statuses:
-                delayed_freight.append(item)
+                # Extract Destination Logic
+                to_node = item.get('despatch', {}).get('toLocation', {})
+                if not to_node:
+                    to_node = item.get('toLocation', {})
+                
+                suburb = to_node.get('suburb', 'Unknown')
+                state = to_node.get('state', 'Unknown')
+                postcode = to_node.get('postcode', 'Unknown')
+                
+                delayed_freight.append({
+                    "ms_number": item.get('consignmentNumber'),
+                    "carrier_name": item.get('carrier', {}).get('name', 'Unknown Carrier'),
+                    "status_display": item.get('status', {}).get('name', 'Unknown Status'),
+                    "destination": f"{suburb}, {state} {postcode}"
+                })
                 
         if not delayed_freight:
             return f"Sweep Complete. No transit delays detected for target date {target_date_str}."
+
+        # 4. LLM Routing Deduction Engine
+        routing_prompt = f"""
+        You are a highly logical freight routing API. I am giving you a list of plain-text routing rules and a JSON array of delayed consignments containing their carrier and delivery destination.
+        
+        ROUTING RULES:
+        {CARRIER_ROUTING_RULES}
+        
+        CONSIGNMENTS TO ROUTE:
+        {json.dumps(delayed_freight)}
+        
+        TASK:
+        Evaluate each consignment's 'carrier_name' and 'destination' against the routing rules to deduce the correct email address. 
+        If a carrier is not mentioned in the rules, or you cannot deduce an email, set it to "UNMAPPED".
+        
+        CRITICAL: Return ONLY a valid, raw JSON array of objects with strictly two keys: 'ms_number' and 'routed_email'. Do not include markdown blocks or explanations.
+        """
+        
+        try:
+            model = genai.GenerativeModel('gemini-1.5-flash')
+            llm_resp = model.generate_content(
+                routing_prompt,
+                generation_config=genai.GenerationConfig(response_mime_type="application/json")
+            )
+            
+            llm_text = llm_resp.text.strip()
+            amatch = re.search(r"\[.*\]", llm_text, re.DOTALL | re.IGNORECASE)
+            if amatch:
+                llm_text = amatch.group(0).strip()
+                
+            routed_map = json.loads(llm_text)
+            email_dict = {r.get('ms_number'): r.get('routed_email') for r in routed_map}
+        except Exception as e:
+            return f"TOOL 11 CRITICAL CRASH (LLM Routing Engine Failed): {str(e)}"
             
         action_summary = []
         
-        # Build Gmail Service Instance using existing GCP Service Account logic
+        # Build Gmail Service Instance
         gmail_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9nbWFpbC5zZW5k").decode()
         credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
@@ -1416,20 +1472,20 @@ def tool_11_transit_delay_engine():
             subject=sender_email
         )
         gmail_service = build('gmail', 'v1', credentials=creds)
-        
         hs_url = base64.b64decode("aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRz").decode()
         
-        # 4. Action & CRM Sync
+        # 5. Action & CRM Sync
         for freight in delayed_freight:
-            ms_number = freight.get('consignmentNumber')
-            carrier_name = freight.get('carrier', {}).get('name', 'Unknown Carrier')
-            status_display = freight.get('status', {}).get('name', 'Unknown Status')
+            ms_number = freight['ms_number']
+            carrier_name = freight['carrier_name']
+            status_display = freight['status_display']
+            destination = freight['destination']
             
-            carrier_email = CARRIER_EMAIL_MATRIX.get(carrier_name)
+            carrier_email = email_dict.get(ms_number, "UNMAPPED")
             action_taken = ""
             
-            if not carrier_email:
-                action_taken = f"Skipped: Carrier '{carrier_name}' not mapped in Routing Matrix."
+            if carrier_email == "UNMAPPED":
+                action_taken = f"Skipped: LLM could not deduce routing logic for '{carrier_name}' to '{destination}'."
             else:
                 # A. Dispatch Gmail Inquiry
                 try:
@@ -1446,18 +1502,18 @@ def tool_11_transit_delay_engine():
                     
                     raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
                     gmail_service.users().messages().send(userId='me', body={'raw': raw_message}).execute()
-                    action_taken = f"Email dispatched to {carrier_email}."
+                    action_taken = f"Email dynamically routed and dispatched to {carrier_email}."
                 except Exception as e:
                     action_taken = f"Gmail Dispatch Failed: {str(e)}"
                     
-                # B. Sync to HubSpot (Re-using Tool 9's sanitize_hubspot_payload function)
+                # B. Sync to HubSpot
                 if hs_key:
                     hs_headers = { "Authorization": f"Bearer {hs_key}", "Content-Type": "application/json" }
                     raw_properties = {
                         "hs_pipeline": "0",  
                         "hs_pipeline_stage": "1",  
                         "subject": f"Dispatched Carrier Query: {ms_number} ({carrier_name})",
-                        "content": f"An autonomous query was dispatched regarding a delayed delivery.\n\nConsignment: {ms_number}\nOriginal ETA: {target_date_str}\nCurrent Status: {status_display}\nAction: {action_taken}",
+                        "content": f"An autonomous query was dispatched regarding a delayed delivery.\n\nConsignment: {ms_number}\nDestination: {destination}\nOriginal ETA: {target_date_str}\nCurrent Status: {status_display}\nAction: {action_taken}",
                         "hs_ticket_priority": "MEDIUM"
                     }
                     
