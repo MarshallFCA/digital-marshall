@@ -93,7 +93,6 @@ if not st.session_state.logged_in:
         "https://oauth2.googleapis.com/revoke"
     )
     
-    # Reverted redirect_uri to the original, functioning endpoint
     result = oauth2.authorize_button(
         name="Sign in with Google",
         icon="https://www.google.com/favicon.ico",
