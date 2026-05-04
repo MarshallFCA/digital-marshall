@@ -472,6 +472,10 @@ with tab_terminal:
                                         "dry_run": {
                                             "type": "boolean",
                                             "description": "If true, simulates the sweep without actually sending emails or creating HubSpot tickets. Default is false."
+                                        },
+                                        "target_date_override": {
+                                            "type": "string",
+                                            "description": "Optional. Force the sweep to check a specific date (YYYY-MM-DD) instead of the previous business day."
                                         }
                                     }
                                 }
