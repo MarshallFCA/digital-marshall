@@ -1376,25 +1376,28 @@ ENTER YOUR RULES HERE IN PLAIN ENGLISH. FOR EXAMPLE:
 - Northline: If delivering to WA, email wa@northline.com.au. All others email info@northline.com.au.
 """
 
-def tool_11_transit_delay_engine(dry_run: bool = False):
+def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: str = None):
     """
     Executes the autonomous sweep for delayed consignments. 
     Intended to be triggered by GCP Cloud Scheduler at 05:00 AEST (Mon-Fri).
     Includes LLM logic to deduce specific regional routing emails based on delivery location.
     Accepts a 'dry_run' boolean to prevent external API dispatch during testing.
+    Accepts a 'target_date_override' string (YYYY-MM-DD) for historical testing.
     """
     import google.generativeai as genai
     now = datetime.datetime.now()
     
-    # 1. Determine Temporal Target (Previous Business Day)
-    if now.weekday() == 0: 
-        target_date = now - datetime.timedelta(days=3)
-    elif now.weekday() == 6: 
-        target_date = now - datetime.timedelta(days=2)
-    else: 
-        target_date = now - datetime.timedelta(days=1)
-        
-    target_date_str = target_date.strftime('%Y-%m-%d')
+    if target_date_override:
+        target_date_str = target_date_override
+    else:
+        # 1. Determine Temporal Target (Previous Business Day)
+        if now.weekday() == 0: 
+            target_date = now - datetime.timedelta(days=3)
+        elif now.weekday() == 6: 
+            target_date = now - datetime.timedelta(days=2)
+        else: 
+            target_date = now - datetime.timedelta(days=1)
+        target_date_str = target_date.strftime('%Y-%m-%d')
     
     try:
         # Load API Tokens and Service Accounts
