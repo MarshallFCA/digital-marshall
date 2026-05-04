@@ -1369,11 +1369,43 @@ def tool_10_temporal_anomaly_detector():
 # TOOL 11: TRANSIT DELAY AUTO-QUERY ENGINE
 # ==========================================
 CARRIER_ROUTING_RULES = """
-ENTER YOUR RULES HERE IN PLAIN ENGLISH. FOR EXAMPLE:
-- COPE: If delivering to VIC or TAS, email cope.vic@example.com.au. If NSW, email cope.nsw@example.com.au. If QLD, email cope.qld@example.com.au.
-- TNT: Always email support@tnt.com.au regardless of state.
-- FedEx: Always email aus.customerservice@fedex.com.au.
-- Northline: If delivering to WA, email wa@northline.com.au. All others email info@northline.com.au.
+- Hi Trans: Always email customerservice@hi-trans.com.au.
+- TNT Express / FedEx Australia: Always email audcc_connect@fedex.com.
+- Followmont Transport: Always email customerservice@followmont.com.au.
+- Northline Distribution: Always email customer.service@northline.com.au.
+- Maitex Pty Ltd: Always email ops@maitex.com.au.
+- Sadleirs Logistics: Always email customerservice@sadleirs.com.au.
+- VT Freight Express: Always email custserv@vtfe.com.au.
+- Hunter EXP: Always email pickupsvic@hunterexpress.com.au.
+- Courrio: Always email customersupport@courrio.com.
+- Team Global Express: Always email customer.service@teamglobalexp.com.
+
+- Direct Couriers: 
+  If delivering to NSW, email customer@directcouriers.com.au. 
+  If delivering to VIC, email customer@melb.directcouriers.com.au. 
+  If delivering to QLD, email customer@bris.directcouriers.com.au. 
+  If delivering to WA, email customer@perth.directcouriers.com.au.
+
+- Cope Sensitive Freight: 
+  If delivering to Sydney or broader NSW (excluding Albury and Newcastle), email nsw@cope.com.au.
+  If delivering to Melbourne or broader VIC, email vic@cope.com.au.
+  If delivering to Adelaide or broader SA, email sa@cope.com.au.
+  If delivering to Brisbane or broader QLD (excluding Cairns and Townsville), email qldcust@cope.com.au.
+  If delivering to Perth or broader WA, email wa@cope.com.au.
+  If delivering to Albury, email albury@cope.com.au.
+  If delivering to Cairns, email cairns@cope.com.au.
+  If delivering to Canberra or ACT, email act@cope.com.au.
+  If delivering to Darwin or NT, email nt@cope.com.au.
+  If delivering to Hobart or broader TAS (excluding Launceston), email tas@cope.com.au.
+  If delivering to Launceston, email launceston@cope.com.au.
+  If delivering to Newcastle, email newcastle@cope.com.au.
+  If delivering to Townsville, email townsville@cope.com.au.
+
+- GKR: 
+  If delivering to NSW, email pickups@gkrtransport.com.au. 
+  If delivering to VIC, email melbourne@gkrtransport.com.au. 
+  If delivering to QLD, email brisbane@gkrtransport.com.au. 
+  If delivering to SA or WA, email wapickups@gkrtransport.com.au.
 """
 
 def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: str = None):
