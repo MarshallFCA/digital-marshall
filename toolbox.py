@@ -14,6 +14,24 @@ from googleapiclient.http import MediaIoBaseDownload
 from email.mime.text import MIMEText
 
 # ==========================================
+# OWASP TELEMETRY SANITIZER (DSGAI14)
+# ==========================================
+def sanitize_error_log(error_msg: str) -> str:
+    """
+    Strips sensitive tokens, OAuth keys, and PII from error traces 
+    before they are printed to logs or the UI.
+    """
+    msg = str(error_msg)
+    # Redact Bearer tokens
+    msg = re.sub(r'(?i)Bearer\s+[A-Za-z0-9\-\._~]+', 'Bearer [REDACTED_TOKEN]', msg)
+    # Redact generic token parameters
+    msg = re.sub(r'(?i)token=[A-Za-z0-9\-\._~]+', 'token=[REDACTED_TOKEN]', msg)
+    msg = re.sub(r'(?i)api_key=[A-Za-z0-9\-\._~]+', 'api_key=[REDACTED_KEY]', msg)
+    # Redact emails to prevent PII leakage
+    msg = re.sub(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', '[EMAIL_REDACTED]', msg)
+    return msg
+
+# ==========================================
 # AUTHENTICATION CACHES
 # ==========================================
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -35,7 +53,7 @@ def get_xero_token():
         response.raise_for_status()
         return response.json()["access_token"]
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"Error: {sanitize_error_log(str(e))}"
 
 @st.cache_data(ttl=3000, show_spinner=False)
 def get_cartoncloud_token():
@@ -57,7 +75,7 @@ def get_cartoncloud_token():
         response.raise_for_status()
         return response.json().get("access_token")
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"Error: {sanitize_error_log(str(e))}"
 
 # ==========================================
 # TOOL 1: XERO FINANCIAL SEARCH
@@ -101,7 +119,7 @@ def search_xero_contact(contact_name: str) -> str:
             return f"No contact found in Xero matching '{contact_name}' or its primary keyword."
             
     except Exception as e:
-        return f"🚨 Xero API Error: {str(e)}"
+        return f"🚨 Xero API Error: {sanitize_error_log(str(e))}"
 
 # ==========================================
 # TOOL 2: UNRESTRICTED MACHSHIP SEARCH
@@ -152,7 +170,7 @@ def search_machship_connote(connote_number: str) -> str:
     except requests.exceptions.Timeout:
         return "🚨 Machship API Error: The server timed out."
     except Exception as e:
-        return f"🚨 Machship API Error: {str(e)}"
+        return f"🚨 Machship API Error: {sanitize_error_log(str(e))}"
 
 # ==========================================
 # TOOL 3: TRANSVIRTUAL CONSIGNMENT SEARCH
@@ -216,7 +234,7 @@ def search_transvirtual_connote(connote_number: str) -> str:
     except requests.exceptions.Timeout:
         return "🚨 Transvirtual API Error: The server timed out."
     except Exception as e:
-        return f"🚨 Transvirtual API Crash: {str(e)}"
+        return f"🚨 Transvirtual API Crash: {sanitize_error_log(str(e))}"
 
 # ==========================================
 # TOOL 4: GOOGLE DRIVE ORACLE
@@ -293,7 +311,12 @@ def search_and_read_google_drive(search_query: str) -> str:
 
         return f"✅ GOOGLE DRIVE MATCH FOUND: '{file_name}'\n\n**Document Content:**\n{content}"
     except Exception as e:
-        return f"🚨 Google Drive Connection Crash: {str(e)}"
+        return f"🚨 Google Drive Connection Crash: {sanitize_error_log(str(e))}"
+    finally:
+        try:
+            del creds, service
+        except NameError:
+            pass
 
 # ==========================================
 # TOOL 5: CARTON CLOUD WMS ORACLE
@@ -380,7 +403,7 @@ def search_cartoncloud_order(reference_number: str) -> str:
     except requests.exceptions.Timeout:
         return "🚨 Carton Cloud API Error: The server timed out."
     except Exception as e:
-        return f"🚨 Carton Cloud API Error: {str(e)}"
+        return f"🚨 Carton Cloud API Error: {sanitize_error_log(str(e))}"
 
 # ==========================================
 # TOOL 6: MASS MATRIX PROCESSOR
@@ -543,7 +566,7 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
                 return index, "No Valid Routes", []
                 
             except Exception as e:
-                return index, f"Crash: {str(e)}", []
+                return index, f"Crash: {sanitize_error_log(str(e))}", []
 
         from concurrent.futures import ThreadPoolExecutor, as_completed
         with ThreadPoolExecutor(max_workers=15) as executor:
@@ -569,7 +592,7 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
         return True, df
 
     except Exception as e:
-        return False, f"Matrix Engine Crash: {str(e)}"
+        return False, f"Matrix Engine Crash: {sanitize_error_log(str(e))}"
 
 # ==========================================
 # TOOL 7: PANDAS ORCHESTRATOR
@@ -608,7 +631,7 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
                     continue
                 df_list.append(temp_df)
             except Exception as read_err:
-                return f"Error reading file {uf.name}: {str(read_err)}"
+                return f"Error reading file {uf.name}: {sanitize_error_log(str(read_err))}"
 
         if not df_list:
             return "Error: No valid CSV or Excel files were found to combine."
@@ -646,7 +669,7 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
             target_model = target_model.replace('models/', '')
             model = genai.GenerativeModel(target_model)
         except Exception as model_err:
-            return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {str(model_err)}"
+            return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {sanitize_error_log(str(model_err))}"
 
         schema_info = main_df.dtypes.to_string()
         sample_data = main_df.head(3).to_csv(index=False)
@@ -690,7 +713,7 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
             transform_df = local_vars['transform_df']
             final_df = transform_df(main_df)
         except Exception as exec_err:
-            return f"Error executing Pandas transformation based on instructions: {str(exec_err)}\n\nAttempted Code:\n{code_str}"
+            return f"Error executing Pandas transformation based on instructions: {sanitize_error_log(str(exec_err))}\n\nAttempted Code:\n{sanitize_error_log(code_str)}"
 
         drive_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==").decode()
         sheets_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9zcHJlYWRzaGVldHM=").decode()
@@ -761,7 +784,7 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
                 body=requests_body
             ).execute()
         except Exception as e:
-            print(f"Grid expansion warning: {e}")
+            print(f"Grid expansion warning: {sanitize_error_log(str(e))}")
 
         body = {
             "values": scrubbed_values
@@ -794,7 +817,12 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         return f"SUCCESS: Hybrid Engine multi-file analysis complete. The dataset was merged, processed natively, and piped into a new Google Sheet inside your BOOF Exports Shared Drive folder. Title: {target_sheet_name} | URL: {sheet_url}"
 
     except Exception as e:
-        return f"HYBRID GEMINI CRASH: {str(e)}"
+        return f"HYBRID GEMINI CRASH: {sanitize_error_log(str(e))}"
+    finally:
+        try:
+            del creds, sheets_service, drive_service
+        except NameError:
+            pass
 
 # ==========================================
 # TOOL 9: HUBSPOT DISPUTE INTEGRATION
@@ -849,9 +877,9 @@ def create_hubspot_dispute_ticket(variance_data: dict, service_key: str) -> dict
         return { "status": "success", "ticket_id": ticket_id, "logs": diagnostic_logs }
         
     except requests.exceptions.RequestException as e:
-        diagnostic_logs.append(f"EXCEPTION: {str(e)}")
+        diagnostic_logs.append(f"EXCEPTION: {sanitize_error_log(str(e))}")
         if e.response is not None and e.response.text:
-            diagnostic_logs.append(f"RESPONSE PAYLOAD: {e.response.text}")
+            diagnostic_logs.append(f"RESPONSE PAYLOAD: {sanitize_error_log(e.response.text)}")
             
         return { "status": "failed", "ticket_id": None, "logs": diagnostic_logs }
 
@@ -894,7 +922,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             model = genai.GenerativeModel(target_model)
             
         except Exception as model_err:
-            return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {str(model_err)}"
+            return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {sanitize_error_log(str(model_err))}"
             
         df_raw = None
         uploaded_files = st.session_state.get("chat_uploader")
@@ -920,7 +948,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 if len(df_raw.columns) < 3:
                     df_raw = pd.read_csv(io.StringIO(raw_invoice_text), sep=None, engine='python')
             except Exception as e:
-                return f"Error: Could not parse the text into tabular data. {str(e)}"
+                return f"Error: Could not parse the text into tabular data. {sanitize_error_log(str(e))}"
             
         csv_headers = list(df_raw.columns)
         
@@ -1057,7 +1085,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 except requests.exceptions.Timeout:
                     diagnostic_log.append(f"Timeout")
                 except Exception as loop_e:
-                    diagnostic_log.append(f"Error: {str(loop_e)}")
+                    diagnostic_log.append(f"Error: {sanitize_error_log(str(loop_e))}")
 
             if not found:
                 diagnostic_log.append("Failed to locate connote in Machship.")
@@ -1118,7 +1146,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 for res in analysis_results:
                     ai_reasons[res.get("connote", "")] = res.get("variance_reason", "AI could not determine reason.")
             except Exception as e:
-                print(f"Batch AI Analysis Failed: {e}")
+                print(f"Batch AI Analysis Failed: {sanitize_error_log(str(e))}")
 
         for row in reconciliation_data:
             c_connote = row["Carrier Connote"]
@@ -1207,7 +1235,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 body=requests_body
             ).execute()
         except Exception as grid_e:
-            print(f"Grid expansion warning: {grid_e}")
+            print(f"Grid expansion warning: {sanitize_error_log(str(grid_e))}")
 
         body = { "values": scrubbed_values }
         sheets_service.spreadsheets().values().update(
@@ -1237,7 +1265,12 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         return f"SUCCESS: Invoice Auditor complete. Processed {len(invoice_items)} records natively. View Sheet: {sheet_url}"
 
     except Exception as base_e:
-        return f"TOOL 8 CRITICAL CRASH: {str(base_e)}"
+        return f"TOOL 8 CRITICAL CRASH: {sanitize_error_log(str(base_e))}"
+    finally:
+        try:
+            del creds, sheets_service, drive_service
+        except NameError:
+            pass
 
 # ==========================================
 # TOOL 10: TEMPORAL ANOMALY DETECTOR
@@ -1262,7 +1295,7 @@ def create_hubspot_alert_ticket(ms_number, carrier_name, action_taken, service_k
         response.raise_for_status()
         return response.json().get("id")
     except Exception as e:
-        return f"Error: {str(e)}"
+        return f"Error: {sanitize_error_log(str(e))}"
 
 def send_carrier_email(carrier_name, ms_number, target_date_str, sender_email):
     try:
@@ -1286,8 +1319,13 @@ def send_carrier_email(carrier_name, ms_number, target_date_str, sender_email):
         service.users().messages().send(userId='me', body=body).execute()
         return True
     except Exception as e:
-        print(f"Gmail Dispatch Error: {e}")
+        print(f"Gmail Dispatch Error: {sanitize_error_log(str(e))}")
         return False
+    finally:
+        try:
+            del creds, service
+        except NameError:
+            pass
 
 def tool_10_temporal_anomaly_detector():
     diagnostic_logs = []
@@ -1392,7 +1430,7 @@ def tool_10_temporal_anomaly_detector():
         return f"Sweep Complete. Processed {len(anomalies)} missed pickups.\n" + "\n".join(action_summary)
 
     except Exception as e:
-        return f"TOOL 10 CRITICAL CRASH: {str(e)}"
+        return f"TOOL 10 CRITICAL CRASH: {sanitize_error_log(str(e))}"
 
 # ==========================================
 # TOOL 11: TRANSIT DELAY AUTO-QUERY ENGINE
@@ -1559,7 +1597,7 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
             else:
                 email_dict = {}
         except Exception as e:
-            return f"TOOL 11 CRITICAL CRASH (LLM Routing Engine Failed): {str(e)}"
+            return f"TOOL 11 CRITICAL CRASH (LLM Routing Engine Failed): {sanitize_error_log(str(e))}"
             
         action_summary = []
         
@@ -1606,7 +1644,7 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
                         gmail_service.users().messages().send(userId='me', body={'raw': raw_message}).execute()
                         action_taken = f"Email dynamically routed and dispatched to {carrier_email}."
                     except Exception as e:
-                        action_taken = f"Gmail Dispatch Failed: {str(e)}"
+                        action_taken = f"Gmail Dispatch Failed: {sanitize_error_log(str(e))}"
                         
                     # B. Sync to HubSpot
                     if hs_key:
@@ -1630,4 +1668,9 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
         return f"Sweep Complete. Processed {len(delayed_freight)} delayed consignments for {target_date_str}.\n" + "\n".join(action_summary)
         
     except Exception as e:
-        return f"TOOL 11 CRITICAL CRASH: {str(e)}"
+        return f"TOOL 11 CRITICAL CRASH: {sanitize_error_log(str(e))}"
+    finally:
+        try:
+            del creds, gmail_service
+        except NameError:
+            pass
