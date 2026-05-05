@@ -1295,8 +1295,35 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             pass
 
 # ==========================================
-# TOOL 10: TEMPORAL ANOMALY DETECTOR
+# TOOL 10 & 11 HUBSPOT HELPER METHODS
 # ==========================================
+def check_hubspot_duplicate(ms_number: str, service_key: str) -> bool:
+    """
+    Checks if an alert ticket for this Machship number already exists in HubSpot.
+    Prevents duplicate ticket generation across successive sweeps.
+    """
+    url = base64.b64decode("aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRzL3NlYXJjaA==").decode()
+    headers = {
+        "Authorization": f"Bearer {service_key}",
+        "Content-Type": "application/json"
+    }
+    search_payload = {
+        "filterGroups": [{
+            "filters": [{
+                "propertyName": "subject",
+                "operator": "CONTAINS_TOKEN",
+                "value": ms_number
+            }]
+        }]
+    }
+    try:
+        response = requests.post(url, headers=headers, json=search_payload, timeout=15)
+        if response.status_code == 200:
+            return response.json().get('total', 0) > 0
+    except Exception as e:
+        print(f"HubSpot Duplicate Check Error ({ms_number}): {sanitize_error_log(str(e))}")
+    return False
+
 def create_hubspot_alert_ticket(ms_number, carrier_name, action_taken, service_key, draft_text=""):
     url = base64.b64decode("aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRz").decode()
     headers = {
@@ -1304,7 +1331,7 @@ def create_hubspot_alert_ticket(ms_number, carrier_name, action_taken, service_k
         "Content-Type": "application/json"
     }
     
-    content_str = f"Status: Carrier Silence Detected (Suspected Missed Pickup).\nAction Taken: {action_taken}\nTime Flagged: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    content_str = f"Status: Carrier Silence Detected (Suspected Missed Pickup).\nAction Taken: {action_taken}\nTime Flagged: {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M')}"
     if draft_text:
         content_str += f"\n\n=== SUGGESTED DRAFT ===\n{draft_text}"
         
@@ -1324,9 +1351,10 @@ def create_hubspot_alert_ticket(ms_number, carrier_name, action_taken, service_k
     except Exception as e:
         return f"Error: {sanitize_error_log(str(e))}"
 
+# ==========================================
+# TOOL 10: TEMPORAL ANOMALY DETECTOR
+# ==========================================
 def tool_10_temporal_anomaly_detector():
-    diagnostic_logs = []
-    
     now = datetime.datetime.now()
     if now.weekday() == 0:
         prev_bday = now - datetime.timedelta(days=3)
@@ -1355,17 +1383,20 @@ def tool_10_temporal_anomaly_detector():
         edit_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZWRpdA==").decode()
         hs_key = st.secrets.get("hubspot", {}).get("service_key")
         
-        # Formatted cleanly per Machship documentation requirements (No trailing Z)
-        from_date = (datetime.datetime.utcnow() - datetime.timedelta(days=14)).strftime('%Y-%m-%dT%H:%M:%S')
+        from_date = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=14)).strftime('%Y-%m-%dT%H:%M:%S')
+        to_date = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
         headers = { "token": ms_token, "Content-Type": "application/json" }
         
         active_data = []
         start_index = 0
         while True:
-            # We explicitly removed companyId so Machship defaults to the Parent Auth Token
-            # This allows includeChildCompanies to successfully cascade down to all client freight
-            fetch_url = f"{base_url}?fromDateUtc={from_date}&includeChildCompanies=true&retrieveSize=200&startIndex={start_index}"
-            resp = requests.get(fetch_url, headers=headers, timeout=15)
+            params = {
+                "fromDateUtc": from_date,
+                "toDateUtc": to_date,
+                "retrieveSize": 200,
+                "startIndex": start_index
+            }
+            resp = requests.get(base_url, headers=headers, params=params, timeout=15)
             resp.raise_for_status()
             
             page_data = resp.json().get('object', [])
@@ -1380,10 +1411,13 @@ def tool_10_temporal_anomaly_detector():
             
         anomalies = []
         for item in active_data:
-            status_name = item.get('status', {}).get('name', '').lower()
-            if status_name in ['booked', 'manifested', 'unmanifested']:
-                # Bulletproof Parsing: Fallback sequence & string slice
-                creation_str = item.get('despatchDateLocal') or item.get('despatchDateTimeLocal') or item.get('creationDate')
+            # We match your working script's logic: check both tracking and general status
+            track_status = item.get('consignmentTrackingStatus', {}).get('name', '').lower()
+            gen_status = item.get('status', {}).get('name', '').lower()
+            
+            # Looking for freight that hasn't progressed past manifest
+            if track_status in ['booked', 'manifested', 'unmanifested', 'printed'] or gen_status in ['booked', 'manifested', 'unmanifested', 'printed']:
+                creation_str = item.get('despatchDateLocal') or item.get('despatchDate') or item.get('despatchDateTimeLocal') or item.get('creationDate')
                 if creation_str:
                     try:
                         clean_str = str(creation_str)[:19]
@@ -1417,11 +1451,13 @@ def tool_10_temporal_anomaly_detector():
                 pass
                 
             if not api_success:
-                action_taken = f"API Unsupported: Manual Email Dispatch Required via HubSpot for {rebook_display_str}."
-                    
-            if hs_key:
-                draft_msg = f"Notification of Missed Pickup.\nMS Number: {ms_number}\nCarrier: {carrier_name}\n\nPlease prioritize collection on {rebook_display_str}."
-                create_hubspot_alert_ticket(ms_number, carrier_name, action_taken, hs_key, draft_text=draft_msg if not api_success else "")
+                if hs_key:
+                    if check_hubspot_duplicate(ms_number, hs_key):
+                        action_taken = f"API Unsupported: HubSpot Ticket already exists for {ms_number}."
+                    else:
+                        action_taken = f"API Unsupported: Manual Email Dispatch Required via HubSpot for {rebook_display_str}."
+                        draft_msg = f"Notification of Missed Pickup.\nMS Number: {ms_number}\nCarrier: {carrier_name}\n\nPlease prioritize collection on {rebook_display_str}."
+                        create_hubspot_alert_ticket(ms_number, carrier_name, action_taken, hs_key, draft_text=draft_msg)
                 
             action_summary.append(f"{ms_number} ({carrier_name}): {action_taken}")
             
@@ -1497,7 +1533,6 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
         target_date_str = target_date.strftime('%Y-%m-%d')
     
     try:
-        # Load API Tokens and Service Accounts
         ms_token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
         hs_key = st.secrets.get("hubspot", {}).get("service_key")
         gemini_key = st.secrets.get("GEMINI_API_KEY")
@@ -1510,16 +1545,20 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
         # 2. Fetch Active Consignments via Valid Endpoint
         base_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0UmVjZW50bHlDcmVhdGVkT3JVcGRhdGVkQ29uc2lnbm1lbnRz").decode()
         
-        # Formatted cleanly per Machship documentation requirements (No trailing Z)
-        from_date = (datetime.datetime.utcnow() - datetime.timedelta(days=14)).strftime('%Y-%m-%dT%H:%M:%S')
+        from_date = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=14)).strftime('%Y-%m-%dT%H:%M:%S')
+        to_date = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
         headers = { "token": ms_token, "Content-Type": "application/json" }
         
         active_data = []
         start_index = 0
         while True:
-            # We explicitly removed companyId so Machship defaults to the Parent Auth Token
-            fetch_url = f"{base_url}?fromDateUtc={from_date}&includeChildCompanies=true&retrieveSize=200&startIndex={start_index}"
-            resp = requests.get(fetch_url, headers=headers, timeout=15)
+            params = {
+                "fromDateUtc": from_date,
+                "toDateUtc": to_date,
+                "retrieveSize": 200,
+                "startIndex": start_index
+            }
+            resp = requests.get(base_url, headers=headers, params=params, timeout=15)
             resp.raise_for_status()
             
             page_data = resp.json().get('object', [])
@@ -1537,11 +1576,13 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
         delayed_freight = []
         
         for item in active_data:
-            eta_raw = item.get('expectedDeliveryDate', '')
-            eta = eta_raw.split('T')[0] if eta_raw else ''
-            status = item.get('status', {}).get('name', '').lower()
+            eta_raw = item.get('etaLocal') or item.get('eta') or item.get('expectedDeliveryDate')
+            eta = str(eta_raw).split('T')[0] if eta_raw else ''
             
-            if eta == target_date_str and status not in success_statuses:
+            track_status = item.get('consignmentTrackingStatus', {}).get('name', '').lower()
+            gen_status = item.get('status', {}).get('name', '').lower()
+            
+            if eta == target_date_str and track_status not in success_statuses and gen_status not in success_statuses:
                 to_node = item.get('despatch', {}).get('toLocation', {})
                 if not to_node:
                     to_node = item.get('toLocation', {})
@@ -1617,31 +1658,33 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
                 if dry_run:
                     action_taken = f"[DRY RUN SAFE MODE] Would dynamically route email to {carrier_email} and sync to HubSpot."
                 else:
-                    message_text = (
-                        f"Hello,\n\n"
-                        f"We are requesting a formal status update on consignment {ms_number}. "
-                        f"It was due for delivery on {target_date_str} but is currently showing as '{status_display}'.\n\n"
-                        f"Please investigate and provide an updated ETA.\n\n"
-                        f"Thank you,\nFreight Companies Australia"
-                    )
-                    action_taken = f"Drafted query for {carrier_email} injected into HubSpot Ticket."
-                        
-                    # Sync to HubSpot
                     if hs_key:
-                        hs_headers = { "Authorization": f"Bearer {hs_key}", "Content-Type": "application/json" }
-                        raw_properties = {
-                            "hs_pipeline": "0",  
-                            "hs_pipeline_stage": "1",  
-                            "subject": f"Action Required: Carrier Query for {ms_number} ({carrier_name})",
-                            "content": f"An autonomous query requires dispatch regarding a delayed delivery.\n\nConsignment: {ms_number}\nDestination: {destination}\nOriginal ETA: {target_date_str}\nCurrent Status: {status_display}\n\n=== DRAFT EMAIL TO COPY/PASTE FOR {carrier_email} ===\n{message_text}",
-                            "hs_ticket_priority": "MEDIUM"
-                        }
-                        
-                        clean_properties = sanitize_hubspot_payload(raw_properties)
-                        try:
-                            requests.post(hs_url, headers=hs_headers, json={"properties": clean_properties}, timeout=15)
-                        except Exception:
-                            pass 
+                        if check_hubspot_duplicate(ms_number, hs_key):
+                            action_taken = f"Skipped: HubSpot Ticket already exists for {ms_number}."
+                        else:
+                            message_text = (
+                                f"Hello,\n\n"
+                                f"We are requesting a formal status update on consignment {ms_number}. "
+                                f"It was due for delivery on {target_date_str} but is currently showing as '{status_display}'.\n\n"
+                                f"Please investigate and provide an updated ETA.\n\n"
+                                f"Thank you,\nFreight Companies Australia"
+                            )
+                            
+                            hs_headers = { "Authorization": f"Bearer {hs_key}", "Content-Type": "application/json" }
+                            raw_properties = {
+                                "hs_pipeline": "0",  
+                                "hs_pipeline_stage": "1",  
+                                "subject": f"Action Required: Carrier Query for {ms_number} ({carrier_name})",
+                                "content": f"An autonomous query requires dispatch regarding a delayed delivery.\n\nConsignment: {ms_number}\nDestination: {destination}\nOriginal ETA: {target_date_str}\nCurrent Status: {status_display}\n\n=== DRAFT EMAIL TO COPY/PASTE FOR {carrier_email} ===\n{message_text}",
+                                "hs_ticket_priority": "MEDIUM"
+                            }
+                            
+                            clean_properties = sanitize_hubspot_payload(raw_properties)
+                            try:
+                                requests.post(hs_url, headers=hs_headers, json={"properties": clean_properties}, timeout=15)
+                                action_taken = f"Drafted query for {carrier_email} injected into HubSpot Ticket."
+                            except Exception:
+                                pass 
                         
             action_summary.append(f"{ms_number} ({carrier_name}): {action_taken}")
             
