@@ -1355,20 +1355,16 @@ def tool_10_temporal_anomaly_detector():
         edit_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZWRpdA==").decode()
         hs_key = st.secrets.get("hubspot", {}).get("service_key")
         
-        # 14-day lookback to catch older manifestations lacking carrier scans, properly Z formatted
         from_date = (datetime.datetime.utcnow() - datetime.timedelta(days=14)).strftime('%Y-%m-%dT%H:%M:%SZ')
         headers = { "token": ms_token, "Content-Type": "application/json" }
         
         active_data = []
         start_index = 0
         while True:
-            params = {
-                "fromDateUtc": from_date,
-                "retrieveSize": 200,
-                "startIndex": start_index,
-                "includeChildCompanies": "true"
-            }
-            resp = requests.get(base_url, headers=headers, params=params, timeout=15)
+            # Reverted to f-strings for URL construction to prevent requests from URL-encoding ISO dates
+            # Also injected parent company ID (53031) to correctly anchor the includeChildCompanies fetch
+            fetch_url = f"{base_url}?fromDateUtc={from_date}&companyId=53031&includeChildCompanies=true&retrieveSize=200&startIndex={start_index}"
+            resp = requests.get(fetch_url, headers=headers, timeout=15)
             resp.raise_for_status()
             
             page_data = resp.json().get('object', [])
@@ -1389,8 +1385,6 @@ def tool_10_temporal_anomaly_detector():
                 creation_str = item.get('despatchDateLocal') or item.get('despatchDateTimeLocal') or item.get('creationDate')
                 if creation_str:
                     try:
-                        # Grab just the YYYY-MM-DDTHH:MM:SS part (first 19 chars) 
-                        # This bypasses Z, fractional seconds, or timezone offsets safely.
                         clean_str = str(creation_str)[:19]
                         creation_dt = datetime.datetime.strptime(clean_str, "%Y-%m-%dT%H:%M:%S")
                         if creation_dt < cutoff_threshold:
@@ -1521,13 +1515,10 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
         active_data = []
         start_index = 0
         while True:
-            params = {
-                "fromDateUtc": from_date,
-                "retrieveSize": 200,
-                "startIndex": start_index,
-                "includeChildCompanies": "true"
-            }
-            resp = requests.get(base_url, headers=headers, params=params, timeout=15)
+            # Reverted to f-strings for URL construction to prevent requests from URL-encoding ISO dates
+            # Also injected parent company ID (53031) to correctly anchor the includeChildCompanies fetch
+            fetch_url = f"{base_url}?fromDateUtc={from_date}&companyId=53031&includeChildCompanies=true&retrieveSize=200&startIndex={start_index}"
+            resp = requests.get(fetch_url, headers=headers, timeout=15)
             resp.raise_for_status()
             
             page_data = resp.json().get('object', [])
