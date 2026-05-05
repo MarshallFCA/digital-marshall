@@ -1354,9 +1354,9 @@ def tool_10_temporal_anomaly_detector():
         base_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0UmVjZW50bHlDcmVhdGVkT3JVcGRhdGVkQ29uc2lnbm1lbnRz").decode()
         edit_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZWRpdA==").decode()
         hs_key = st.secrets.get("hubspot", {}).get("service_key")
-        sender_email = st.secrets.get("gcp_service_account", {}).get("admin_email", "info@freightcompaniesaustralia.com.au")
         
-        from_date = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%S')
+        # 14-day lookback to catch older manifestations lacking carrier scans
+        from_date = (datetime.datetime.utcnow() - datetime.timedelta(days=14)).strftime('%Y-%m-%dT%H:%M:%S')
         headers = { "token": ms_token, "Content-Type": "application/json" }
         
         active_data = []
@@ -1379,15 +1379,17 @@ def tool_10_temporal_anomaly_detector():
         anomalies = []
         for item in active_data:
             status_name = item.get('status', {}).get('name', '').lower()
-            if status_name in ['booked', 'manifested']:
-                creation_str = item.get('creationDate') or item.get('despatchDateTimeLocal')
+            if status_name in ['booked', 'manifested', 'unmanifested']:
+                # Prioritize local time over UTC for threshold comparison
+                creation_str = item.get('despatchDateTimeLocal') or item.get('creationDate')
                 if creation_str:
                     try:
-                        creation_dt = datetime.datetime.strptime(creation_str.split('.')[0], "%Y-%m-%dT%H:%M:%S")
-                        if creation_dt < cutoff_threshold:
+                        # Robust parsing dropping trailing Z or +10:00 issues
+                        creation_dt = pd.to_datetime(creation_str, errors='coerce').tz_localize(None)
+                        if pd.notna(creation_dt) and creation_dt < cutoff_threshold:
                             anomalies.append(item)
-                    except Exception:
-                        pass
+                    except Exception as parse_e:
+                        print(f"Date Parse Diagnostic MS {item.get('consignmentNumber')}: {sanitize_error_log(str(parse_e))}")
                         
         if not anomalies:
             return "Sweep Complete. No temporal anomalies detected."
@@ -1496,7 +1498,6 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
         # Load API Tokens and Service Accounts
         ms_token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
         hs_key = st.secrets.get("hubspot", {}).get("service_key")
-        sender_email = st.secrets.get("gcp_service_account", {}).get("admin_email", "info@freightcompaniesaustralia.com.au")
         gemini_key = st.secrets.get("GEMINI_API_KEY")
         
         if not gemini_key:
@@ -1507,7 +1508,7 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
         # 2. Fetch Active Consignments via Valid Endpoint
         base_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0UmVjZW50bHlDcmVhdGVkT3JVcGRhdGVkQ29uc2lnbm1lbnRz").decode()
         
-        from_date = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%S')
+        from_date = (datetime.datetime.utcnow() - datetime.timedelta(days=14)).strftime('%Y-%m-%dT%H:%M:%S')
         headers = { "token": ms_token, "Content-Type": "application/json" }
         
         active_data = []
