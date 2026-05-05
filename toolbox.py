@@ -663,9 +663,10 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
                 target_model = available_models[0]
                 
             if not target_model:
-                return "Error: No valid text generation models found for this API key."
+                target_model = 'gemini-1.5-pro'
+            else:
+                target_model = target_model.replace('models/', '')
                 
-            target_model = target_model.replace('models/', '')
             model = genai.GenerativeModel(target_model)
         except Exception as model_err:
             return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {sanitize_error_log(str(model_err))}"
@@ -675,12 +676,9 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         # ==========================================
         # OWASP CONTEXT MINIMIZER (DSGAI15)
         # ==========================================
-        # We mask PII in the 3-row sample before sending it to the LLM. 
-        # The actual massive dataset is processed locally by pandas, so this doesn't break the final output.
         sample_df = main_df.head(3).copy()
         for col in sample_df.columns:
             if sample_df[col].dtype == 'object':
-                # Mask emails to prevent inadvertent leakage
                 sample_df[col] = sample_df[col].astype(str).apply(lambda x: re.sub(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', '[EMAIL_MASKED]', x))
         sample_data = sample_df.to_csv(index=False)
 
@@ -925,10 +923,20 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                     target_model = pref
                     break
                     
+            if not target_model:
+                for m in available_models:
+                    if 'gemini-1.5-pro' in m:
+                        target_model = m
+                        break
+            
             if not target_model and available_models:
                 target_model = available_models[0]
                 
-            target_model = target_model.replace('models/', '')
+            if not target_model:
+                target_model = 'gemini-1.5-pro'
+            else:
+                target_model = target_model.replace('models/', '')
+                
             model = genai.GenerativeModel(target_model)
             
         except Exception as model_err:
@@ -1003,8 +1011,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             # ==========================================
             # OWASP CONTEXT MINIMIZER (DSGAI15)
             # ==========================================
-            # Exclude PII and irrelevant fields from the LLM prompt payload.
-            # The AI only needs weight, dimensions, surcharges, and cost to audit a variance.
             pii_keywords = ['name', 'address', 'email', 'phone', 'contact', 'receiver', 'sender', 'attention', 'company', 'town', 'suburb', 'street']
             safe_row_items = []
             for k, v in row.items():
@@ -1387,27 +1393,16 @@ def tool_10_temporal_anomaly_detector():
         to_date = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
         headers = { "token": ms_token, "Content-Type": "application/json" }
         
-        active_data = []
-        start_index = 0
-        while True:
-            params = {
-                "fromDateUtc": from_date,
-                "toDateUtc": to_date,
-                "retrieveSize": 200,
-                "startIndex": start_index
-            }
-            resp = requests.get(base_url, headers=headers, params=params, timeout=15)
-            resp.raise_for_status()
-            
-            page_data = resp.json().get('object', [])
-            if not page_data:
-                break
-                
-            active_data.extend(page_data)
-            
-            if len(page_data) < 200:
-                break
-            start_index += 200
+        params = {
+            "fromDateUtc": from_date,
+            "toDateUtc": to_date
+        }
+        
+        resp = requests.get(base_url, headers=headers, params=params, timeout=15)
+        resp.raise_for_status()
+        active_data = resp.json().get('object', [])
+        if active_data is None:
+            active_data = []
             
         anomalies = []
         for item in active_data:
@@ -1548,27 +1543,16 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
         to_date = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
         headers = { "token": ms_token, "Content-Type": "application/json" }
         
-        active_data = []
-        start_index = 0
-        while True:
-            params = {
-                "fromDateUtc": from_date,
-                "toDateUtc": to_date,
-                "retrieveSize": 200,
-                "startIndex": start_index
-            }
-            resp = requests.get(base_url, headers=headers, params=params, timeout=15)
-            resp.raise_for_status()
-            
-            page_data = resp.json().get('object', [])
-            if not page_data:
-                break
-                
-            active_data.extend(page_data)
-            
-            if len(page_data) < 200:
-                break
-            start_index += 200
+        params = {
+            "fromDateUtc": from_date,
+            "toDateUtc": to_date
+        }
+        
+        resp = requests.get(base_url, headers=headers, params=params, timeout=15)
+        resp.raise_for_status()
+        active_data = resp.json().get('object', [])
+        if active_data is None:
+            active_data = []
         
         # 3. Filter for Exceptions & Extract Geodata
         success_statuses = ['delivered', 'on board for delivery', 'partially delivered', 'awaiting collection', 'completed']
@@ -1620,17 +1604,27 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
         try:
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
             target_model = None
-            preferred = ['models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest', 'models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest']
+            preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest', 'models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest']
             
             for pref in preferred:
                 if pref in available_models:
                     target_model = pref
                     break
                     
+            if not target_model:
+                for m in available_models:
+                    if 'gemini-1.5-pro' in m:
+                        target_model = m
+                        break
+            
             if not target_model and available_models:
                 target_model = available_models[0]
                 
-            target_model = target_model.replace('models/', '')
+            if not target_model:
+                target_model = 'gemini-1.5-pro'
+            else:
+                target_model = target_model.replace('models/', '')
+                
             model = genai.GenerativeModel(target_model)
             
             llm_resp = model.generate_content(
