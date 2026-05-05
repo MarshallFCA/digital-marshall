@@ -11,7 +11,6 @@ import streamlit as st
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
-from email.mime.text import MIMEText
 
 # ==========================================
 # OWASP TELEMETRY SANITIZER (DSGAI14)
@@ -489,7 +488,7 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
 
             if qty <= 0: qty = 1
             weight_per_item = weight / qty if weight > 0 else 1.0
-            cubic_per_item = cubic / cubic if cubic > 0 else 0.001
+            cubic_per_item = cubic / qty if cubic > 0 else 0.001
             
             side_m = cubic_per_item ** (1/3)
             side_cm = int(side_m * 100)
@@ -1298,17 +1297,22 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
 # ==========================================
 # TOOL 10: TEMPORAL ANOMALY DETECTOR
 # ==========================================
-def create_hubspot_alert_ticket(ms_number, carrier_name, action_taken, service_key):
+def create_hubspot_alert_ticket(ms_number, carrier_name, action_taken, service_key, draft_text=""):
     url = base64.b64decode("aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRz").decode()
     headers = {
         "Authorization": f"Bearer {service_key}",
         "Content-Type": "application/json"
     }
+    
+    content_str = f"Status: Carrier Silence Detected (Suspected Missed Pickup).\nAction Taken: {action_taken}\nTime Flagged: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    if draft_text:
+        content_str += f"\n\n=== SUGGESTED DRAFT ===\n{draft_text}"
+        
     raw_properties = {
         "hs_pipeline": "0",
         "hs_pipeline_stage": "1",
         "subject": f"Freight Alert: {ms_number} ({carrier_name})",
-        "content": f"Status: Carrier Silence Detected (Suspected Missed Pickup).\nAction Taken: {action_taken}\nTime Flagged: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "content": content_str,
         "hs_ticket_priority": "HIGH"
     }
     clean_properties = sanitize_hubspot_payload(raw_properties)
@@ -1319,36 +1323,6 @@ def create_hubspot_alert_ticket(ms_number, carrier_name, action_taken, service_k
         return response.json().get("id")
     except Exception as e:
         return f"Error: {sanitize_error_log(str(e))}"
-
-def send_carrier_email(carrier_name, ms_number, target_date_str, sender_email):
-    try:
-        gmail_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9nbWFpbC5zZW5k").decode()
-        credentials_dict = dict(st.secrets["gcp_service_account"])
-        creds = service_account.Credentials.from_service_account_info(
-            credentials_dict,
-            scopes=[gmail_scope],
-            subject=sender_email
-        )
-        service = build('gmail', 'v1', credentials=creds)
-        
-        message_text = f"Notification of Missed Pickup.\nMS Number: {ms_number}\nCarrier: {carrier_name}\n\nPlease prioritize collection on {target_date_str}."
-        message = MIMEText(message_text)
-        message['to'] = "dispatch@example-carrier.com"
-        message['subject'] = f"Missed Pickup Rebook Request - {ms_number}"
-        
-        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
-        body = {'raw': raw_message}
-        
-        service.users().messages().send(userId='me', body=body).execute()
-        return True
-    except Exception as e:
-        print(f"Gmail Dispatch Error: {sanitize_error_log(str(e))}")
-        return False
-    finally:
-        try:
-            del creds, service
-        except NameError:
-            pass
 
 def tool_10_temporal_anomaly_detector():
     diagnostic_logs = []
@@ -1380,7 +1354,7 @@ def tool_10_temporal_anomaly_detector():
         base_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0UmVjZW50bHlDcmVhdGVkT3JVcGRhdGVkQ29uc2lnbm1lbnRz").decode()
         edit_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZWRpdA==").decode()
         hs_key = st.secrets.get("hubspot", {}).get("service_key")
-        sender_email = st.secrets.get("gcp_service_account", {}).get("admin_email", "admin@fca.net.au")
+        sender_email = st.secrets.get("gcp_service_account", {}).get("admin_email", "info@freightcompaniesaustralia.com.au")
         
         from_date = (datetime.datetime.utcnow() - datetime.timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%S')
         headers = { "token": ms_token, "Content-Type": "application/json" }
@@ -1439,14 +1413,11 @@ def tool_10_temporal_anomaly_detector():
                 pass
                 
             if not api_success:
-                email_sent = send_carrier_email(carrier_name, ms_number, rebook_display_str, sender_email)
-                if email_sent:
-                    action_taken = f"API Unsupported: Dispatch Email Sent for {rebook_display_str}."
-                else:
-                    action_taken = "CRITICAL: API and Email Failsafe both failed."
+                action_taken = f"API Unsupported: Manual Email Dispatch Required via HubSpot for {rebook_display_str}."
                     
             if hs_key:
-                create_hubspot_alert_ticket(ms_number, carrier_name, action_taken, hs_key)
+                draft_msg = f"Notification of Missed Pickup.\nMS Number: {ms_number}\nCarrier: {carrier_name}\n\nPlease prioritize collection on {rebook_display_str}."
+                create_hubspot_alert_ticket(ms_number, carrier_name, action_taken, hs_key, draft_text=draft_msg if not api_success else "")
                 
             action_summary.append(f"{ms_number} ({carrier_name}): {action_taken}")
             
@@ -1525,7 +1496,7 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
         # Load API Tokens and Service Accounts
         ms_token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
         hs_key = st.secrets.get("hubspot", {}).get("service_key")
-        sender_email = st.secrets.get("gcp_service_account", {}).get("admin_email", "admin@fca.net.au")
+        sender_email = st.secrets.get("gcp_service_account", {}).get("admin_email", "info@freightcompaniesaustralia.com.au")
         gemini_key = st.secrets.get("GEMINI_API_KEY")
         
         if not gemini_key:
@@ -1623,15 +1594,6 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
             return f"TOOL 11 CRITICAL CRASH (LLM Routing Engine Failed): {sanitize_error_log(str(e))}"
             
         action_summary = []
-        
-        gmail_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9nbWFpbC5zZW5k").decode()
-        credentials_dict = dict(st.secrets["gcp_service_account"])
-        creds = service_account.Credentials.from_service_account_info(
-            credentials_dict,
-            scopes=[gmail_scope],
-            subject=sender_email
-        )
-        gmail_service = build('gmail', 'v1', credentials=creds)
         hs_url = base64.b64decode("aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRz").decode()
         
         # 5. Action & CRM Sync
@@ -1650,33 +1612,23 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
                 if dry_run:
                     action_taken = f"[DRY RUN SAFE MODE] Would dynamically route email to {carrier_email} and sync to HubSpot."
                 else:
-                    # A. Dispatch Gmail Inquiry
-                    try:
-                        message_text = (
-                            f"Hello,\n\n"
-                            f"We are requesting a formal status update on consignment {ms_number}. "
-                            f"It was due for delivery on {target_date_str} but is currently showing as '{status_display}'.\n\n"
-                            f"Please investigate and provide an updated ETA.\n\n"
-                            f"Thank you,\nAutomated Freight Terminal"
-                        )
-                        message = MIMEText(message_text)
-                        message['to'] = carrier_email
-                        message['subject'] = f"Tracking Inquiry: Delayed Consignment {ms_number}"
+                    message_text = (
+                        f"Hello,\n\n"
+                        f"We are requesting a formal status update on consignment {ms_number}. "
+                        f"It was due for delivery on {target_date_str} but is currently showing as '{status_display}'.\n\n"
+                        f"Please investigate and provide an updated ETA.\n\n"
+                        f"Thank you,\nFreight Companies Australia"
+                    )
+                    action_taken = f"Drafted query for {carrier_email} injected into HubSpot Ticket."
                         
-                        raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
-                        gmail_service.users().messages().send(userId='me', body={'raw': raw_message}).execute()
-                        action_taken = f"Email dynamically routed and dispatched to {carrier_email}."
-                    except Exception as e:
-                        action_taken = f"Gmail Dispatch Failed: {sanitize_error_log(str(e))}"
-                        
-                    # B. Sync to HubSpot
+                    # Sync to HubSpot
                     if hs_key:
                         hs_headers = { "Authorization": f"Bearer {hs_key}", "Content-Type": "application/json" }
                         raw_properties = {
                             "hs_pipeline": "0",  
                             "hs_pipeline_stage": "1",  
-                            "subject": f"Dispatched Carrier Query: {ms_number} ({carrier_name})",
-                            "content": f"An autonomous query was dispatched regarding a delayed delivery.\n\nConsignment: {ms_number}\nDestination: {destination}\nOriginal ETA: {target_date_str}\nCurrent Status: {status_display}\nAction: {action_taken}",
+                            "subject": f"Action Required: Carrier Query for {ms_number} ({carrier_name})",
+                            "content": f"An autonomous query requires dispatch regarding a delayed delivery.\n\nConsignment: {ms_number}\nDestination: {destination}\nOriginal ETA: {target_date_str}\nCurrent Status: {status_display}\n\n=== DRAFT EMAIL TO COPY/PASTE FOR {carrier_email} ===\n{message_text}",
                             "hs_ticket_priority": "MEDIUM"
                         }
                         
@@ -1692,8 +1644,3 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
         
     except Exception as e:
         return f"TOOL 11 CRITICAL CRASH: {sanitize_error_log(str(e))}"
-    finally:
-        try:
-            del creds, gmail_service
-        except NameError:
-            pass
