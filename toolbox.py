@@ -835,6 +835,466 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
             pass
 
 # ==========================================
+# TOOL 9: HUBSPOT DISPUTE INTEGRATION
+# ==========================================
+def sanitize_hubspot_payload(payload_dict: dict) -> dict:
+    sanitized = {}
+    for key, value in payload_dict.items():
+        if pd.isna(value) or value is None:
+            sanitized[key] = ""
+        else:
+            sanitized[key] = str(value)
+    return sanitized
+
+def create_hubspot_dispute_ticket(variance_data: dict, service_key: str) -> dict:
+    url = base64.b64decode("aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRz").decode()
+    headers = {
+        "Authorization": f"Bearer {service_key}",
+        "Content-Type": "application/json"
+    }
+    
+    diagnostic_logs = []
+    
+    connote = variance_data.get("connote", "Unknown Connote")
+    variance_amount = variance_data.get("variance_amount", 0.0)
+    analysis = variance_data.get("analysis", "No forensic analysis provided.")
+    carrier_name = variance_data.get("carrier_name", "Unknown Carrier")
+    invoice_number = variance_data.get("invoice_number", "Unknown Invoice")
+    
+    raw_properties = {
+        "hs_pipeline": "0",
+        "hs_pipeline_stage": "1",
+        "subject": f"Dispute: {carrier_name} - Connote {connote} (Var: ${variance_amount:.2f})",
+        "content": f"Automated BOOF Variance Analysis:\n\n{analysis}",
+        "carrier_name": carrier_name,
+        "variance_amount": variance_amount,
+        "invoice_number": invoice_number,
+        "dispute_status": "Action Required"
+    }
+    
+    clean_properties = sanitize_hubspot_payload(raw_properties)
+    payload = { "properties": clean_properties }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
+        diagnostic_logs.append(f"HTTP {response.status_code}: POST Hubspot Tickets Endpoint")
+        response.raise_for_status()
+        
+        data = response.json()
+        ticket_id = data.get("id")
+        diagnostic_logs.append(f"SUCCESS: HubSpot Ticket created. ID: {ticket_id}")
+        
+        return { "status": "success", "ticket_id": ticket_id, "logs": diagnostic_logs }
+        
+    except requests.exceptions.RequestException as e:
+        diagnostic_logs.append(f"EXCEPTION: {sanitize_error_log(str(e))}")
+        if e.response is not None and e.response.text:
+            diagnostic_logs.append(f"RESPONSE PAYLOAD: {sanitize_error_log(e.response.text)}")
+            
+        return { "status": "failed", "ticket_id": None, "logs": diagnostic_logs }
+
+# ==========================================
+# TOOL 8: CARRIER INVOICE AUDITOR
+# ==========================================
+def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: str) -> str:
+    import google.generativeai as genai
+    import json
+    import requests
+    import pandas as pd
+    import io
+    import streamlit as st
+    import re
+    import base64
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    
+    try:
+        gemini_key = st.secrets.get("GEMINI_API_KEY")
+        if not gemini_key:
+            return "Error: GEMINI_API_KEY is missing from the telemetry secrets."
+        
+        genai.configure(api_key=gemini_key)
+        
+        try:
+            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            target_model = None
+            preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest', 'models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest']
+            
+            for pref in preferred:
+                if pref in available_models:
+                    target_model = pref
+                    break
+                    
+            if not target_model and available_models:
+                target_model = available_models[0]
+                
+            target_model = target_model.replace('models/', '')
+            model = genai.GenerativeModel(target_model)
+            
+        except Exception as model_err:
+            return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {sanitize_error_log(str(model_err))}"
+            
+        df_raw = None
+        uploaded_files = st.session_state.get("chat_uploader")
+        
+        if uploaded_files:
+            for uf in uploaded_files:
+                uf.seek(0)
+                try:
+                    if uf.name.lower().endswith('.csv'):
+                        df_raw = pd.read_csv(uf, sep=None, engine='python')
+                    elif uf.name.lower().endswith(('.xls', '.xlsx')):
+                        df_raw = pd.read_excel(uf)
+                    if df_raw is not None and not df_raw.empty:
+                        break
+                except:
+                    continue
+        
+        if df_raw is None or df_raw.empty:
+            try:
+                df_raw = pd.read_csv(io.StringIO(raw_invoice_text), sep='\t')
+                if len(df_raw.columns) < 3:
+                    df_raw = pd.read_csv(io.StringIO(raw_invoice_text), sep=',')
+                if len(df_raw.columns) < 3:
+                    df_raw = pd.read_csv(io.StringIO(raw_invoice_text), sep=None, engine='python')
+            except Exception as e:
+                return f"Error: Could not parse the text into tabular data. {sanitize_error_log(str(e))}"
+            
+        csv_headers = list(df_raw.columns)
+        
+        connote_col = None
+        amount_col = None
+        invoice_col = None
+        
+        for col in csv_headers:
+            cl = str(col).lower().strip()
+            if not connote_col and cl in ['connote', 'consignment no', 'consignment number', 'reference', 'carrier connote', 'consignment']:
+                connote_col = col
+            if not amount_col and cl in ['total amount', 'charge total', 'billed amount', 'total cost', 'amount']:
+                amount_col = col
+            if not invoice_col and 'invoice' in cl and ('number' in cl or 'no' in cl):
+                invoice_col = col
+                
+        if not connote_col: connote_col = csv_headers[7] if len(csv_headers)>7 else csv_headers[0]
+        if not amount_col: 
+            for col in csv_headers:
+                cl = str(col).lower().strip()
+                if 'total' in cl and ('amount' in cl or 'cost' in cl):
+                    amount_col = col
+                    break
+            if not amount_col: amount_col = csv_headers[-3] if len(csv_headers)>3 else csv_headers[-1]
+        if not invoice_col:
+            invoice_col = csv_headers[5] if len(csv_headers)>5 else None
+
+        invoice_items = []
+        for index, row in df_raw.iterrows():
+            c_val = str(row.get(connote_col, "")).strip()
+            if pd.isna(c_val) or c_val.lower() == "nan" or not c_val:
+                continue
+                
+            a_val = str(row.get(amount_col, "0"))
+            try:
+                clean_amount = float(re.sub(r'[^\d.-]', '', a_val))
+            except:
+                clean_amount = 0.0
+                
+            i_val = str(row.get(invoice_col, "Unknown")).strip() if invoice_col else "Unknown"
+
+            # ==========================================
+            # OWASP CONTEXT MINIMIZER (DSGAI15)
+            # ==========================================
+            # Exclude PII and irrelevant fields from the LLM prompt payload.
+            # The AI only needs weight, dimensions, surcharges, and cost to audit a variance.
+            pii_keywords = ['name', 'address', 'email', 'phone', 'contact', 'receiver', 'sender', 'attention', 'company', 'town', 'suburb', 'street']
+            safe_row_items = []
+            for k, v in row.items():
+                if pd.isna(v): continue
+                if any(pii_kw in str(k).lower() for pii_kw in pii_keywords): continue
+                safe_row_items.append(f"{k}: {v}")
+            raw_line_str = " | ".join(safe_row_items)
+            
+            invoice_items.append({
+                "connote": c_val,
+                "billed_amount": clean_amount,
+                "invoice_number": i_val,
+                "raw_invoice_line": raw_line_str
+            })
+
+        ms_token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
+        ms_headers = { "token": ms_token, "Content-Type": "application/json" }
+        reconciliation_data = []
+        analysis_batch = []
+
+        b64_urls = [
+            "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlDYXJyaWVyQ29uc2lnbm1lbnRJZD9pbmNsdWRlQ2hpbGRDb21wYW5pZXM9dHJ1ZQ==",
+            "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl",
+            "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl"
+        ]
+        search_urls = [base64.b64decode(u).decode() for u in b64_urls]
+
+        for item in invoice_items:
+            connote = item.get("connote", "")
+            raw_invoice_line = item.get("raw_invoice_line", "N/A")
+            billed_amount = item.get("billed_amount", 0.0)
+            invoice_number = item.get("invoice_number", "Unknown")
+
+            expected_amount = 0.0
+            expected_sell = 0.0
+            carrier_name = "Unknown Carrier"
+            diagnostic_log = []
+            found = False
+            ms_metrics = {}
+
+            for url in search_urls:
+                try:
+                    resp = requests.post(url, headers=ms_headers, json=[connote], timeout=15)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if data.get("object") and len(data["object"]) > 0:
+                            consignment = data["object"][0]
+                            c_total = consignment.get("consignmentTotal") or {}
+                            
+                            carrier_name = consignment.get("carrier", {}).get("name", "Unknown Carrier")
+                            surcharge_list = c_total.get("consignmentCarrierSurcharges", [])
+                            surcharge_names = [s.get("carrierSurcharge", {}).get("name", "Unknown Surcharge") for s in surcharge_list]
+                            
+                            item_list = consignment.get("items", [])
+                            item_summary = []
+                            for it in item_list:
+                                qty = it.get("quantity", 0)
+                                wgt = it.get("weight", 0)
+                                item_summary.append(f"{qty}x {wgt}kg")
+                            
+                            ms_metrics = {
+                                "machship_weight": consignment.get("totalWeight", 0),
+                                "machship_cubic": consignment.get("totalVolume", 0),
+                                "machship_base_cost": c_total.get("totalBaseCostPrice", 0),
+                                "machship_surcharges_total": c_total.get("totalConsignmentCarrierSurchargesCostPrice", 0),
+                                "machship_surcharge_names": surcharge_names,
+                                "machship_items": item_summary
+                            }
+                            
+                            # Extract Cost Price
+                            cost = c_total.get("totalCostPrice")
+                            if cost is None: cost = c_total.get("totalCostBeforeTax")
+                            if cost is None: cost = c_total.get("totalCost")
+                            if cost is None: cost = c_total.get("cost")
+                            if cost is None: cost = consignment.get("totalCostPrice")
+                            if cost is None: cost = consignment.get("totalCost")
+                            if cost is None: cost = consignment.get("cost")
+                            
+                            # Extract Sell Price (Customer markup)
+                            sell = c_total.get("totalSellPrice")
+                            if sell is None: sell = c_total.get("totalSellBeforeTax")
+                            if sell is None: sell = c_total.get("totalSell")
+                            if sell is None: sell = consignment.get("totalSellPrice")
+                            if sell is None: sell = consignment.get("totalSell")
+                            
+                            if cost is not None:
+                                expected_amount = float(cost)
+                            else:
+                                diagnostic_log.append("Machship 'cost' nodes missing.")
+                                
+                            if sell is not None:
+                                expected_sell = float(sell)
+                                
+                            found = True
+                            break
+                        else:
+                            diagnostic_log.append(f"Not found via {url.split('/')[-1].split('?')[0]}")
+                    else:
+                        diagnostic_log.append(f"HTTP {resp.status_code}")
+                except requests.exceptions.Timeout:
+                    diagnostic_log.append(f"Timeout")
+                except Exception as loop_e:
+                    diagnostic_log.append(f"Error: {sanitize_error_log(str(loop_e))}")
+
+            if not found:
+                diagnostic_log.append("Failed to locate connote in Machship.")
+
+            variance = billed_amount - expected_amount
+            
+            # Rule 1: Drop consignments if the carrier charged less than Machship anticipated.
+            if expected_amount > 0 and variance < -0.05:
+                continue
+
+            diag_string = "Clean" if not diagnostic_log else " | ".join(diagnostic_log)
+            surcharge_str = ", ".join(ms_metrics.get("machship_surcharge_names", [])) if ms_metrics else "None"
+
+            # Rule 3: Calculate dynamic markup factor and Sell Price to Customer
+            if expected_amount > 0.01:
+                markup_factor = expected_sell / expected_amount
+            else:
+                markup_factor = 1.17 # BOOF Fallback Protocol
+                
+            sell_price_to_customer = round((variance * markup_factor), 2) if variance > 0 else 0.0
+
+            row_data = {
+                "Carrier Connote": connote,
+                "Billed Amount": billed_amount,
+                "Expected Amount": expected_amount,
+                "Variance": variance,
+                "Sell Price to Customer": sell_price_to_customer,
+                "Expected Surcharges": surcharge_str,
+                "AI Variance Analysis": "Pending Analysis",
+                "Diagnostics": diag_string
+            }
+            reconciliation_data.append(row_data)
+
+            if found and variance > 0.10:
+                analysis_batch.append({
+                    "connote": connote,
+                    "variance": variance,
+                    "carrier_invoice_line": raw_invoice_line,
+                    "machship_metrics": ms_metrics
+                })
+
+        ai_reasons = {}
+        if len(analysis_batch) > 0:
+            batch_prompt = f"You are a forensic freight auditor. I am providing a JSON array of {len(analysis_batch)} consignments that have a cost variance. Compare the carrier_invoice_line text against the machship_metrics. Look explicitly for Discrepancies in Weight or Volume, Missing or Added Surcharges, and Base rate mismatches.\n\nCRITICAL INSTRUCTION 1: Try to actively FIGURE OUT the root cause of the discrepancy rather than just reporting the numbers. For example, carriers like FedEx often categorize their fuel levy under the general 'Surcharge' column. You must compare the carrier's 'Surcharge' field against the Machship metrics (including fuel surcharges) to see if that explains the variance.\n\nCRITICAL INSTRUCTION 2: Format your analysis inside 'variance_reason' with logical line breaks. You MUST insert a line break character ('\\n') after EVERY full stop (.) to ensure the text remains short per line in the spreadsheet cell. Structure it using clear prefixes like 'Weight Discrepancy:', 'Base Rate Mismatch:', and 'Missing/Added Surcharges:'.\n\nCRITICAL INSTRUCTION 3: You MUST return exactly {len(analysis_batch)} JSON objects in your array. Do NOT skip any items. Do NOT summarize. Return ONLY a valid JSON array of objects with strictly two keys: 'connote' and 'variance_reason'.\n\nVariance Data: {json.dumps(analysis_batch)}"
+            
+            try:
+                analysis_resp = model.generate_content(
+                    batch_prompt,
+                    generation_config=genai.GenerationConfig(response_mime_type="application/json")
+                )
+                analysis_text = analysis_resp.text.strip()
+                
+                amatch = re.search(r"\[.*\]", analysis_text, re.DOTALL | re.IGNORECASE)
+                if amatch:
+                    analysis_text = amatch.group(0).strip()
+
+                analysis_results = json.loads(analysis_text)
+                for res in analysis_results:
+                    ai_reasons[res.get("connote", "")] = res.get("variance_reason", "AI could not determine reason.")
+            except Exception as e:
+                print(f"Batch AI Analysis Failed: {sanitize_error_log(str(e))}")
+
+        for row in reconciliation_data:
+            c_connote = row["Carrier Connote"]
+            
+            if row["Variance"] <= 0.10:
+                row["AI Variance Analysis"] = "No discrepancy (Exact Match)."
+            elif c_connote in ai_reasons:
+                row["AI Variance Analysis"] = ai_reasons[c_connote]
+            elif row["Diagnostics"] != "Clean" and "Not found" in row["Diagnostics"]:
+                row["AI Variance Analysis"] = "Cannot analyze - not found in Machship."
+            else:
+                row["AI Variance Analysis"] = "AI Analysis Skipped."
+
+        df = pd.DataFrame(reconciliation_data)
+        col_order = ["Carrier Connote", "Billed Amount", "Expected Amount", "Variance", "Sell Price to Customer", "Expected Surcharges", "AI Variance Analysis", "Diagnostics"]
+        df = df[col_order]
+
+        drive_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==").decode()
+        sheets_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9zcHJlYWRzaGVldHM=").decode()
+        
+        credentials_dict = dict(st.secrets["gcp_service_account"])
+        creds = service_account.Credentials.from_service_account_info(
+            credentials_dict,
+            scopes=[drive_scope, sheets_scope]
+        )
+
+        sheets_service = build("sheets", "v4", credentials=creds)
+        drive_service = build("drive", "v3", credentials=creds)
+
+        parent_folder_id = "1U8PYxUZMfJql0AYnhc0izJpI0FqveeFR"
+        timestamp_str = pd.Timestamp.now().strftime("%Y%m%d_%H%M")
+        target_sheet_name = f"Invoice Audit Output - {timestamp_str}"
+
+        file_metadata = {
+            'name': target_sheet_name,
+            'mimeType': 'application/vnd.google-apps.spreadsheet',
+            'parents': [parent_folder_id]
+        }
+        
+        sheet_file = drive_service.files().create(
+            body=file_metadata, 
+            fields='id',
+            supportsAllDrives=True
+        ).execute()
+        spreadsheet_id = sheet_file.get('id')
+
+        headers_list = df.columns.tolist()
+        raw_values = df.values.tolist()
+        
+        scrubbed_values = [headers_list]
+        for row in raw_values:
+            clean_row = []
+            for item in row:
+                if pd.isna(item):
+                    clean_row.append("")
+                else:
+                    item_str = str(item)
+                    if item_str.lower() in ["nan", "nat", "<na>", "none"]:
+                        clean_row.append("")
+                    else:
+                        clean_row.append(item_str)
+            scrubbed_values.append(clean_row)
+
+        try:
+            sheet_metadata = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+            sheet_id = sheet_metadata['sheets'][0]['properties']['sheetId']
+            
+            requests_body = {
+                "requests": [
+                    {
+                        "updateSheetProperties": {
+                            "properties": {
+                                "sheetId": sheet_id,
+                                "gridProperties": {
+                                    "rowCount": max(1000, len(scrubbed_values) + 100),
+                                    "columnCount": max(26, len(headers_list) + 5)
+                                }
+                            },
+                            "fields": "gridProperties(rowCount,columnCount)"
+                        }
+                    }
+                ]
+            }
+            sheets_service.spreadsheets().batchUpdate(
+                spreadsheetId=spreadsheet_id,
+                body=requests_body
+            ).execute()
+        except Exception as grid_e:
+            print(f"Grid expansion warning: {sanitize_error_log(str(grid_e))}")
+
+        body = { "values": scrubbed_values }
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range="Sheet1!A1",
+            valueInputOption="USER_ENTERED",
+            body=body
+        ).execute()
+
+        if notification_email:
+            try:
+                permission = {
+                    "type": "user",
+                    "role": "writer",
+                    "emailAddress": notification_email
+                }
+                drive_service.permissions().create(
+                    fileId=spreadsheet_id,
+                    body=permission,
+                    fields="id",
+                    supportsAllDrives=True
+                ).execute()
+            except Exception:
+                pass 
+
+        sheet_url = f"[https://docs.google.com/spreadsheets/d/](https://docs.google.com/spreadsheets/d/){spreadsheet_id}"
+        return f"SUCCESS: Invoice Auditor complete. Processed {len(invoice_items)} records natively. View Sheet: {sheet_url}"
+
+    except Exception as base_e:
+        return f"TOOL 8 CRITICAL CRASH: {sanitize_error_log(str(base_e))}"
+    finally:
+        try:
+            del creds, sheets_service, drive_service
+        except NameError:
+            pass
+
+# ==========================================
 # TOOL 10 & 11 HUBSPOT HELPER METHODS
 # ==========================================
 def check_hubspot_duplicate(ms_number: str, service_key: str) -> bool:
@@ -923,28 +1383,37 @@ def tool_10_temporal_anomaly_detector():
         edit_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZWRpdA==").decode()
         hs_key = st.secrets.get("hubspot", {}).get("service_key")
         
-        # Format dates precisely without URL encoding hooks or trailing Z
-        from_date = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%S')
+        from_date = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=14)).strftime('%Y-%m-%dT%H:%M:%S')
         to_date = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
         headers = { "token": ms_token, "Content-Type": "application/json" }
         
-        params = {
-            "fromDateUtc": from_date,
-            "toDateUtc": to_date
-        }
-        
-        resp = requests.get(base_url, headers=headers, params=params, timeout=15)
-        resp.raise_for_status()
-        active_data = resp.json().get('object', [])
-        if active_data is None:
-            active_data = []
+        active_data = []
+        start_index = 0
+        while True:
+            params = {
+                "fromDateUtc": from_date,
+                "toDateUtc": to_date,
+                "retrieveSize": 200,
+                "startIndex": start_index
+            }
+            resp = requests.get(base_url, headers=headers, params=params, timeout=15)
+            resp.raise_for_status()
+            
+            page_data = resp.json().get('object', [])
+            if not page_data:
+                break
+                
+            active_data.extend(page_data)
+            
+            if len(page_data) < 200:
+                break
+            start_index += 200
             
         anomalies = []
         for item in active_data:
             track_status = item.get('consignmentTrackingStatus', {}).get('name', '').lower()
             gen_status = item.get('status', {}).get('name', '').lower()
             
-            # Using your exact status list
             if track_status in ['despatched', 'unmanifested', 'printed', 'booked', 'manifested'] or \
                gen_status in ['despatched', 'unmanifested', 'printed', 'booked', 'manifested']:
                 creation_str = item.get('despatchDateLocal') or item.get('despatchDate') or item.get('creationDate')
@@ -1075,20 +1544,31 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
         # 2. Fetch Active Consignments via Valid Endpoint
         base_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0UmVjZW50bHlDcmVhdGVkT3JVcGRhdGVkQ29uc2lnbm1lbnRz").decode()
         
-        from_date = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%S')
+        from_date = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=14)).strftime('%Y-%m-%dT%H:%M:%S')
         to_date = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S')
         headers = { "token": ms_token, "Content-Type": "application/json" }
         
-        params = {
-            "fromDateUtc": from_date,
-            "toDateUtc": to_date
-        }
-        
-        resp = requests.get(base_url, headers=headers, params=params, timeout=15)
-        resp.raise_for_status()
-        active_data = resp.json().get('object', [])
-        if active_data is None:
-            active_data = []
+        active_data = []
+        start_index = 0
+        while True:
+            params = {
+                "fromDateUtc": from_date,
+                "toDateUtc": to_date,
+                "retrieveSize": 200,
+                "startIndex": start_index
+            }
+            resp = requests.get(base_url, headers=headers, params=params, timeout=15)
+            resp.raise_for_status()
+            
+            page_data = resp.json().get('object', [])
+            if not page_data:
+                break
+                
+            active_data.extend(page_data)
+            
+            if len(page_data) < 200:
+                break
+            start_index += 200
         
         # 3. Filter for Exceptions & Extract Geodata
         success_statuses = ['delivered', 'on board for delivery', 'partially delivered', 'awaiting collection', 'completed']
@@ -1138,7 +1618,21 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
         """
         
         try:
-            model = genai.GenerativeModel('gemini-1.5-flash')
+            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            target_model = None
+            preferred = ['models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest', 'models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest']
+            
+            for pref in preferred:
+                if pref in available_models:
+                    target_model = pref
+                    break
+                    
+            if not target_model and available_models:
+                target_model = available_models[0]
+                
+            target_model = target_model.replace('models/', '')
+            model = genai.GenerativeModel(target_model)
+            
             llm_resp = model.generate_content(
                 routing_prompt,
                 generation_config=genai.GenerationConfig(response_mime_type="application/json")
