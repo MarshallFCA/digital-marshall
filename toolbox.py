@@ -646,7 +646,7 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         try:
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
             target_model = None
-            preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest', 'models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest', 'models/gemini-pro']
+            preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest', 'models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest']
             
             for pref in preferred:
                 if pref in available_models:
@@ -1140,7 +1140,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 "Billed Amount": billed_amount,
                 "Expected Amount": expected_amount,
                 "Variance": variance,
-                "Sell Price to Customer": sell_price_to_customer,
+                "Sell Price to Customer": Sell_price_to_customer,
                 "Expected Surcharges": surcharge_str,
                 "AI Variance Analysis": "Pending Analysis",
                 "Diagnostics": diag_string
@@ -1400,6 +1400,7 @@ def tool_10_temporal_anomaly_detector():
         
         resp = requests.get(base_url, headers=headers, params=params, timeout=15)
         resp.raise_for_status()
+        
         active_data = resp.json().get('object', [])
         if active_data is None:
             active_data = []
@@ -1550,6 +1551,7 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
         
         resp = requests.get(base_url, headers=headers, params=params, timeout=15)
         resp.raise_for_status()
+        
         active_data = resp.json().get('object', [])
         if active_data is None:
             active_data = []
