@@ -1380,13 +1380,15 @@ def tool_10_temporal_anomaly_detector():
         for item in active_data:
             status_name = item.get('status', {}).get('name', '').lower()
             if status_name in ['booked', 'manifested', 'unmanifested']:
-                # Prioritize local time over UTC for threshold comparison
-                creation_str = item.get('despatchDateTimeLocal') or item.get('creationDate')
+                # Bulletproof Parsing: Fallback sequence & string slice
+                creation_str = item.get('despatchDateLocal') or item.get('despatchDateTimeLocal') or item.get('creationDate')
                 if creation_str:
                     try:
-                        # Robust parsing dropping trailing Z or +10:00 issues
-                        creation_dt = pd.to_datetime(creation_str, errors='coerce').tz_localize(None)
-                        if pd.notna(creation_dt) and creation_dt < cutoff_threshold:
+                        # Grab just the YYYY-MM-DDTHH:MM:SS part (first 19 chars) 
+                        # This bypasses Z, fractional seconds, or timezone offsets safely.
+                        clean_str = str(creation_str)[:19]
+                        creation_dt = datetime.datetime.strptime(clean_str, "%Y-%m-%dT%H:%M:%S")
+                        if creation_dt < cutoff_threshold:
                             anomalies.append(item)
                     except Exception as parse_e:
                         print(f"Date Parse Diagnostic MS {item.get('consignmentNumber')}: {sanitize_error_log(str(parse_e))}")
