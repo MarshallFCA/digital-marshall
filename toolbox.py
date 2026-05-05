@@ -1077,7 +1077,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             else:
                 markup_factor = 1.17 # BOOF Fallback Protocol
                 
-            sell_price_to_customer = variance * markup_factor if variance > 0 else 0.0
+            sell_price_to_customer = round((variance * markup_factor), 2) if variance > 0 else 0.0
 
             row_data = {
                 "Carrier Connote": connote,
@@ -1101,8 +1101,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
 
         ai_reasons = {}
         if len(analysis_batch) > 0:
-            # Rule 2: Explicitly demanding description of Surcharge nature from Gemini
-            batch_prompt = f"You are a forensic freight auditor. I am providing a JSON array of {len(analysis_batch)} consignments that have a cost variance. Compare the carrier_invoice_line text against the machship_metrics. Look explicitly for Discrepancies in Weight or Volume, Missing or Added Surcharges, and Base rate mismatches. CRITICAL INSTRUCTION 1: You MUST explicitly describe the nature of any surcharges charged by the carrier (e.g. Manual Handling, Residential, Overlength, Tailgate) compared to the expected Machship surcharges. Explain why the discrepancy exists. CRITICAL INSTRUCTION 2: You MUST return exactly {len(analysis_batch)} JSON objects in your array. Do NOT skip any items. Do NOT summarize. Return ONLY a valid JSON array of objects with keys: connote and variance_reason. Variance Data: {json.dumps(analysis_batch)}"
+            batch_prompt = f"You are a forensic freight auditor. I am providing a JSON array of {len(analysis_batch)} consignments that have a cost variance. Compare the carrier_invoice_line text against the machship_metrics. Look explicitly for Discrepancies in Weight or Volume, Missing or Added Surcharges, and Base rate mismatches.\n\nCRITICAL INSTRUCTION 1: Format your analysis inside 'variance_reason' with logical line breaks (use '\\n\\n' characters) so it can be easily read by a human in a single spreadsheet cell. Structure it using clear prefixes exactly like 'Weight Discrepancy:', 'Base Rate Mismatch:', and 'Missing/Added Surcharges:'. Explicitly describe the nature of any surcharges charged by the carrier (e.g. Manual Handling, Residential, Overlength) compared to the expected Machship surcharges, and explain why the discrepancy exists.\n\nCRITICAL INSTRUCTION 2: You MUST return exactly {len(analysis_batch)} JSON objects in your array. Do NOT skip any items. Do NOT summarize. Return ONLY a valid JSON array of objects with strictly two keys: 'connote' and 'variance_reason'.\n\nVariance Data: {json.dumps(analysis_batch)}"
             
             try:
                 analysis_resp = model.generate_content(
