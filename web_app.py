@@ -319,9 +319,9 @@ with tab_terminal:
                        * Prohibition on Hallucination: Never guess. Do not invent data. If you cannot solve a problem, advise the user that you cannot solve the problem.
                        * Linguistics: Utilise Australian/British English exclusively. Do not use the em dash.
                     9. THE HUNT PROTOCOL: If a user asks for the status of a reference number (e.g., FCU000071), you must autonomously search Machship, Transvirtual, and Carton Cloud. If the first tool returns no result, DO NOT stop. Execute the next tool. Only report failure if all three databases come up empty.
-                    10. HYBRID GEMINI PROTOCOL: If the user asks you to analyze a heavy dataset, cross-reference multiple files, audit a large file, or create a spreadsheet from uploaded CSV/Excel files, DO NOT try to read the files yourself and DO NOT search Google Drive for them. You must immediately execute the `hybrid_gemini_sheet_generator` tool.
+                    10. HYBRID GEMINI PROTOCOL: If the user asks you to analyze a general dataset, cross-reference multiple files, or create a spreadsheet from uploaded CSV/Excel files, execute the `hybrid_gemini_sheet_generator` tool. (CRITICAL FIREWALL: NEVER use Tool 7 if the user mentions 'invoice', 'audit', or 'variances'. Tool 7 cannot ping Machship for pricing.)
                     11. TRANSPARENCY PROTOCOL: If any tool returns an error message or crash report (e.g., "HYBRID GEMINI CRASH:" or "Tool Execution Crash:"), you MUST NOT hide it. You must explicitly output the exact error message to the user in your response so they can diagnose the anomaly.
-                    12. INVOICE RECONCILIATION PROTOCOL: If the user uploads a carrier invoice and asks you to audit, reconcile, or check the variances on it, you MUST execute `tool_8_carrier_invoice_auditor`. Pass the full extracted text of the document into the tool, and use '{st.session_state.user_email}' for the notification_email parameter.
+                    12. INVOICE RECONCILIATION PROTOCOL (CRITICAL OVERRIDE): If the user uploads a carrier invoice or asks to "audit", "reconcile", or check "variances", you MUST EXCLUSIVELY execute `tool_8_carrier_invoice_auditor`. Do not route invoice requests to Tool 7. Pass the full extracted text into Tool 8 and use '{st.session_state.user_email}' for the notification_email parameter.
 
                     CRITICAL RAG INSTRUCTIONS:
                     1. "Context (Sent to Marshall)" is the email sent TO Marshall.
@@ -423,7 +423,7 @@ with tab_terminal:
                             "type": "function",
                             "function": {
                                 "name": "hybrid_gemini_sheet_generator",
-                                "description": "Uses Gemini 1.5 Pro to analyze massive datasets (CSV/Excel) currently uploaded in the system (capable of cross-referencing multiple files), extracts specific information based on instructions, and generates a new Google Sheet with the results.",
+                                "description": "Uses Gemini 1.5 Pro to analyze general datasets (CSV/Excel) and process logic instructions. CRITICAL WARNING: DO NOT use this tool for carrier invoices, variance reports, or auditing bills. Use Tool 8 instead for any invoice-related requests.",
                                 "parameters": {
                                     "type": "object",
                                     "properties": {
@@ -444,7 +444,7 @@ with tab_terminal:
                             "type": "function",
                             "function": {
                                 "name": "tool_8_carrier_invoice_auditor",
-                                "description": "Audits a raw carrier invoice text by extracting connotes, pinging Machship for quoted base costs, calculating the variance, and generating a reconciliation report in Google Sheets.",
+                                "description": "Audits a raw carrier invoice text by extracting connotes, pinging Machship for quoted costs and markups, calculating the variance, and generating a reconciliation report in Google Sheets. EXCLUSIVELY USE THIS TOOL anytime the user mentions 'invoice', 'audit', or 'reconcile'.",
                                 "parameters": {
                                     "type": "object",
                                     "properties": {
@@ -595,7 +595,3 @@ with tab_matrix:
         )
     else:
         st.markdown("*(Matrix projection grid will appear here once executed)*")
-
-
-
-
