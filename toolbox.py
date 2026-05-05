@@ -989,6 +989,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             invoice_number = item.get("invoice_number", "Unknown")
 
             expected_amount = 0.0
+            expected_sell = 0.0
             carrier_name = "Unknown Carrier"
             diagnostic_log = []
             found = False
@@ -1023,6 +1024,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                                 "machship_items": item_summary
                             }
                             
+                            # Extract Cost Price
                             cost = c_total.get("totalCostPrice")
                             if cost is None: cost = c_total.get("totalCostBeforeTax")
                             if cost is None: cost = c_total.get("totalCost")
@@ -1031,10 +1033,21 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                             if cost is None: cost = consignment.get("totalCost")
                             if cost is None: cost = consignment.get("cost")
                             
+                            # Extract Sell Price (Customer markup)
+                            sell = c_total.get("totalSellPrice")
+                            if sell is None: sell = c_total.get("totalSellBeforeTax")
+                            if sell is None: sell = c_total.get("totalSell")
+                            if sell is None: sell = consignment.get("totalSellPrice")
+                            if sell is None: sell = consignment.get("totalSell")
+                            
                             if cost is not None:
                                 expected_amount = float(cost)
                             else:
                                 diagnostic_log.append("Machship 'cost' nodes missing.")
+                                
+                            if sell is not None:
+                                expected_sell = float(sell)
+                                
                             found = True
                             break
                         else:
@@ -1050,13 +1063,29 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 diagnostic_log.append("Failed to locate connote in Machship.")
 
             variance = billed_amount - expected_amount
+            
+            # Rule 1: Drop consignments if the carrier charged less than Machship anticipated.
+            if expected_amount > 0 and variance < -0.05:
+                continue
+
             diag_string = "Clean" if not diagnostic_log else " | ".join(diagnostic_log)
+            surcharge_str = ", ".join(ms_metrics.get("machship_surcharge_names", [])) if ms_metrics else "None"
+
+            # Rule 3: Calculate dynamic markup factor and Sell Price to Customer
+            if expected_amount > 0.01:
+                markup_factor = expected_sell / expected_amount
+            else:
+                markup_factor = 1.17 # BOOF Fallback Protocol
+                
+            sell_price_to_customer = variance * markup_factor if variance > 0 else 0.0
 
             row_data = {
                 "Carrier Connote": connote,
                 "Billed Amount": billed_amount,
                 "Expected Amount": expected_amount,
                 "Variance": variance,
+                "Sell Price to Customer": sell_price_to_customer,
+                "Expected Surcharges": surcharge_str,
                 "AI Variance Analysis": "Pending Analysis",
                 "Diagnostics": diag_string
             }
@@ -1072,7 +1101,8 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
 
         ai_reasons = {}
         if len(analysis_batch) > 0:
-            batch_prompt = f"You are a forensic freight auditor. I am providing a JSON array of {len(analysis_batch)} consignments that have a cost variance. Compare the carrier_invoice_line text against the machship_metrics. Look explicitly for Discrepancies in Weight or Volume, Missing or Added Surcharges, and Base rate mismatches. CRITICAL INSTRUCTION: You MUST return exactly {len(analysis_batch)} JSON objects in your array. Do NOT skip any items. Do NOT summarize. Return ONLY a valid JSON array of objects with keys: connote and variance_reason. Variance Data: {json.dumps(analysis_batch)}"
+            # Rule 2: Explicitly demanding description of Surcharge nature from Gemini
+            batch_prompt = f"You are a forensic freight auditor. I am providing a JSON array of {len(analysis_batch)} consignments that have a cost variance. Compare the carrier_invoice_line text against the machship_metrics. Look explicitly for Discrepancies in Weight or Volume, Missing or Added Surcharges, and Base rate mismatches. CRITICAL INSTRUCTION 1: You MUST explicitly describe the nature of any surcharges charged by the carrier (e.g. Manual Handling, Residential, Overlength, Tailgate) compared to the expected Machship surcharges. Explain why the discrepancy exists. CRITICAL INSTRUCTION 2: You MUST return exactly {len(analysis_batch)} JSON objects in your array. Do NOT skip any items. Do NOT summarize. Return ONLY a valid JSON array of objects with keys: connote and variance_reason. Variance Data: {json.dumps(analysis_batch)}"
             
             try:
                 analysis_resp = model.generate_content(
@@ -1095,7 +1125,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             c_connote = row["Carrier Connote"]
             
             if row["Variance"] <= 0.10:
-                row["AI Variance Analysis"] = "No discrepancy (Undercharge or Exact Match)."
+                row["AI Variance Analysis"] = "No discrepancy (Exact Match)."
             elif c_connote in ai_reasons:
                 row["AI Variance Analysis"] = ai_reasons[c_connote]
             elif row["Diagnostics"] != "Clean" and "Not found" in row["Diagnostics"]:
@@ -1104,7 +1134,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 row["AI Variance Analysis"] = "AI Analysis Skipped."
 
         df = pd.DataFrame(reconciliation_data)
-        col_order = ["Carrier Connote", "Billed Amount", "Expected Amount", "Variance", "AI Variance Analysis", "Diagnostics"]
+        col_order = ["Carrier Connote", "Billed Amount", "Expected Amount", "Variance", "Sell Price to Customer", "Expected Surcharges", "AI Variance Analysis", "Diagnostics"]
         df = df[col_order]
 
         drive_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==").decode()
