@@ -646,7 +646,7 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         try:
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
             target_model = None
-            preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest', 'models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest']
+            preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest']
             
             for pref in preferred:
                 if pref in available_models:
@@ -659,9 +659,6 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
                         target_model = m
                         break
             
-            if not target_model and available_models:
-                target_model = available_models[0]
-                
             if not target_model:
                 target_model = 'gemini-1.5-pro'
             else:
@@ -916,17 +913,24 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         try:
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
             target_model = None
-            preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest', 'models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest']
+            preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest']
             
             for pref in preferred:
                 if pref in available_models:
                     target_model = pref
                     break
                     
-            if not target_model and available_models:
-                target_model = available_models[0]
+            if not target_model:
+                for m in available_models:
+                    if 'gemini-1.5-pro' in m:
+                        target_model = m
+                        break
+            
+            if not target_model:
+                target_model = 'gemini-1.5-pro'
+            else:
+                target_model = target_model.replace('models/', '')
                 
-            target_model = target_model.replace('models/', '')
             model = genai.GenerativeModel(target_model)
             
         except Exception as model_err:
@@ -1385,8 +1389,7 @@ def tool_10_temporal_anomaly_detector():
         
         params = {
             "fromDateUtc": from_date,
-            "toDateUtc": to_date,
-            "includeChildCompanies": "true"
+            "toDateUtc": to_date
         }
         
         resp = requests.get(base_url, headers=headers, params=params, timeout=15)
@@ -1537,8 +1540,7 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
         
         params = {
             "fromDateUtc": from_date,
-            "toDateUtc": to_date,
-            "includeChildCompanies": "true"
+            "toDateUtc": to_date
         }
         
         resp = requests.get(base_url, headers=headers, params=params, timeout=15)
@@ -1559,7 +1561,6 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
             track_status = item.get('consignmentTrackingStatus', {}).get('name', '').lower()
             gen_status = item.get('status', {}).get('name', '').lower()
             
-            # Identify past-due freight instead of matching exactly one day
             is_delayed = False
             if eta_str:
                 try:
@@ -1609,7 +1610,7 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
         try:
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
             target_model = None
-            preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest', 'models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest']
+            preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest']
             
             for pref in preferred:
                 if pref in available_models:
@@ -1622,9 +1623,6 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
                         target_model = m
                         break
             
-            if not target_model and available_models:
-                target_model = available_models[0]
-                
             if not target_model:
                 target_model = 'gemini-1.5-pro'
             else:
