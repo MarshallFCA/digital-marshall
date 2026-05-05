@@ -923,20 +923,10 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                     target_model = pref
                     break
                     
-            if not target_model:
-                for m in available_models:
-                    if 'gemini-1.5-pro' in m:
-                        target_model = m
-                        break
-            
             if not target_model and available_models:
                 target_model = available_models[0]
                 
-            if not target_model:
-                target_model = 'gemini-1.5-pro'
-            else:
-                target_model = target_model.replace('models/', '')
-                
+            target_model = target_model.replace('models/', '')
             model = genai.GenerativeModel(target_model)
             
         except Exception as model_err:
@@ -1140,7 +1130,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 "Billed Amount": billed_amount,
                 "Expected Amount": expected_amount,
                 "Variance": variance,
-                "Sell Price to Customer": Sell_price_to_customer,
+                "Sell Price to Customer": sell_price_to_customer,
                 "Expected Surcharges": surcharge_str,
                 "AI Variance Analysis": "Pending Analysis",
                 "Diagnostics": diag_string
@@ -1395,7 +1385,8 @@ def tool_10_temporal_anomaly_detector():
         
         params = {
             "fromDateUtc": from_date,
-            "toDateUtc": to_date
+            "toDateUtc": to_date,
+            "includeChildCompanies": "true"
         }
         
         resp = requests.get(base_url, headers=headers, params=params, timeout=15)
@@ -1546,7 +1537,8 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
         
         params = {
             "fromDateUtc": from_date,
-            "toDateUtc": to_date
+            "toDateUtc": to_date,
+            "includeChildCompanies": "true"
         }
         
         resp = requests.get(base_url, headers=headers, params=params, timeout=15)
@@ -1562,12 +1554,23 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
         
         for item in active_data:
             eta_raw = item.get('etaLocal') or item.get('eta') or item.get('expectedDeliveryDate')
-            eta = str(eta_raw).split('T')[0] if eta_raw else ''
+            eta_str = str(eta_raw).split('T')[0] if eta_raw else ''
             
             track_status = item.get('consignmentTrackingStatus', {}).get('name', '').lower()
             gen_status = item.get('status', {}).get('name', '').lower()
             
-            if eta == target_date_str and track_status not in success_statuses and gen_status not in success_statuses:
+            # Identify past-due freight instead of matching exactly one day
+            is_delayed = False
+            if eta_str:
+                try:
+                    eta_date = datetime.datetime.strptime(eta_str, "%Y-%m-%d").date()
+                    target_date_obj = datetime.datetime.strptime(target_date_str, "%Y-%m-%d").date()
+                    if eta_date <= target_date_obj:
+                        is_delayed = True
+                except:
+                    pass
+            
+            if is_delayed and track_status not in success_statuses and gen_status not in success_statuses:
                 to_node = item.get('despatch', {}).get('toLocation', {})
                 if not to_node:
                     to_node = item.get('toLocation', {})
@@ -1584,7 +1587,7 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
                 })
                 
         if not delayed_freight:
-            return f"Sweep Complete. No transit delays detected for target date {target_date_str}."
+            return f"Sweep Complete. No transit delays detected for target date {target_date_str} or earlier."
 
         # 4. LLM Routing Deduction Engine
         routing_prompt = f"""
@@ -1697,7 +1700,7 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
                         
             action_summary.append(f"{ms_number} ({carrier_name}): {action_taken}")
             
-        return f"Sweep Complete. Processed {len(delayed_freight)} delayed consignments for {target_date_str}.\n" + "\n".join(action_summary)
+        return f"Sweep Complete. Processed {len(delayed_freight)} delayed consignments for {target_date_str} or earlier.\n" + "\n".join(action_summary)
         
     except Exception as e:
         return f"TOOL 11 CRITICAL CRASH: {sanitize_error_log(str(e))}"
