@@ -489,7 +489,7 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
 
             if qty <= 0: qty = 1
             weight_per_item = weight / qty if weight > 0 else 1.0
-            cubic_per_item = cubic / qty if cubic > 0 else 0.001
+            cubic_per_item = cubic / cubic if cubic > 0 else 0.001
             
             side_m = cubic_per_item ** (1/3)
             side_cm = int(side_m * 100)
@@ -672,7 +672,18 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
             return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {sanitize_error_log(str(model_err))}"
 
         schema_info = main_df.dtypes.to_string()
-        sample_data = main_df.head(3).to_csv(index=False)
+
+        # ==========================================
+        # OWASP CONTEXT MINIMIZER (DSGAI15)
+        # ==========================================
+        # We mask PII in the 3-row sample before sending it to the LLM. 
+        # The actual massive dataset is processed locally by pandas, so this doesn't break the final output.
+        sample_df = main_df.head(3).copy()
+        for col in sample_df.columns:
+            if sample_df[col].dtype == 'object':
+                # Mask emails to prevent inadvertent leakage
+                sample_df[col] = sample_df[col].astype(str).apply(lambda x: re.sub(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', '[EMAIL_MASKED]', x))
+        sample_data = sample_df.to_csv(index=False)
 
         prompt = f"""
         You are an expert Python Pandas data architect. 
@@ -989,7 +1000,19 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 clean_amount = 0.0
                 
             i_val = str(row.get(invoice_col, "Unknown")).strip() if invoice_col else "Unknown"
-            raw_line_str = " | ".join([f"{k}: {v}" for k, v in row.items() if not pd.isna(v)])
+
+            # ==========================================
+            # OWASP CONTEXT MINIMIZER (DSGAI15)
+            # ==========================================
+            # Exclude PII and irrelevant fields from the LLM prompt payload.
+            # The AI only needs weight, dimensions, surcharges, and cost to audit a variance.
+            pii_keywords = ['name', 'address', 'email', 'phone', 'contact', 'receiver', 'sender', 'attention', 'company', 'town', 'suburb', 'street']
+            safe_row_items = []
+            for k, v in row.items():
+                if pd.isna(v): continue
+                if any(pii_kw in str(k).lower() for pii_kw in pii_keywords): continue
+                safe_row_items.append(f"{k}: {v}")
+            raw_line_str = " | ".join(safe_row_items)
             
             invoice_items.append({
                 "connote": c_val,
