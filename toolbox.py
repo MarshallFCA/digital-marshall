@@ -1355,15 +1355,20 @@ def tool_10_temporal_anomaly_detector():
         edit_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZWRpdA==").decode()
         hs_key = st.secrets.get("hubspot", {}).get("service_key")
         
-        # 14-day lookback to catch older manifestations lacking carrier scans
-        from_date = (datetime.datetime.utcnow() - datetime.timedelta(days=14)).strftime('%Y-%m-%dT%H:%M:%S')
+        # 14-day lookback to catch older manifestations lacking carrier scans, properly Z formatted
+        from_date = (datetime.datetime.utcnow() - datetime.timedelta(days=14)).strftime('%Y-%m-%dT%H:%M:%SZ')
         headers = { "token": ms_token, "Content-Type": "application/json" }
         
         active_data = []
         start_index = 0
         while True:
-            fetch_url = f"{base_url}?fromDateUtc={from_date}&retrieveSize=200&startIndex={start_index}"
-            resp = requests.get(fetch_url, headers=headers, timeout=15)
+            params = {
+                "fromDateUtc": from_date,
+                "retrieveSize": 200,
+                "startIndex": start_index,
+                "includeChildCompanies": "true"
+            }
+            resp = requests.get(base_url, headers=headers, params=params, timeout=15)
             resp.raise_for_status()
             
             page_data = resp.json().get('object', [])
@@ -1510,14 +1515,19 @@ def tool_11_transit_delay_engine(dry_run: bool = False, target_date_override: st
         # 2. Fetch Active Consignments via Valid Endpoint
         base_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0UmVjZW50bHlDcmVhdGVkT3JVcGRhdGVkQ29uc2lnbm1lbnRz").decode()
         
-        from_date = (datetime.datetime.utcnow() - datetime.timedelta(days=14)).strftime('%Y-%m-%dT%H:%M:%S')
+        from_date = (datetime.datetime.utcnow() - datetime.timedelta(days=14)).strftime('%Y-%m-%dT%H:%M:%SZ')
         headers = { "token": ms_token, "Content-Type": "application/json" }
         
         active_data = []
         start_index = 0
         while True:
-            fetch_url = f"{base_url}?fromDateUtc={from_date}&retrieveSize=200&startIndex={start_index}"
-            resp = requests.get(fetch_url, headers=headers, timeout=15)
+            params = {
+                "fromDateUtc": from_date,
+                "retrieveSize": 200,
+                "startIndex": start_index,
+                "includeChildCompanies": "true"
+            }
+            resp = requests.get(base_url, headers=headers, params=params, timeout=15)
             resp.raise_for_status()
             
             page_data = resp.json().get('object', [])
