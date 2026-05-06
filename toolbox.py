@@ -594,6 +594,93 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
         return False, f"Matrix Engine Crash: {sanitize_error_log(str(e))}"
 
 # ==========================================
+# TOOL 15: WORKSPACE DOCUMENT CREATOR
+# ==========================================
+def tool_15_workspace_document_creator(document_title: str, document_body: str, notification_email: str = "") -> str:
+    """
+    Creates a new Google Document natively via the Drive and Docs API.
+    Injects the provided text and shares it with the requesting user.
+    """
+    try:
+        # Base64 Encoded Scopes for Drive and Docs APIs
+        drive_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==").decode()
+        docs_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kb2N1bWVudHM=").decode()
+        
+        credentials_dict = dict(st.secrets["gcp_service_account"])
+        creds = service_account.Credentials.from_service_account_info(
+            credentials_dict,
+            scopes=[drive_scope, docs_scope]
+        )
+
+        drive_service = build("drive", "v3", credentials=creds)
+        docs_service = build("docs", "v1", credentials=creds)
+
+        # Standard BOOF Exports Folder
+        parent_folder_id = "1U8PYxUZMfJql0AYnhc0izJpI0FqveeFR"
+
+        file_metadata = {
+            'name': document_title,
+            'mimeType': 'application/vnd.google-apps.document',
+            'parents': [parent_folder_id]
+        }
+        
+        # 1. Create the blank document in Drive
+        doc_file = drive_service.files().create(
+            body=file_metadata, 
+            fields='id',
+            supportsAllDrives=True
+        ).execute()
+        
+        document_id = doc_file.get('id')
+
+        # 2. Inject the body text via Docs API BatchUpdate
+        if document_body:
+            requests_body = {
+                "requests": [
+                    {
+                        "insertText": {
+                            "location": {
+                                "index": 1,
+                            },
+                            "text": document_body
+                        }
+                    }
+                ]
+            }
+            docs_service.documents().batchUpdate(
+                documentId=document_id, 
+                body=requests_body
+            ).execute()
+
+        # 3. Share the document with the user
+        if notification_email:
+            try:
+                permission = {
+                    "type": "user",
+                    "role": "writer",
+                    "emailAddress": notification_email
+                }
+                drive_service.permissions().create(
+                    fileId=document_id,
+                    body=permission,
+                    fields="id",
+                    supportsAllDrives=True
+                ).execute()
+            except Exception as e:
+                pass 
+
+        doc_url = f"[https://docs.google.com/document/d/](https://docs.google.com/document/d/){document_id}"
+        return f"SUCCESS: Native Google Document created in BOOF Shared Drive. Title: {document_title} | View Document: {doc_url}"
+
+    except Exception as e:
+        return f"TOOL 15 CRITICAL CRASH: {sanitize_error_log(str(e))}"
+    finally:
+        try:
+            del creds, drive_service, docs_service
+        except NameError:
+            pass
+
+# ==========================================
 # TOOL 7: PANDAS ORCHESTRATOR
 # ==========================================
 def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> str:
@@ -1619,7 +1706,6 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
 
 # ==========================================
 # BACKWARD COMPATIBILITY ALIASES 
-# (Prevents crash if AI chat memory calls legacy tools)
 # ==========================================
 def tool_11_transit_delay_engine(*args, **kwargs):
     return tool_10_freight_alert_automator(dry_run=kwargs.get('dry_run', False))
