@@ -8,7 +8,7 @@ import io
 import json
 import os
 import requests
-import extra_streamlit_components as stx
+import base64
 from streamlit_oauth import OAuth2Component
 import toolbox
 
@@ -81,19 +81,19 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- PERSISTENT COOKIE MANAGER ---
-# Fix: Removed @st.cache_resource to comply with strict Streamlit widget policies
-cookie_manager = stx.CookieManager(key="boof_cookie_manager")
-
-# --- GOOGLE SSO BOUNCER (WITH 24H PERSISTENCE) ---
+# --- GOOGLE SSO BOUNCER (WITH NATIVE URL PERSISTENCE) ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
-# Background Cookie Intercept
-cached_session = cookie_manager.get(cookie="boof_fca_session")
-if cached_session and not st.session_state.logged_in:
-    st.session_state.logged_in = True
-    st.session_state.user_email = cached_session
+# Background Native URL Intercept (Survives WebSocket Drops)
+if "_auth" in st.query_params and not st.session_state.logged_in:
+    try:
+        decoded_email = base64.b64decode(st.query_params["_auth"]).decode()
+        if decoded_email.endswith("@freightcompaniesaustralia.com.au"):
+            st.session_state.logged_in = True
+            st.session_state.user_email = decoded_email
+    except Exception:
+        pass
 
 if not st.session_state.logged_in:
     st.markdown("<h1 class='main-header'>Blessed Oracle of Freight</h1>", unsafe_allow_html=True)
@@ -124,11 +124,12 @@ if not st.session_state.logged_in:
         user_email = user_info.get("email", "")
         
         if user_email.endswith("@freightcompaniesaustralia.com.au"):
-            # Set a 24-hour persistent cookie
-            cookie_manager.set("boof_fca_session", user_email, max_age=86400)
             st.session_state.logged_in = True
             st.session_state.user_email = user_email
+            
+            # Rehydrate URL to survive tab sleeping
             st.query_params.clear() 
+            st.query_params["_auth"] = base64.b64encode(user_email.encode()).decode()
             st.rerun() 
         else:
             st.error(f"Access Denied. {user_email} lacks FCA clearance.")
@@ -142,8 +143,8 @@ with col_head1:
     st.success(f"Secure connection established: {st.session_state.user_email}")
 with col_head2:
     if st.button("🚪 Logout / Hard Refresh", use_container_width=True):
-        cookie_manager.delete("boof_fca_session")
         st.session_state.logged_in = False
+        st.query_params.clear()
         st.rerun()
 
 # --- AGGRESSIVE HEARTBEAT (Prevents Idle Timeouts via Streamlit Health Ping) ---
@@ -507,8 +508,6 @@ with tab_terminal:
                 
                 api_messages = [{"role": "system", "content": system_prompt}]
 
-                # To maintain context without breaking token limits, grab the last 15 messages.
-                # Note: our session state is chronological, even though rendering is reversed.
                 for msg in st.session_state.messages[-15:-1]:
                     api_messages.append({"role": msg["role"], "content": msg["content"]})
 
@@ -560,14 +559,13 @@ with tab_terminal:
 
                 st.session_state.messages.append({"role": "assistant", "content": full_response})
                 save_memory() 
-                st.rerun() # Forces immediate visual update of the reverse-rendered log below
+                st.rerun() 
                 
             except Exception as e:
                 st.error(f"🚨 SYSTEM ANOMALY: {str(e)}")
 
     # ==========================================
     # REVERSE CHRONOLOGICAL CHAT LOG 
-    # (Newest responses appear strictly at the top)
     # ==========================================
     st.divider()
     st.markdown("<h4 style='color: #0b3d91;'>Communication Log</h4>", unsafe_allow_html=True)
