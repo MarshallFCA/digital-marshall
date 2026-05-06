@@ -11,4 +11,3 @@ google-auth-httplib2
 google-auth-oauthlib
 google-generativeai
 google-auth
-extra-streamlit-components==0.1.71
