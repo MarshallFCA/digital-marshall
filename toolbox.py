@@ -646,24 +646,20 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         try:
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
             target_model = None
-            preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest', 'models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest']
+            preferred = ['models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest', 'models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest', 'models/gemini-pro']
             
             for pref in preferred:
                 if pref in available_models:
                     target_model = pref
                     break
                     
-            if not target_model:
-                for m in available_models:
-                    if 'gemini-1.5-pro' in m:
-                        target_model = m
-                        break
-            
-            if not target_model:
-                target_model = 'gemini-1.5-pro'
-            else:
-                target_model = target_model.replace('models/', '')
+            if not target_model and available_models:
+                target_model = available_models[0]
                 
+            if not target_model:
+                return "HYBRID GEMINI CRASH: No valid Gemini text generation models found for this API key."
+                
+            target_model = target_model.replace('models/', '')
             model = genai.GenerativeModel(target_model)
         except Exception as model_err:
             return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {sanitize_error_log(str(model_err))}"
@@ -913,24 +909,20 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         try:
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
             target_model = None
-            preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest', 'models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest']
+            preferred = ['models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest', 'models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest', 'models/gemini-pro']
             
             for pref in preferred:
                 if pref in available_models:
                     target_model = pref
                     break
                     
-            if not target_model:
-                for m in available_models:
-                    if 'gemini-1.5-pro' in m:
-                        target_model = m
-                        break
-            
-            if not target_model:
-                target_model = 'gemini-1.5-pro'
-            else:
-                target_model = target_model.replace('models/', '')
+            if not target_model and available_models:
+                target_model = available_models[0]
                 
+            if not target_model:
+                return "HYBRID GEMINI CRASH: No valid Gemini text generation models found for this API key."
+                
+            target_model = target_model.replace('models/', '')
             model = genai.GenerativeModel(target_model)
             
         except Exception as model_err:
@@ -1295,6 +1287,63 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             pass
 
 # ==========================================
+# TOOL 10 & 11 HUBSPOT HELPER METHODS
+# ==========================================
+def check_hubspot_duplicate(ms_number: str, service_key: str) -> bool:
+    """
+    Checks if an alert ticket for this Machship number already exists in HubSpot.
+    Prevents duplicate ticket generation across successive sweeps.
+    """
+    url = base64.b64decode("aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRzL3NlYXJjaA==").decode()
+    headers = {
+        "Authorization": f"Bearer {service_key}",
+        "Content-Type": "application/json"
+    }
+    search_payload = {
+        "filterGroups": [{
+            "filters": [{
+                "propertyName": "subject",
+                "operator": "CONTAINS_TOKEN",
+                "value": ms_number
+            }]
+        }]
+    }
+    try:
+        response = requests.post(url, headers=headers, json=search_payload, timeout=15)
+        if response.status_code == 200:
+            return response.json().get('total', 0) > 0
+    except Exception as e:
+        print(f"HubSpot Duplicate Check Error ({ms_number}): {sanitize_error_log(str(e))}")
+    return False
+
+def create_hubspot_alert_ticket(ms_number, carrier_name, action_taken, service_key, draft_text=""):
+    url = base64.b64decode("aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRz").decode()
+    headers = {
+        "Authorization": f"Bearer {service_key}",
+        "Content-Type": "application/json"
+    }
+    
+    content_str = f"Status: Carrier Silence Detected (Suspected Missed Pickup).\nAction Taken: {action_taken}\nTime Flagged: {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M')}"
+    if draft_text:
+        content_str += f"\n\n=== SUGGESTED DRAFT ===\n{draft_text}"
+        
+    raw_properties = {
+        "hs_pipeline": "0",
+        "hs_pipeline_stage": "1",
+        "subject": f"Freight Alert: {ms_number} ({carrier_name})",
+        "content": content_str,
+        "hs_ticket_priority": "HIGH"
+    }
+    clean_properties = sanitize_hubspot_payload(raw_properties)
+    payload = { "properties": clean_properties }
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=15)
+        response.raise_for_status()
+        return response.json().get("id")
+    except Exception as e:
+        return f"Error: {sanitize_error_log(str(e))}"
+
+# ==========================================
 # TOOL 10: FREIGHT ALERT AUTOMATOR (MASTER)
 # ==========================================
 CARRIER_ROUTING_RULES = """
@@ -1337,30 +1386,6 @@ CARRIER_ROUTING_RULES = """
   If delivering to SA or WA, email wapickups@gkrtransport.com.au.
 """
 
-def check_hubspot_duplicate(ms_number: str, service_key: str) -> bool:
-    """Checks if a ticket for this Machship number already exists in HubSpot."""
-    url = base64.b64decode("aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRzL3NlYXJjaA==").decode()
-    headers = {
-        "Authorization": f"Bearer {service_key}",
-        "Content-Type": "application/json"
-    }
-    search_payload = {
-        "filterGroups": [{
-            "filters": [{
-                "propertyName": "subject",
-                "operator": "CONTAINS_TOKEN",
-                "value": ms_number
-            }]
-        }]
-    }
-    try:
-        response = requests.post(url, headers=headers, json=search_payload, timeout=15)
-        if response.status_code == 200:
-            return response.json().get('total', 0) > 0
-    except Exception as e:
-        print(f"HubSpot Duplicate Check Error ({ms_number}): {sanitize_error_log(str(e))}")
-    return False
-
 def tool_10_freight_alert_automator(dry_run: bool = False):
     """
     Executes the Master Bridge autonomous sweep. 
@@ -1388,22 +1413,28 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
         genai.configure(api_key=gemini_key)
         
         base_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0UmVjZW50bHlDcmVhdGVkT3JVcGRhdGVkQ29uc2lnbm1lbnRz").decode()
-        
-        from_date = (datetime.datetime.utcnow() - datetime.timedelta(days=14)).strftime('%Y-%m-%dT%H:%M:%S')
-        to_date = datetime.datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S')
         headers = { "token": ms_token, "Content-Type": "application/json" }
         
-        params = {
-            "fromDateUtc": from_date,
-            "toDateUtc": to_date
-        }
+        active_data = []
         
-        resp = requests.get(base_url, headers=headers, params=params, timeout=15)
-        resp.raise_for_status()
+        # Machship restricts date ranges to 7 days max. We run two 7-day chunks to safely achieve a 14-day lookback.
+        for i in range(2):
+            chunk_to = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=i*7)
+            chunk_from = chunk_to - datetime.timedelta(days=7)
+            
+            params = {
+                "fromDateUtc": chunk_from.strftime('%Y-%m-%dT%H:%M:%S'),
+                "toDateUtc": chunk_to.strftime('%Y-%m-%dT%H:%M:%S')
+            }
+            
+            resp = requests.get(base_url, headers=headers, params=params, timeout=15)
+            if resp.status_code == 200:
+                page_data = resp.json().get('object', [])
+                if page_data:
+                    active_data.extend(page_data)
         
-        active_data = resp.json().get('object', [])
-        if active_data is None:
-            active_data = []
+        if not active_data:
+            return "Sweep Complete. No active freight found in the designated date range."
             
         pre_pickup_statuses = ['despatched', 'unmanifested', 'printed', 'booked', 'manifested']
         success_statuses = ['delivered', 'on board for delivery', 'partially delivered', 'awaiting collection', 'completed']
@@ -1494,24 +1525,20 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
         try:
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
             target_model = None
-            preferred = ['models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest']
+            preferred = ['models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest', 'models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest', 'models/gemini-pro']
             
             for pref in preferred:
                 if pref in available_models:
                     target_model = pref
                     break
                     
-            if not target_model:
-                for m in available_models:
-                    if 'gemini-1.5-pro' in m:
-                        target_model = m
-                        break
-            
-            if not target_model:
-                target_model = 'gemini-1.5-pro'
-            else:
-                target_model = target_model.replace('models/', '')
+            if not target_model and available_models:
+                target_model = available_models[0]
                 
+            if not target_model:
+                return "TOOL 10 CRITICAL CRASH: No valid Gemini text generation models found for this API key."
+                
+            target_model = target_model.replace('models/', '')
             model = genai.GenerativeModel(target_model)
             
             llm_resp = model.generate_content(
@@ -1583,3 +1610,13 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
         
     except Exception as e:
         return f"TOOL 10 CRITICAL CRASH: {sanitize_error_log(str(e))}"
+
+# ==========================================
+# BACKWARD COMPATIBILITY ALIASES 
+# (Prevents crash if AI chat memory calls legacy tools)
+# ==========================================
+def tool_11_transit_delay_engine(*args, **kwargs):
+    return tool_10_freight_alert_automator(dry_run=kwargs.get('dry_run', False))
+    
+def tool_10_temporal_anomaly_detector(*args, **kwargs):
+    return tool_10_freight_alert_automator()
