@@ -6,7 +6,7 @@ import io
 import pandas as pd
 import numpy as np
 import datetime
-import PyPDF2
+import pypdf
 import streamlit as st
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -292,7 +292,7 @@ def search_and_read_google_drive(search_query: str) -> str:
             while not done:
                 status, done = downloader.next_chunk()
             fh.seek(0)
-            pdf_reader = PyPDF2.PdfReader(fh)
+            pdf_reader = pypdf.PdfReader(fh)
             for page in pdf_reader.pages:
                 if page.extract_text():
                     content += page.extract_text() + "\n"
@@ -582,10 +582,10 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
                         df.at[idx, "Option 1 (Cheapest)"] = options[0]['display']
                         df.at[idx, "Option 1 Price"] = f"${options[0]['price']:.2f}"
                     if len(options) > 1:
-                        df.at[idx, "Option 2 (Alternative)"] = options[1]['display']
-                        df.at[idx, "Option 2 Price"] = f"${options[1]['price']:.2f}"
+                        df.at[idx, "Option 2 (Alternative)"] = options[2]['display']
+                        df.at[idx, "Option 2 Price"] = f"${options[2]['price']:.2f}"
                     if len(options) > 2:
-                        df.at[idx, "Option 3 (Alternative)"] = options[2]['display']
+                        df.at[idx, "Option 3 (Alternative)"] = options[3]['display']
                         df.at[idx, "Option 3 Price"] = f"${options[2]['price']:.2f}"
 
         return True, df
@@ -645,15 +645,17 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         
         try:
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            target_model = None
-            preferred = ['models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest', 'models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest', 'models/gemini-pro']
             
-            for pref in preferred:
-                if pref in available_models:
-                    target_model = pref
-                    break
-                    
-            if not target_model and available_models:
+            # The 404 Prevention Rule: Dynamic Discovery
+            pro_models = sorted([m for m in available_models if 'pro' in m.lower()], reverse=True)
+            flash_models = sorted([m for m in available_models if 'flash' in m.lower()], reverse=True)
+            
+            target_model = None
+            if pro_models:
+                target_model = pro_models[0]
+            elif flash_models:
+                target_model = flash_models[0]
+            elif available_models:
                 target_model = available_models[0]
                 
             if not target_model:
@@ -908,15 +910,17 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         
         try:
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            target_model = None
-            preferred = ['models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest', 'models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest', 'models/gemini-pro']
             
-            for pref in preferred:
-                if pref in available_models:
-                    target_model = pref
-                    break
-                    
-            if not target_model and available_models:
+            # The 404 Prevention Rule: Dynamic Discovery
+            pro_models = sorted([m for m in available_models if 'pro' in m.lower()], reverse=True)
+            flash_models = sorted([m for m in available_models if 'flash' in m.lower()], reverse=True)
+            
+            target_model = None
+            if pro_models:
+                target_model = pro_models[0]
+            elif flash_models:
+                target_model = flash_models[0]
+            elif available_models:
                 target_model = available_models[0]
                 
             if not target_model:
@@ -1524,15 +1528,17 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
         
         try:
             available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            target_model = None
-            preferred = ['models/gemini-1.5-flash', 'models/gemini-1.5-flash-latest', 'models/gemini-1.5-pro', 'models/gemini-1.5-pro-latest', 'models/gemini-pro']
             
-            for pref in preferred:
-                if pref in available_models:
-                    target_model = pref
-                    break
-                    
-            if not target_model and available_models:
+            # The 404 Prevention Rule: Dynamic Discovery
+            pro_models = sorted([m for m in available_models if 'pro' in m.lower()], reverse=True)
+            flash_models = sorted([m for m in available_models if 'flash' in m.lower()], reverse=True)
+            
+            target_model = None
+            if pro_models:
+                target_model = pro_models[0]
+            elif flash_models:
+                target_model = flash_models[0]
+            elif available_models:
                 target_model = available_models[0]
                 
             if not target_model:
