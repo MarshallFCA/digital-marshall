@@ -8,6 +8,7 @@ import io
 import json
 import os
 import requests
+import extra_streamlit_components as stx
 from streamlit_oauth import OAuth2Component
 import toolbox
 
@@ -72,12 +73,30 @@ st.markdown("""
         padding-top: 10px;
         padding-bottom: 10px;
     }
+    
+    /* Custom spacing for the top-anchored chat form */
+    .chat-input-form {
+        margin-bottom: 30px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
-# --- GOOGLE SSO BOUNCER ---
+# --- PERSISTENT COOKIE MANAGER ---
+@st.cache_resource(experimental_allow_widgets=True)
+def get_cookie_manager():
+    return stx.CookieManager()
+
+cookie_manager = get_cookie_manager()
+
+# --- GOOGLE SSO BOUNCER (WITH 24H PERSISTENCE) ---
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
+
+# Background Cookie Intercept
+cached_session = cookie_manager.get(cookie="boof_fca_session")
+if cached_session and not st.session_state.logged_in:
+    st.session_state.logged_in = True
+    st.session_state.user_email = cached_session
 
 if not st.session_state.logged_in:
     st.markdown("<h1 class='main-header'>Blessed Oracle of Freight</h1>", unsafe_allow_html=True)
@@ -108,6 +127,8 @@ if not st.session_state.logged_in:
         user_email = user_info.get("email", "")
         
         if user_email.endswith("@freightcompaniesaustralia.com.au"):
+            # Set a 24-hour persistent cookie
+            cookie_manager.set("boof_fca_session", user_email, max_age=86400)
             st.session_state.logged_in = True
             st.session_state.user_email = user_email
             st.query_params.clear() 
@@ -119,7 +140,14 @@ if not st.session_state.logged_in:
 
 # --- THE TERMINAL INTERFACE ---
 st.markdown("<h1 class='main-header'>Blessed Oracle of Freight</h1>", unsafe_allow_html=True)
-st.success(f"Secure connection established: {st.session_state.user_email}")
+col_head1, col_head2 = st.columns([4, 1])
+with col_head1:
+    st.success(f"Secure connection established: {st.session_state.user_email}")
+with col_head2:
+    if st.button("🚪 Logout / Hard Refresh", use_container_width=True):
+        cookie_manager.delete("boof_fca_session")
+        st.session_state.logged_in = False
+        st.rerun()
 
 # --- AGGRESSIVE HEARTBEAT (Prevents Idle Timeouts via Streamlit Health Ping) ---
 components.html(
@@ -238,14 +266,16 @@ tab_terminal, tab_matrix = st.tabs(["💬 ORACLE TERMINAL", "📊 MATRIX DASHBOA
 with tab_terminal:
     st.markdown("<h3 class='sub-header'>FCA Diagnostic Chat</h3>", unsafe_allow_html=True)
     
-    chat_log = st.container()
+    # TOP-ANCHORED INPUT FORM
+    with st.form(key="chat_input_form", clear_on_submit=True):
+        col1, col2 = st.columns([6, 1])
+        with col1:
+            prompt = st.text_input("Transmit command to the Oracle...", placeholder="e.g., Sweep for late freight, audit this invoice...")
+        with col2:
+            st.markdown("<br>", unsafe_allow_html=True) # Vertical alignment padding
+            submit_prompt = st.form_submit_button("Send Command", use_container_width=True)
 
-    with chat_log:
-        for message in st.session_state.messages:
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-
-    if prompt := st.chat_input("Transmit command to the Oracle..."):
+    if submit_prompt and prompt:
         
         file_context = ""
         file_text = ""
@@ -258,290 +288,298 @@ with tab_terminal:
         
         full_user_query = prompt + file_context
 
+        # Append User Message Instantly
         st.session_state.messages.append({"role": "user", "content": prompt + (" *(Files Attached)*" if uploaded_files else "")})
-        save_memory() 
         
-        with chat_log:
-            with st.chat_message("user"):
-                st.markdown(prompt + (" *(Files Attached)*" if uploaded_files else ""))
+        # Display Spinner directly under the form while generating
+        with st.spinner("🚀 Oracle is processing telemetry and calculating response..."):
+            try:
+                search_text = prompt
+                if uploaded_files:
+                    search_text = f"{prompt} {file_text[:500]}" 
 
-            with st.chat_message("assistant"):
-                message_placeholder = st.empty()
+                embedded_question = client.embeddings.create(
+                    input=search_text, model="text-embedding-3-small"
+                ).data[0].embedding
                 
-                try:
-                    search_text = prompt
-                    if uploaded_files:
-                        search_text = f"{prompt} {file_text[:500]}" 
+                search_results = index.query(
+                    vector=embedded_question, 
+                    top_k=20, 
+                    include_metadata=True,
+                    filter={"authorized_users": {"$in": [st.session_state.user_email, "GLOBAL_FCA"]}}
+                )
+                
+                historical_context = ""
+                for i, match in enumerate(search_results['matches']):
+                    metadata = match['metadata']
+                    historical_context += f"\n--- Email {i+1} ---\n"
+                    historical_context += f"Context (Sent to Marshall): {metadata.get('context', '')}\n"
+                    historical_context += f"Marshall's Action: {metadata.get('marshall_response', '')}\n"
 
-                    embedded_question = client.embeddings.create(
-                        input=search_text, model="text-embedding-3-small"
-                    ).data[0].embedding
-                    
-                    search_results = index.query(
-                        vector=embedded_question, 
-                        top_k=20, 
-                        include_metadata=True,
-                        filter={"authorized_users": {"$in": [st.session_state.user_email, "GLOBAL_FCA"]}}
-                    )
-                    
-                    historical_context = ""
-                    for i, match in enumerate(search_results['matches']):
-                        metadata = match['metadata']
-                        historical_context += f"\n--- Email {i+1} ---\n"
-                        historical_context += f"Context (Sent to Marshall): {metadata.get('context', '')}\n"
-                        historical_context += f"Marshall's Action: {metadata.get('marshall_response', '')}\n"
+                system_prompt = f"""You are the Blessed Oracle of Freight, the AI incarnation of Marshall Hughes (Founder, Freight Companies Australia). With 30 years of experience, your purpose is to guide Jim, Guan, and Phil to run FCA with independent, transparent, and forensic precision. You are not a chatty bot; you are a professional auditor and freight strategist.
+                
+                USER CONTEXT: The active user executing commands is {st.session_state.user_email}.
 
-                    system_prompt = f"""You are the Blessed Oracle of Freight, the AI incarnation of Marshall Hughes (Founder, Freight Companies Australia). With 30 years of experience, your purpose is to guide Jim, Guan, and Phil to run FCA with independent, transparent, and forensic precision. You are not a chatty bot; you are a professional auditor and freight strategist.
-                    
-                    USER CONTEXT: The active user executing commands is {st.session_state.user_email}.
+                NEW SYSTEM CAPABILITIES:
+                You have live API access to Machship, Transvirtual, Xero, the Company Google Drive, and Carton Cloud (WMS). Use Carton Cloud to check warehouse order statuses and dispatch details. 
+                CRITICAL OVERRIDE: You CAN read external documents and spreadsheets. NEVER say "I cannot access external documents". If asked about a file that is NOT currently attached to the chat, you MUST use the `search_and_read_google_drive` tool to fetch it. If the user explicitly attached files, DO NOT search Google Drive. Use the tools `hybrid_gemini_sheet_generator` or `tool_8_carrier_invoice_auditor` natively. Do NOT output raw JSON tool schemas in your chat responses. Execute the tool natively.
+                
+                OPERATIONAL MANUAL:
+                1. FCA BUSINESS MODEL (CRITICAL): Freight Companies Australia (FCA) is a freight management brokerage. Any carrier invoices uploaded (e.g., from Tranzworks, FedEx, Northline) will always bill FCA. Your job is NEVER to conclude that FCA is the client. Your job is to audit the invoice and identify which of FCA's actual clients (e.g., Henselite, ASGA, BOA, AC Solar) incurred the charge based on the "Reference", "Caller", "Job Details", or pickup/delivery locations, so FCA can on-charge them.
+                2. The GSOT (Gmail Source of Truth) Protocol: The historical emails provided below act as your absolute source of truth. They override all other assumptions.
+                3. The "Handshake" Rule: Any carrier commitment found in these emails overrides standard carrier terms.
+                4. Conflict Resolution: If external data conflicts with the GSOT, the GSOT wins. Flag as "Overcharge Alert".
+                5. BOA Protocol: BOA has no TMS data. Use historical quotes. If no record exists, apply a 17% GP rule.
+                6. The "Big 5" Client Rules:
+                   * BOA: No Machship. Use historical quotes. Apply 17% GP rule.
+                   * CALM: Scenario A (Freight/Benchmarking) = Client. Scenario B (Warehousing/Pick-Pack) = Supplier. Do not confuse.
+                   * AC Solar: Watch for overlength (>2.4m). If no forklift, tailgate is mandatory.
+                   * ACRRM: Medical freight. Tier 1 tracking (FedEx/TGE) only.
+                   * Regroup: Industrial pallets. Focus on linehaul efficiency and pre-calls.
+                7. Carrier Selection & "The Shield":
+                   * Heavy/Pallets: Northline, Hi-Trans, Direct Freight.
+                   * Satchels/Parcels: FedEx (TNT), Team Global Express (TGE).
+                   * The Shield: Always query Tailgate, Manual Handling, and Residential surcharges without a quote flag.
+                8. Operational Logic & Tone:
+                   * Tone: Independent, professional, firm, transparent. Act as the Star Trek TNG Computer. No chatter.
+                   * Output Format: Top of Response: "Forensic Action Plan" or "Recommendation". Body: Analysis, reasoning, and GSOT verification.
+                   * The 17% Rule: Always apply a 17% GP target to the verified carrier cost.
+                   * Prohibition on Hallucination: Never guess. Do not invent data. If you cannot solve a problem, advise the user that you cannot solve the problem.
+                   * Linguistics: Utilise Australian/British English exclusively. Do not use the em dash.
+                9. THE HUNT PROTOCOL: If a user asks for the status of a reference number (e.g., FCU000071), you must autonomously search Machship, Transvirtual, and Carton Cloud. If the first tool returns no result, DO NOT stop. Execute the next tool. Only report failure if all three databases come up empty.
+                10. HYBRID GEMINI PROTOCOL: If the user asks you to analyze a general dataset, cross-reference multiple files, or create a spreadsheet from uploaded CSV/Excel files, execute the `hybrid_gemini_sheet_generator` tool. (CRITICAL FIREWALL: NEVER use Tool 7 if the user mentions 'invoice', 'audit', or 'variances'. Tool 7 cannot ping Machship for pricing.)
+                11. TRANSPARENCY PROTOCOL: If any tool returns an error message or crash report (e.g., "HYBRID GEMINI CRASH:" or "Tool Execution Crash:"), you MUST NOT hide it. You must explicitly output the exact error message to the user in your response so they can diagnose the anomaly.
+                12. INVOICE RECONCILIATION PROTOCOL: If the user uploads a carrier invoice or asks to "audit", "reconcile", or check "variances", you MUST EXCLUSIVELY execute `tool_8_carrier_invoice_auditor`. Do not route invoice requests to Tool 7. Pass the full extracted text into Tool 8 and use '{st.session_state.user_email}' for the notification_email parameter.
+                13. THE LITERAL SEARCH FIREWALL (CRITICAL): Never pass adjectives, statuses, or general terms (e.g., 'manifested', 'delayed', 'late', 'missing') into the tracking number search tools (`search_machship_connote`, `search_transvirtual_connote`, `search_cartoncloud_order`). These tools ONLY accept specific alphanumeric reference numbers (e.g., 'MS123456'). If the user asks a general question like 'Is there any freight currently manifested?', 'sweep for missed pickups', 'late freight', or 'delayed freight', you MUST exclusively use `tool_10_freight_alert_automator`.
 
-                    NEW SYSTEM CAPABILITIES:
-                    You have live API access to Machship, Transvirtual, Xero, the Company Google Drive, and Carton Cloud (WMS). Use Carton Cloud to check warehouse order statuses and dispatch details. 
-                    CRITICAL OVERRIDE: You CAN read external documents and spreadsheets. NEVER say "I cannot access external documents". If asked about a file that is NOT currently attached to the chat, you MUST use the `search_and_read_google_drive` tool to fetch it. If the user explicitly attached files, DO NOT search Google Drive. Use the tools `hybrid_gemini_sheet_generator` or `tool_8_carrier_invoice_auditor` natively. Do NOT output raw JSON tool schemas in your chat responses. Execute the tool natively.
-                    
-                    OPERATIONAL MANUAL:
-                    1. FCA BUSINESS MODEL (CRITICAL): Freight Companies Australia (FCA) is a freight management brokerage. Any carrier invoices uploaded (e.g., from Tranzworks, FedEx, Northline) will always bill FCA. Your job is NEVER to conclude that FCA is the client. Your job is to audit the invoice and identify which of FCA's actual clients (e.g., Henselite, ASGA, BOA, AC Solar) incurred the charge based on the "Reference", "Caller", "Job Details", or pickup/delivery locations, so FCA can on-charge them.
-                    2. The GSOT (Gmail Source of Truth) Protocol: The historical emails provided below act as your absolute source of truth. They override all other assumptions.
-                    3. The "Handshake" Rule: Any carrier commitment found in these emails overrides standard carrier terms.
-                    4. Conflict Resolution: If external data conflicts with the GSOT, the GSOT wins. Flag as "Overcharge Alert".
-                    5. BOA Protocol: BOA has no TMS data. Use historical quotes. If no record exists, apply a 17% GP rule.
-                    6. The "Big 5" Client Rules:
-                       * BOA: No Machship. Use historical quotes. Apply 17% GP rule.
-                       * CALM: Scenario A (Freight/Benchmarking) = Client. Scenario B (Warehousing/Pick-Pack) = Supplier. Do not confuse.
-                       * AC Solar: Watch for overlength (>2.4m). If no forklift, tailgate is mandatory.
-                       * ACRRM: Medical freight. Tier 1 tracking (FedEx/TGE) only.
-                       * Regroup: Industrial pallets. Focus on linehaul efficiency and pre-calls.
-                    7. Carrier Selection & "The Shield":
-                       * Heavy/Pallets: Northline, Hi-Trans, Direct Freight.
-                       * Satchels/Parcels: FedEx (TNT), Team Global Express (TGE).
-                       * The Shield: Always query Tailgate, Manual Handling, and Residential surcharges without a quote flag.
-                    8. Operational Logic & Tone:
-                       * Tone: Independent, professional, firm, transparent. Act as the Star Trek TNG Computer. No chatter.
-                       * Output Format: Top of Response: "Forensic Action Plan" or "Recommendation". Body: Analysis, reasoning, and GSOT verification.
-                       * The 17% Rule: Always apply a 17% GP target to the verified carrier cost.
-                       * Prohibition on Hallucination: Never guess. Do not invent data. If you cannot solve a problem, advise the user that you cannot solve the problem.
-                       * Linguistics: Utilise Australian/British English exclusively. Do not use the em dash.
-                    9. THE HUNT PROTOCOL: If a user asks for the status of a reference number (e.g., FCU000071), you must autonomously search Machship, Transvirtual, and Carton Cloud. If the first tool returns no result, DO NOT stop. Execute the next tool. Only report failure if all three databases come up empty.
-                    10. HYBRID GEMINI PROTOCOL: If the user asks you to analyze a general dataset, cross-reference multiple files, or create a spreadsheet from uploaded CSV/Excel files, execute the `hybrid_gemini_sheet_generator` tool. (CRITICAL FIREWALL: NEVER use Tool 7 if the user mentions 'invoice', 'audit', or 'variances'. Tool 7 cannot ping Machship for pricing.)
-                    11. TRANSPARENCY PROTOCOL: If any tool returns an error message or crash report (e.g., "HYBRID GEMINI CRASH:" or "Tool Execution Crash:"), you MUST NOT hide it. You must explicitly output the exact error message to the user in your response so they can diagnose the anomaly.
-                    12. INVOICE RECONCILIATION PROTOCOL: If the user uploads a carrier invoice or asks to "audit", "reconcile", or check "variances", you MUST EXCLUSIVELY execute `tool_8_carrier_invoice_auditor`. Do not route invoice requests to Tool 7. Pass the full extracted text into Tool 8 and use '{st.session_state.user_email}' for the notification_email parameter.
-                    13. THE LITERAL SEARCH FIREWALL (CRITICAL): Never pass adjectives, statuses, or general terms (e.g., 'manifested', 'delayed', 'late', 'missing') into the tracking number search tools (`search_machship_connote`, `search_transvirtual_connote`, `search_cartoncloud_order`). These tools ONLY accept specific alphanumeric reference numbers (e.g., 'MS123456'). If the user asks a general question like 'Is there any freight currently manifested?', 'sweep for missed pickups', 'late freight', or 'delayed freight', you MUST exclusively use `tool_10_freight_alert_automator`.
+                CRITICAL RAG INSTRUCTIONS:
+                1. "Context (Sent to Marshall)" is the email sent TO Marshall.
+                2. "Marshall's Action" is what Marshall wrote back.
+                3. When asked "Who" holds a role, identify the specific name from email signatures. Do not answer with a temporary status.
+                4. If a document is attached in the prompt, analyse its text against the GSOT to deduce the client, carrier, or objective.
+                5. INVOICE PARSING: Rigorously scan the document's tabular data for "Reference", "Ref", "Caller", or "Job Details" to identify the true client.
+                
+                HISTORICAL EMAILS (GSOT):
+                {historical_context}"""
 
-                    CRITICAL RAG INSTRUCTIONS:
-                    1. "Context (Sent to Marshall)" is the email sent TO Marshall.
-                    2. "Marshall's Action" is what Marshall wrote back.
-                    3. When asked "Who" holds a role, identify the specific name from email signatures. Do not answer with a temporary status.
-                    4. If a document is attached in the prompt, analyse its text against the GSOT to deduce the client, carrier, or objective.
-                    5. INVOICE PARSING: Rigorously scan the document's tabular data for "Reference", "Ref", "Caller", or "Job Details" to identify the true client.
-                    
-                    HISTORICAL EMAILS (GSOT):
-                    {historical_context}"""
-
-                    tools = [
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": "search_xero_contact",
-                                "description": "Searches Xero for a contact by name (uses a fallback primary keyword search if an exact match fails) and returns up to 3 possible matches along with their outstanding invoice summary.",
-                                "parameters": {
-                                    "type": "object",
-                                    "properties": {
-                                        "contact_name": {
-                                            "type": "string",
-                                            "description": "The name of the company or person to search for in Xero."
-                                        }
-                                    },
-                                    "required": ["contact_name"]
-                                }
+                tools = [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "search_xero_contact",
+                            "description": "Searches Xero for a contact by name (uses a fallback primary keyword search if an exact match fails) and returns up to 3 possible matches along with their outstanding invoice summary.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "contact_name": {
+                                        "type": "string",
+                                        "description": "The name of the company or person to search for in Xero."
+                                    }
+                                },
+                                "required": ["contact_name"]
                             }
-                        },
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": "search_machship_connote",
-                                "description": "Use this tool FIRST when searching for the status of a specific freight consignment, tracking number, or alphanumeric reference (e.g., FCU000071, MS12345). Returns booking, routing, and pricing details. DO NOT pass general statuses here.",
-                                "parameters": {
-                                    "type": "object",
-                                    "properties": {
-                                        "connote_number": {
-                                            "type": "string",
-                                            "description": "The Machship consignment number (e.g., MS123456) or specific alphanumeric reference."
-                                        }
-                                    },
-                                    "required": ["connote_number"]
-                                }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "search_machship_connote",
+                            "description": "Use this tool FIRST when searching for the status of a specific freight consignment, tracking number, or alphanumeric reference (e.g., FCU000071, MS12345). Returns booking, routing, and pricing details. DO NOT pass general statuses here.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "connote_number": {
+                                        "type": "string",
+                                        "description": "The Machship consignment number (e.g., MS123456) or specific alphanumeric reference."
+                                    }
+                                },
+                                "required": ["connote_number"]
                             }
-                        },
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": "search_transvirtual_connote",
-                                "description": "Searches Transvirtual for a specific consignment note and returns the booking data and live tracking scans. DO NOT pass general statuses here.",
-                                "parameters": {
-                                    "type": "object",
-                                    "properties": {
-                                        "connote_number": {
-                                            "type": "string",
-                                            "description": "The Transvirtual consignment number."
-                                        }
-                                    },
-                                    "required": ["connote_number"]
-                                }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "search_transvirtual_connote",
+                            "description": "Searches Transvirtual for a specific consignment note and returns the booking data and live tracking scans. DO NOT pass general statuses here.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "connote_number": {
+                                        "type": "string",
+                                        "description": "The Transvirtual consignment number."
+                                    }
+                                },
+                                "required": ["connote_number"]
                             }
-                        },
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": "search_and_read_google_drive",
-                                "description": "Searches the company Google Drive and reads the contents of spreadsheets, PDFs, and documents. Use this whenever the user asks about a specific file, spreadsheet, or SOP.",
-                                "parameters": {
-                                    "type": "object",
-                                    "properties": {
-                                        "search_query": {
-                                            "type": "string",
-                                            "description": "The name of the file to search for (e.g., 'Rhino Freight Spreadsheet')."
-                                        }
-                                    },
-                                    "required": ["search_query"]
-                                }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "search_and_read_google_drive",
+                            "description": "Searches the company Google Drive and reads the contents of spreadsheets, PDFs, and documents. Use this whenever the user asks about a specific file, spreadsheet, or SOP.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "search_query": {
+                                        "type": "string",
+                                        "description": "The name of the file to search for (e.g., 'Rhino Freight Spreadsheet')."
+                                    }
+                                },
+                                "required": ["search_query"]
                             }
-                        },
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": "search_cartoncloud_order",
-                                "description": "Searches the Carton Cloud Warehouse Management System (WMS) for a specific outbound order status and contents. DO NOT pass general statuses here.",
-                                "parameters": {
-                                    "type": "object",
-                                    "properties": {
-                                        "reference_number": {
-                                            "type": "string",
-                                            "description": "The specific customer reference number or sale order number (e.g., 'REF-123')."
-                                        }
-                                    },
-                                    "required": ["reference_number"]
-                                }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "search_cartoncloud_order",
+                            "description": "Searches the Carton Cloud Warehouse Management System (WMS) for a specific outbound order status and contents. DO NOT pass general statuses here.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "reference_number": {
+                                        "type": "string",
+                                        "description": "The specific customer reference number or sale order number (e.g., 'REF-123')."
+                                    }
+                                },
+                                "required": ["reference_number"]
                             }
-                        },
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": "hybrid_gemini_sheet_generator",
-                                "description": "Uses Gemini natively to analyze general datasets (CSV/Excel) and process logic instructions. CRITICAL WARNING: DO NOT use this tool for carrier invoices, variance reports, or auditing bills. Use Tool 8 instead for any invoice-related requests.",
-                                "parameters": {
-                                    "type": "object",
-                                    "properties": {
-                                        "instructions": {
-                                            "type": "string",
-                                            "description": "Specific instructions on what data to extract, analyze, cross-reference, or format from the uploaded file(s)."
-                                        },
-                                        "target_sheet_name": {
-                                            "type": "string",
-                                            "description": "The title for the newly generated Google Sheet."
-                                        }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "hybrid_gemini_sheet_generator",
+                            "description": "Uses Gemini natively to analyze general datasets (CSV/Excel) and process logic instructions. CRITICAL WARNING: DO NOT use this tool for carrier invoices, variance reports, or auditing bills. Use Tool 8 instead for any invoice-related requests.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "instructions": {
+                                        "type": "string",
+                                        "description": "Specific instructions on what data to extract, analyze, cross-reference, or format from the uploaded file(s)."
                                     },
-                                    "required": ["instructions", "target_sheet_name"]
-                                }
+                                    "target_sheet_name": {
+                                        "type": "string",
+                                        "description": "The title for the newly generated Google Sheet."
+                                    }
+                                },
+                                "required": ["instructions", "target_sheet_name"]
                             }
-                        },
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": "tool_8_carrier_invoice_auditor",
-                                "description": "Audits a raw carrier invoice text by extracting connotes, pinging Machship for quoted costs and markups, calculating the variance, and generating a reconciliation report in Google Sheets. EXCLUSIVELY USE THIS TOOL anytime the user mentions 'invoice', 'audit', or 'reconcile'.",
-                                "parameters": {
-                                    "type": "object",
-                                    "properties": {
-                                        "raw_invoice_text": {
-                                            "type": "string",
-                                            "description": "The full raw text extracted from the uploaded carrier invoice."
-                                        },
-                                        "notification_email": {
-                                            "type": "string",
-                                            "description": "The user's email address to share the resulting Google Sheet with."
-                                        }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "tool_8_carrier_invoice_auditor",
+                            "description": "Audits a raw carrier invoice text by extracting connotes, pinging Machship for quoted costs and markups, calculating the variance, and generating a reconciliation report in Google Sheets. EXCLUSIVELY USE THIS TOOL anytime the user mentions 'invoice', 'audit', or 'reconcile'.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "raw_invoice_text": {
+                                        "type": "string",
+                                        "description": "The full raw text extracted from the uploaded carrier invoice."
                                     },
-                                    "required": ["raw_invoice_text", "notification_email"]
-                                }
+                                    "notification_email": {
+                                        "type": "string",
+                                        "description": "The user's email address to share the resulting Google Sheet with."
+                                    }
+                                },
+                                "required": ["raw_invoice_text", "notification_email"]
                             }
-                        },
-                        {
-                            "type": "function",
-                            "function": {
-                                "name": "tool_10_freight_alert_automator",
-                                "description": "Executes a master sweep across Machship to identify any delayed freight, missed pickups, or explicit carrier errors. Deduces the proper carrier routing via LLM, and creates actionable draft tickets in HubSpot. Use this exclusively when the user asks to sweep for manifested freight, delayed freight, missed pickups, or general anomalies.",
-                                "parameters": {
-                                    "type": "object",
-                                    "properties": {
-                                        "dry_run": {
-                                            "type": "boolean",
-                                            "description": "If true, simulates the sweep without actually creating HubSpot tickets. Default is false."
-                                        }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "tool_10_freight_alert_automator",
+                            "description": "Executes a master sweep across Machship to identify any delayed freight, missed pickups, or explicit carrier errors. Deduces the proper carrier routing via LLM, and creates actionable draft tickets in HubSpot. Use this exclusively when the user asks to sweep for manifested freight, delayed freight, missed pickups, or general anomalies.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "dry_run": {
+                                        "type": "boolean",
+                                        "description": "If true, simulates the sweep without actually creating HubSpot tickets. Default is false."
                                     }
                                 }
                             }
                         }
-                    ]
+                    }
+                ]
+                
+                api_messages = [{"role": "system", "content": system_prompt}]
+
+                # To maintain context without breaking token limits, grab the last 15 messages.
+                # Note: our session state is chronological, even though rendering is reversed.
+                for msg in st.session_state.messages[-15:-1]:
+                    api_messages.append({"role": msg["role"], "content": msg["content"]})
+
+                api_messages.append({"role": "user", "content": full_user_query})
+
+                response = client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=api_messages,
+                    temperature=0.3,
+                    tools=tools,
+                    tool_choice="auto"
+                )
+                
+                response_message = response.choices[0].message
+
+                if response_message.tool_calls:
+                    api_messages.append(response_message)
                     
-                    api_messages = [{"role": "system", "content": system_prompt}]
+                    for tool_call in response_message.tool_calls:
+                        function_name = tool_call.function.name
+                        function_args = json.loads(tool_call.function.arguments)
+                        
+                        try:
+                            target_function = getattr(toolbox, function_name)
+                            function_response = target_function(**function_args)
+                        except AttributeError:
+                            function_response = f"Tool Execution Crash: Module '{function_name}' is not registered in the toolbox."
+                        except Exception as e:
+                            function_response = f"Tool Execution Crash: {str(e)}"
+                        
+                        api_messages.append({
+                            "tool_call_id": tool_call.id,
+                            "role": "tool",
+                            "name": function_name,
+                            "content": str(function_response),
+                        })
 
-                    for msg in st.session_state.messages[-15:-1]:
-                        api_messages.append({"role": msg["role"], "content": msg["content"]})
+                        if "CRASH" in str(function_response) or "Error:" in str(function_response) or "🚨" in str(function_response):
+                            st.error(f"🚨 **X-RAY DIAGNOSTIC (RAW TOOL OUTPUT):**\n\n{function_response}")
 
-                    api_messages.append({"role": "user", "content": full_user_query})
-
-                    response = client.chat.completions.create(
+                    second_response = client.chat.completions.create(
                         model="gpt-4o-mini",
                         messages=api_messages,
-                        temperature=0.3,
-                        tools=tools,
-                        tool_choice="auto"
+                        temperature=0.3
                     )
-                    
-                    response_message = response.choices[0].message
+                    full_response = second_response.choices[0].message.content
+                else:
+                    full_response = response_message.content
 
-                    if response_message.tool_calls:
-                        message_placeholder.markdown("*(Oracle is polling telemetry data...)*")
-                        
-                        api_messages.append(response_message)
-                        
-                        for tool_call in response_message.tool_calls:
-                            function_name = tool_call.function.name
-                            function_args = json.loads(tool_call.function.arguments)
-                            
-                            try:
-                                target_function = getattr(toolbox, function_name)
-                                function_response = target_function(**function_args)
-                            except AttributeError:
-                                function_response = f"Tool Execution Crash: Module '{function_name}' is not registered in the toolbox."
-                            except Exception as e:
-                                function_response = f"Tool Execution Crash: {str(e)}"
-                            
-                            api_messages.append({
-                                "tool_call_id": tool_call.id,
-                                "role": "tool",
-                                "name": function_name,
-                                "content": str(function_response),
-                            })
+                st.session_state.messages.append({"role": "assistant", "content": full_response})
+                save_memory() 
+                st.rerun() # Forces immediate visual update of the reverse-rendered log below
+                
+            except Exception as e:
+                st.error(f"🚨 SYSTEM ANOMALY: {str(e)}")
 
-                            if "CRASH" in str(function_response) or "Error:" in str(function_response) or "🚨" in str(function_response):
-                                st.error(f"🚨 **X-RAY DIAGNOSTIC (RAW TOOL OUTPUT):**\n\n{function_response}")
-
-                        second_response = client.chat.completions.create(
-                            model="gpt-4o-mini",
-                            messages=api_messages,
-                            temperature=0.3
-                        )
-                        full_response = second_response.choices[0].message.content
-                    else:
-                        full_response = response_message.content
-
-                    message_placeholder.markdown(full_response)
-                    st.session_state.messages.append({"role": "assistant", "content": full_response})
-                    save_memory() 
-                    
-                except Exception as e:
-                    message_placeholder.error(f"🚨 SYSTEM ANOMALY: {str(e)}")
+    # ==========================================
+    # REVERSE CHRONOLOGICAL CHAT LOG 
+    # (Newest responses appear strictly at the top)
+    # ==========================================
+    st.divider()
+    st.markdown("<h4 style='color: #0b3d91;'>Communication Log</h4>", unsafe_allow_html=True)
+    
+    chat_log = st.container()
+    with chat_log:
+        for message in reversed(st.session_state.messages):
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
 
 # ==========================================
 # CONSOLE 2: MATRIX DASHBOARD (BULK QUOTING)
