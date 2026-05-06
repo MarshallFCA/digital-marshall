@@ -82,11 +82,8 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- PERSISTENT COOKIE MANAGER ---
-@st.cache_resource
-def get_cookie_manager():
-    return stx.CookieManager()
-
-cookie_manager = get_cookie_manager()
+# Fix: Removed @st.cache_resource to comply with strict Streamlit widget policies
+cookie_manager = stx.CookieManager(key="boof_cookie_manager")
 
 # --- GOOGLE SSO BOUNCER (WITH 24H PERSISTENCE) ---
 if "logged_in" not in st.session_state:
