@@ -2,7 +2,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 from openai import OpenAI
 from pinecone import Pinecone
-import PyPDF2
+import pypdf
 import pandas as pd
 import io
 import json
@@ -178,7 +178,7 @@ def extract_text_from_file(uploaded_file):
     text = ""
     try:
         if uploaded_file.name.endswith('.pdf'):
-            reader = PyPDF2.PdfReader(uploaded_file)
+            reader = pypdf.PdfReader(uploaded_file)
             for page in reader.pages:
                 extracted = page.extract_text()
                 if extracted:
@@ -427,7 +427,7 @@ with tab_terminal:
                             "type": "function",
                             "function": {
                                 "name": "hybrid_gemini_sheet_generator",
-                                "description": "Uses Gemini 1.5 Pro to analyze general datasets (CSV/Excel) and process logic instructions. CRITICAL WARNING: DO NOT use this tool for carrier invoices, variance reports, or auditing bills. Use Tool 8 instead for any invoice-related requests.",
+                                "description": "Uses Gemini natively to analyze general datasets (CSV/Excel) and process logic instructions. CRITICAL WARNING: DO NOT use this tool for carrier invoices, variance reports, or auditing bills. Use Tool 8 instead for any invoice-related requests.",
                                 "parameters": {
                                     "type": "object",
                                     "properties": {
@@ -595,6 +595,3 @@ with tab_matrix:
         )
     else:
         st.markdown("*(Matrix projection grid will appear here once executed)*")
-
-
-
