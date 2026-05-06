@@ -268,7 +268,7 @@ with tab_terminal:
     with st.form(key="chat_input_form", clear_on_submit=True):
         col1, col2 = st.columns([6, 1])
         with col1:
-            prompt = st.text_input("Transmit command to the Oracle...", placeholder="e.g., Sweep for late freight, audit this invoice...")
+            prompt = st.text_input("Transmit command to the Oracle...", placeholder="e.g., Sweep for late freight, create an SOP for...")
         with col2:
             st.markdown("<br>", unsafe_allow_html=True) # Vertical alignment padding
             submit_prompt = st.form_submit_button("Send Command", use_container_width=True)
@@ -320,7 +320,7 @@ with tab_terminal:
 
                 NEW SYSTEM CAPABILITIES:
                 You have live API access to Machship, Transvirtual, Xero, the Company Google Drive, and Carton Cloud (WMS). Use Carton Cloud to check warehouse order statuses and dispatch details. 
-                CRITICAL OVERRIDE: You CAN read external documents and spreadsheets. NEVER say "I cannot access external documents". If asked about a file that is NOT currently attached to the chat, you MUST use the `search_and_read_google_drive` tool to fetch it. If the user explicitly attached files, DO NOT search Google Drive. Use the tools `hybrid_gemini_sheet_generator` or `tool_8_carrier_invoice_auditor` natively. Do NOT output raw JSON tool schemas in your chat responses. Execute the tool natively.
+                CRITICAL OVERRIDE: You CAN read external documents and spreadsheets. NEVER say "I cannot access external documents". If asked about a file that is NOT currently attached to the chat, you MUST use the `search_and_read_google_drive` tool to fetch it. If the user explicitly attached files, DO NOT search Google Drive. Use the tools natively. Do NOT output raw JSON tool schemas in your chat responses.
                 
                 OPERATIONAL MANUAL:
                 1. FCA BUSINESS MODEL (CRITICAL): Freight Companies Australia (FCA) is a freight management brokerage. Any carrier invoices uploaded (e.g., from Tranzworks, FedEx, Northline) will always bill FCA. Your job is NEVER to conclude that FCA is the client. Your job is to audit the invoice and identify which of FCA's actual clients (e.g., Henselite, ASGA, BOA, AC Solar) incurred the charge based on the "Reference", "Caller", "Job Details", or pickup/delivery locations, so FCA can on-charge them.
@@ -345,10 +345,11 @@ with tab_terminal:
                    * Prohibition on Hallucination: Never guess. Do not invent data. If you cannot solve a problem, advise the user that you cannot solve the problem.
                    * Linguistics: Utilise Australian/British English exclusively. Do not use the em dash.
                 9. THE HUNT PROTOCOL: If a user asks for the status of a reference number (e.g., FCU000071), you must autonomously search Machship, Transvirtual, and Carton Cloud. If the first tool returns no result, DO NOT stop. Execute the next tool. Only report failure if all three databases come up empty.
-                10. HYBRID GEMINI PROTOCOL: If the user asks you to analyze a general dataset, cross-reference multiple files, or create a spreadsheet from uploaded CSV/Excel files, execute the `hybrid_gemini_sheet_generator` tool. (CRITICAL FIREWALL: NEVER use Tool 7 if the user mentions 'invoice', 'audit', or 'variances'. Tool 7 cannot ping Machship for pricing.)
-                11. TRANSPARENCY PROTOCOL: If any tool returns an error message or crash report (e.g., "HYBRID GEMINI CRASH:" or "Tool Execution Crash:"), you MUST NOT hide it. You must explicitly output the exact error message to the user in your response so they can diagnose the anomaly.
-                12. INVOICE RECONCILIATION PROTOCOL: If the user uploads a carrier invoice or asks to "audit", "reconcile", or check "variances", you MUST EXCLUSIVELY execute `tool_8_carrier_invoice_auditor`. Do not route invoice requests to Tool 7. Pass the full extracted text into Tool 8 and use '{st.session_state.user_email}' for the notification_email parameter.
-                13. THE LITERAL SEARCH FIREWALL (CRITICAL): Never pass adjectives, statuses, or general terms (e.g., 'manifested', 'delayed', 'late', 'missing') into the tracking number search tools (`search_machship_connote`, `search_transvirtual_connote`, `search_cartoncloud_order`). These tools ONLY accept specific alphanumeric reference numbers (e.g., 'MS123456'). If the user asks a general question like 'Is there any freight currently manifested?', 'sweep for missed pickups', 'late freight', or 'delayed freight', you MUST exclusively use `tool_10_freight_alert_automator`.
+                10. HYBRID GEMINI PROTOCOL (SHEETS ONLY): If the user asks you to analyze a general dataset, cross-reference multiple files, or create a spreadsheet from uploaded CSV/Excel files, execute the `hybrid_gemini_sheet_generator` tool. (CRITICAL FIREWALL: NEVER use Tool 7 if the user mentions 'invoice', 'audit', or 'variances'. Tool 7 cannot ping Machship for pricing.)
+                11. DOCUMENT CREATION PROTOCOL (DOCS ONLY): If the user asks you to write, draft, or export a text document, SOP, letter, or report, you MUST use `tool_15_workspace_document_creator`. Do NOT use the spreadsheet generator for text documents. 
+                12. TRANSPARENCY PROTOCOL: If any tool returns an error message or crash report, you MUST NOT hide it. You must explicitly output the exact error message to the user in your response so they can diagnose the anomaly.
+                13. INVOICE RECONCILIATION PROTOCOL: If the user uploads a carrier invoice or asks to "audit", "reconcile", or check "variances", you MUST EXCLUSIVELY execute `tool_8_carrier_invoice_auditor`. Do not route invoice requests to Tool 7. Pass the full extracted text into Tool 8 and use '{st.session_state.user_email}' for the notification_email parameter.
+                14. THE LITERAL SEARCH FIREWALL (CRITICAL): Never pass adjectives, statuses, or general terms (e.g., 'manifested', 'delayed', 'late', 'missing') into the tracking number search tools (`search_machship_connote`, `search_transvirtual_connote`, `search_cartoncloud_order`). These tools ONLY accept specific alphanumeric reference numbers (e.g., 'MS123456'). If the user asks a general question like 'Is there any freight currently manifested?', 'sweep for missed pickups', 'late freight', or 'delayed freight', you MUST exclusively use `tool_10_freight_alert_automator`.
 
                 CRITICAL RAG INSTRUCTIONS:
                 1. "Context (Sent to Marshall)" is the email sent TO Marshall.
@@ -450,7 +451,7 @@ with tab_terminal:
                         "type": "function",
                         "function": {
                             "name": "hybrid_gemini_sheet_generator",
-                            "description": "Uses Gemini natively to analyze general datasets (CSV/Excel) and process logic instructions. CRITICAL WARNING: DO NOT use this tool for carrier invoices, variance reports, or auditing bills. Use Tool 8 instead for any invoice-related requests.",
+                            "description": "Uses Gemini natively to analyze general datasets (CSV/Excel) and process logic instructions into a Google Sheet. CRITICAL WARNING: DO NOT use this tool for carrier invoices, variance reports, or auditing bills. DO NOT use this tool to create text documents or SOPs.",
                             "parameters": {
                                 "type": "object",
                                 "properties": {
@@ -464,6 +465,27 @@ with tab_terminal:
                                     }
                                 },
                                 "required": ["instructions", "target_sheet_name"]
+                            }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "tool_15_workspace_document_creator",
+                            "description": "Creates a native Google Document in the shared drive and writes text content to it. Use this tool EXCLUSIVELY when the user asks you to draft, write, or export an SOP, report, email draft, or plain-text file.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "document_title": {
+                                        "type": "string",
+                                        "description": "The title of the new Google Doc (e.g., 'FCA SOP - Florentines')."
+                                    },
+                                    "document_body": {
+                                        "type": "string",
+                                        "description": "The full, comprehensive text content to write into the document."
+                                    }
+                                },
+                                "required": ["document_title", "document_body"]
                             }
                         }
                     },
@@ -508,6 +530,7 @@ with tab_terminal:
                 
                 api_messages = [{"role": "system", "content": system_prompt}]
 
+                # To maintain context without breaking token limits, grab the last 15 messages.
                 for msg in st.session_state.messages[-15:-1]:
                     api_messages.append({"role": msg["role"], "content": msg["content"]})
 
@@ -531,6 +554,10 @@ with tab_terminal:
                         function_args = json.loads(tool_call.function.arguments)
                         
                         try:
+                            # Pass the user email into tool_15 explicitly without trusting the AI to grab it
+                            if function_name == "tool_15_workspace_document_creator":
+                                function_args["notification_email"] = st.session_state.user_email
+                                
                             target_function = getattr(toolbox, function_name)
                             function_response = target_function(**function_args)
                         except AttributeError:
