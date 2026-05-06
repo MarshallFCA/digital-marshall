@@ -278,7 +278,10 @@ with tab_terminal:
                     ).data[0].embedding
                     
                     search_results = index.query(
-                        vector=embedded_question, top_k=20, include_metadata=True
+                        vector=embedded_question, 
+                        top_k=20, 
+                        include_metadata=True,
+                        filter={"authorized_users": {"$in": [st.session_state.user_email, "GLOBAL_FCA"]}}
                     )
                     
                     historical_context = ""
@@ -321,7 +324,8 @@ with tab_terminal:
                     9. THE HUNT PROTOCOL: If a user asks for the status of a reference number (e.g., FCU000071), you must autonomously search Machship, Transvirtual, and Carton Cloud. If the first tool returns no result, DO NOT stop. Execute the next tool. Only report failure if all three databases come up empty.
                     10. HYBRID GEMINI PROTOCOL: If the user asks you to analyze a general dataset, cross-reference multiple files, or create a spreadsheet from uploaded CSV/Excel files, execute the `hybrid_gemini_sheet_generator` tool. (CRITICAL FIREWALL: NEVER use Tool 7 if the user mentions 'invoice', 'audit', or 'variances'. Tool 7 cannot ping Machship for pricing.)
                     11. TRANSPARENCY PROTOCOL: If any tool returns an error message or crash report (e.g., "HYBRID GEMINI CRASH:" or "Tool Execution Crash:"), you MUST NOT hide it. You must explicitly output the exact error message to the user in your response so they can diagnose the anomaly.
-                    12. INVOICE RECONCILIATION PROTOCOL (CRITICAL OVERRIDE): If the user uploads a carrier invoice or asks to "audit", "reconcile", or check "variances", you MUST EXCLUSIVELY execute `tool_8_carrier_invoice_auditor`. Do not route invoice requests to Tool 7. Pass the full extracted text into Tool 8 and use '{st.session_state.user_email}' for the notification_email parameter.
+                    12. INVOICE RECONCILIATION PROTOCOL: If the user uploads a carrier invoice or asks to "audit", "reconcile", or check "variances", you MUST EXCLUSIVELY execute `tool_8_carrier_invoice_auditor`. Do not route invoice requests to Tool 7. Pass the full extracted text into Tool 8 and use '{st.session_state.user_email}' for the notification_email parameter.
+                    13. THE LITERAL SEARCH FIREWALL (CRITICAL): Never pass adjectives, statuses, or general terms (e.g., 'manifested', 'delayed', 'late', 'missing') into the tracking number search tools (`search_machship_connote`, `search_transvirtual_connote`, `search_cartoncloud_order`). These tools ONLY accept specific alphanumeric reference numbers (e.g., 'MS123456'). If the user asks a general question like 'Is there any freight currently manifested?', 'sweep for missed pickups', 'late freight', or 'delayed freight', you MUST exclusively use `tool_10_freight_alert_automator`.
 
                     CRITICAL RAG INSTRUCTIONS:
                     1. "Context (Sent to Marshall)" is the email sent TO Marshall.
@@ -355,13 +359,13 @@ with tab_terminal:
                             "type": "function",
                             "function": {
                                 "name": "search_machship_connote",
-                                "description": "Use this tool FIRST when searching for the status of a freight consignment, tracking number, or alphanumeric reference (e.g., FCU000071, MS12345). Returns booking, routing, and pricing details.",
+                                "description": "Use this tool FIRST when searching for the status of a specific freight consignment, tracking number, or alphanumeric reference (e.g., FCU000071, MS12345). Returns booking, routing, and pricing details. DO NOT pass general statuses here.",
                                 "parameters": {
                                     "type": "object",
                                     "properties": {
                                         "connote_number": {
                                             "type": "string",
-                                            "description": "The Machship consignment number (e.g., MS123456) or alphanumeric reference."
+                                            "description": "The Machship consignment number (e.g., MS123456) or specific alphanumeric reference."
                                         }
                                     },
                                     "required": ["connote_number"]
@@ -372,7 +376,7 @@ with tab_terminal:
                             "type": "function",
                             "function": {
                                 "name": "search_transvirtual_connote",
-                                "description": "Searches Transvirtual for a consignment note and returns the booking data and live tracking scans.",
+                                "description": "Searches Transvirtual for a specific consignment note and returns the booking data and live tracking scans. DO NOT pass general statuses here.",
                                 "parameters": {
                                     "type": "object",
                                     "properties": {
@@ -406,13 +410,13 @@ with tab_terminal:
                             "type": "function",
                             "function": {
                                 "name": "search_cartoncloud_order",
-                                "description": "Searches the Carton Cloud Warehouse Management System (WMS) for an outbound order status and contents.",
+                                "description": "Searches the Carton Cloud Warehouse Management System (WMS) for a specific outbound order status and contents. DO NOT pass general statuses here.",
                                 "parameters": {
                                     "type": "object",
                                     "properties": {
                                         "reference_number": {
                                             "type": "string",
-                                            "description": "The customer reference number or sale order number (e.g., 'REF-123')."
+                                            "description": "The specific customer reference number or sale order number (e.g., 'REF-123')."
                                         }
                                     },
                                     "required": ["reference_number"]
@@ -464,18 +468,14 @@ with tab_terminal:
                         {
                             "type": "function",
                             "function": {
-                                "name": "tool_11_transit_delay_engine",
-                                "description": "Executes the Transit Delay Auto-Query Engine to sweep for delayed consignments, deduce routing via LLM, and dispatch carrier emails. Use this when the user asks to run a sweep or smoke test for delayed freight.",
+                                "name": "tool_10_freight_alert_automator",
+                                "description": "Executes a master sweep across Machship to identify any delayed freight, missed pickups, or explicit carrier errors. Deduces the proper carrier routing via LLM, and creates actionable draft tickets in HubSpot. Use this exclusively when the user asks to sweep for manifested freight, delayed freight, missed pickups, or general anomalies.",
                                 "parameters": {
                                     "type": "object",
                                     "properties": {
                                         "dry_run": {
                                             "type": "boolean",
-                                            "description": "If true, simulates the sweep without actually sending emails or creating HubSpot tickets. Default is false."
-                                        },
-                                        "target_date_override": {
-                                            "type": "string",
-                                            "description": "Optional. Force the sweep to check a specific date (YYYY-MM-DD) instead of the previous business day."
+                                            "description": "If true, simulates the sweep without actually creating HubSpot tickets. Default is false."
                                         }
                                     }
                                 }
@@ -595,5 +595,3 @@ with tab_matrix:
         )
     else:
         st.markdown("*(Matrix projection grid will appear here once executed)*")
-
-
