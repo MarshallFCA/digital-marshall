@@ -1641,13 +1641,13 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
         return f"🚨 CRITICAL CRASH: {sanitize_error_log(str(e))}"
 
 # ==========================================
-# TOOL 16: WISMO CLIENT CONCIERGE
+# TOOL 16: WISMO CLIENT CONCIERGE (TICKETS API)
 # ==========================================
 def tool_16_wismo_client_concierge(dry_run: bool = False):
     """
-    Sweeps HubSpot Conversations for new WISMO requests.
+    Sweeps HubSpot Tickets API for incoming customer WISMO inquiries.
     Extracts references, queries Machship, evaluates sentiment (Positive/Negative).
-    If positive, replies to customer with tracking/POD link. If negative, leaves internal note.
+    Appends a drafted response or internal note directly into the ticket description.
     """
     import datetime
     
@@ -1662,32 +1662,46 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
         "Content-Type": "application/json"
     }
     
-    hs_threads_url = get_secure_endpoint("hs_threads", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jb252ZXJzYXRpb25zL3YzL2NvbnZlcnNhdGlvbnMvdGhyZWFkcw==")
+    search_url = get_secure_endpoint("hubspot_search", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRzL3NlYXJjaA==")
+    
+    # We will look for tickets that DO NOT contain our anti-loop tag in the subject
+    search_payload = {
+        "filterGroups": [{
+            "filters": [
+                {
+                    "propertyName": "subject",
+                    "operator": "NOT_CONTAINS_TOKEN",
+                    "value": "[BOOF]"
+                }
+            ]
+        }],
+        "properties": ["subject", "content"],
+        "limit": 10,
+        "sorts": [{"propertyName": "createdate", "direction": "DESCENDING"}]
+    }
     
     try:
-        threads_resp = requests.get(f"{hs_threads_url}?status=OPEN", headers=hs_headers, timeout=15)
-        if threads_resp.status_code != 200:
-            return f"🚨 CRITICAL CRASH: HubSpot API Request Failed (HTTP {threads_resp.status_code}). Raw Payload: {threads_resp.text}"
+        search_resp = requests.post(search_url, headers=hs_headers, json=search_payload, timeout=15)
+        if search_resp.status_code != 200:
+            return f"🚨 CRITICAL CRASH: HubSpot Tickets API Failed (HTTP {search_resp.status_code}). Raw Payload: {search_resp.text}"
             
-        threads_data = threads_resp.json().get("results", [])
-        if not threads_data:
-            return "WISMO Sweep Complete. No open conversational threads found."
+        tickets_data = search_resp.json().get("results", [])
+        if not tickets_data:
+            return "WISMO Sweep Complete. No new actionable tickets found."
             
         action_log = []
         
-        for thread in threads_data:
-            thread_id = thread.get("id")
+        for ticket in tickets_data:
+            ticket_id = ticket.get("id")
+            props = ticket.get("properties", {})
+            subject = props.get("subject", "")
+            content = props.get("content", "")
             
-            messages_resp = requests.get(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, timeout=15)
-            if messages_resp.status_code != 200:
-                return f"🚨 CRITICAL CRASH: HubSpot Messages API Failed (HTTP {messages_resp.status_code}). Raw Payload: {messages_resp.text}"
-            
-            messages = messages_resp.json().get("results", [])
-            if not messages: continue
-            
-            latest_msg = messages[-1]
-            msg_text = latest_msg.get("text", "")
-            if not msg_text or latest_msg.get("type") == "COMMENT": continue
+            # Additional safety anti-loop check
+            if "[BOOF" in subject:
+                continue
+                
+            msg_text = f"Subject: {subject}\nBody: {content}"
             
             extract_prompt = f"Extract any specific alphanumeric tracking/consignment numbers (e.g. MS123456, REF999) from this customer email text. Return ONLY a valid JSON array of strings containing the exact reference numbers. Text: {msg_text}"
             extracted_refs_str = call_gemini_api(extract_prompt, json_mode=True)
@@ -1696,7 +1710,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
             except:
                 refs = []
                 
-            if not refs or not isinstance(refs, list):
+            if not refs or not isinstance(refs, list) or len(refs) == 0:
                 continue
                 
             connote = refs[0].upper()
@@ -1730,10 +1744,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         break
                         
             if not tracking_info:
-                if not dry_run:
-                    note_payload = { "type": "COMMENT", "text": f"BOOF WISMO Alert: Could not locate Machship data for reference {connote}. Reassigning to human broker." }
-                    requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload)
-                action_log.append(f"Thread {thread_id}: Reference {connote} not found. Left internal note.")
+                action_log.append(f"Ticket {ticket_id}: Reference {connote} not found in Machship.")
                 continue
                 
             eval_prompt = f"""
@@ -1741,7 +1752,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
             
             Task:
             1. Evaluate status. POSITIVE = (Delivered, Booked, On board for delivery, Manifested, In Transit). NEGATIVE = (Delayed, Exception, Damaged, Lost, Missed Pickup).
-            2. If POSITIVE, draft a highly professional, concise, non-chatty message for the customer. E.g., 'Consignment [ID] is currently in transit. Expected ETA is [Date].'
+            2. If POSITIVE, draft a highly professional, concise message for the customer. E.g., 'Consignment [ID] is currently in transit. Expected ETA is [Date].'
             3. If NEGATIVE, draft an internal note for the FCA broker. E.g., 'ACTION REQUIRED: [ID] is delayed. Exception flagged.'
             
             Return ONLY a valid JSON object with keys: 'sentiment' (strictly "POSITIVE" or "NEGATIVE") and 'message' (the drafted text).
@@ -1756,25 +1767,28 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
             sentiment = eval_res.get("sentiment", "NEGATIVE")
             base_message = eval_res.get("message", "Status unavailable.")
             
-            if sentiment == "POSITIVE":
-                if has_pod and ms_consign_id:
-                    pod_link = f"[https://live.machship.com/tracking?id=](https://live.machship.com/tracking?id=){ms_consign_id}"
-                    base_message += f"\n\nProof of Delivery and live tracking are securely accessible via the carrier portal: {pod_link}"
-                    
-                if not dry_run:
-                    reply_payload = { "type": "MESSAGE", "text": base_message }
-                    req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=reply_payload)
-                    if req.status_code not in [200, 201]:
-                        return f"🚨 CRITICAL CRASH: HubSpot POST Reply Failed (HTTP {req.status_code}). Raw Payload: {req.text}"
-                action_log.append(f"Thread {thread_id}: POSITIVE status for {connote}. Replied to customer (POD Attached: {has_pod}).")
+            if sentiment == "POSITIVE" and has_pod and ms_consign_id:
+                pod_link = f"[https://live.machship.com/tracking?id=](https://live.machship.com/tracking?id=){ms_consign_id}"
+                base_message += f"\n\nProof of Delivery and live tracking are securely accessible via the carrier portal: {pod_link}"
                 
-            else:
-                if not dry_run:
-                    note_payload = { "type": "COMMENT", "text": f"BOOF WISMO Alert: {base_message}" }
-                    req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload)
-                    if req.status_code not in [200, 201]:
-                        return f"🚨 CRITICAL CRASH: HubSpot POST Note Failed (HTTP {req.status_code}). Raw Payload: {req.text}"
-                action_log.append(f"Thread {thread_id}: NEGATIVE status for {connote}. Left internal broker note.")
+            if not dry_run:
+                update_url = get_secure_endpoint("hubspot_tickets", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRz") + f"/{ticket_id}"
+                
+                new_subject = f"[BOOF Processed] {subject}"
+                new_content = f"{content}\n\n=== BOOF AUTONOMOUS DRAFT ({sentiment}) ===\n{base_message}"
+                
+                update_payload = {
+                    "properties": {
+                        "subject": new_subject,
+                        "content": new_content
+                    }
+                }
+                
+                req = requests.patch(update_url, headers=hs_headers, json=update_payload, timeout=15)
+                if req.status_code not in [200, 201]:
+                    return f"🚨 CRITICAL CRASH: HubSpot PATCH Failed (HTTP {req.status_code}). Raw Payload: {req.text}"
+                    
+            action_log.append(f"Ticket {ticket_id}: Processed {connote} ({sentiment}). Ticket updated.")
                 
         return "WISMO Sweep Complete.\n" + "\n".join(action_log) if action_log else "WISMO Sweep Complete. No actionable items."
             
