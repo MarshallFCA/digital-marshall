@@ -1667,8 +1667,8 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     hs_threads_url = get_secure_endpoint("hs_threads", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jb252ZXJzYXRpb25zL3YzL2NvbnZlcnNhdGlvbnMvdGhyZWFkcw==")
     
     try:
-        # PULL UP TO 20 THREADS (Forcing descending temporal sort)
-        threads_resp = requests.get(f"{hs_threads_url}?limit=20&sort=-latestMessageTimestamp", headers=hs_headers, timeout=15)
+        # PULL UP TO 100 THREADS (Forcing descending temporal sort and expanding limit to prevent data loss)
+        threads_resp = requests.get(f"{hs_threads_url}?limit=100&sort=-latestMessageTimestamp", headers=hs_headers, timeout=15)
         if threads_resp.status_code != 200:
             return f"🚨 CRITICAL CRASH: HubSpot API Request Failed (HTTP {threads_resp.status_code}). Raw Payload: {threads_resp.text}"
             
@@ -1677,8 +1677,8 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
             return "WISMO Sweep Complete. No conversational threads found in the API response."
 
         # NATIVE PYTHON FILTER & SORT: 
-        # Strictly keep only OPEN threads, then sort by newest first.
-        open_threads = [t for t in all_threads if t.get("status") == "OPEN"]
+        # Strictly keep only OPEN threads (case-insensitive), then sort by newest first.
+        open_threads = [t for t in all_threads if str(t.get("status", "")).upper() == "OPEN"]
         
         try:
             open_threads = sorted(open_threads, key=lambda x: x.get("latestMessageTimestamp", ""), reverse=True)
