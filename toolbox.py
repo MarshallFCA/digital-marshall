@@ -1645,7 +1645,7 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
 # ==========================================
 def tool_16_wismo_client_concierge(dry_run: bool = False):
     """
-    Sweeps HubSpot Conversations for new WISMO requests.
+    Sweeps HubSpot Conversations for new WISMO requests (Bounded to 2 threads).
     Extracts references, queries Machship, evaluates sentiment (Positive/Negative).
     If positive, replies to customer with tracking/POD link. If negative, leaves internal note.
     """
@@ -1665,11 +1665,13 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     hs_threads_url = get_secure_endpoint("hs_threads", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jb252ZXJzYXRpb25zL3YzL2NvbnZlcnNhdGlvbnMvdGhyZWFkcw==")
     
     try:
-        threads_resp = requests.get(f"{hs_threads_url}?status=OPEN", headers=hs_headers, timeout=15)
+        # Micro-batching patch applied: limit=2
+        threads_resp = requests.get(f"{hs_threads_url}?status=OPEN&limit=2", headers=hs_headers, timeout=15)
         if threads_resp.status_code != 200:
             return f"🚨 CRITICAL CRASH: HubSpot API Request Failed (HTTP {threads_resp.status_code}). Raw Payload: {threads_resp.text}"
             
-        threads_data = threads_resp.json().get("results", [])
+        # Hard fail-safe slice to 2 items to prevent WebSocket timeout
+        threads_data = threads_resp.json().get("results", [])[:2]
         if not threads_data:
             return "WISMO Sweep Complete. No open conversational threads found."
             
