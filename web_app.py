@@ -26,10 +26,8 @@ st.set_page_config(page_title="Blessed Oracle of Freight", page_icon="🚀", lay
 # --- CUSTOM CSS: BRIGHT NASA CONTROL CENTER ---
 st.markdown("""
     <style>
-    /* Import Poppins from Google Fonts */
     @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;600;700;900&display=swap');
 
-    /* Globally apply Poppins to all standard text elements */
     .stApp, p, h1, h2, h3, h4, h5, h6, li, label, input, button, .stMarkdown, div[data-testid="stText"] {
         font-family: 'Poppins', sans-serif !important;
     }
@@ -38,13 +36,13 @@ st.markdown("""
         background-color: #ffffff;
     }
     .main-header {
-        color: #0b3d91; /* NASA Blue */
+        color: #0b3d91; 
         font-weight: 900;
         text-transform: uppercase;
         letter-spacing: 2px;
     }
     .sub-header {
-        color: #fc3d21; /* NASA Red */
+        color: #fc3d21; 
         font-weight: 700;
     }
     .telemetry-header {
@@ -61,7 +59,6 @@ st.markdown("""
         font-weight: 400;
     }
     
-    /* Style the Tabs to look like control panels */
     .stTabs [data-baseweb="tab-list"] {
         gap: 20px;
     }
@@ -73,11 +70,6 @@ st.markdown("""
         padding-top: 10px;
         padding-bottom: 10px;
     }
-    
-    /* Custom spacing for the top-anchored chat form */
-    .chat-input-form {
-        margin-bottom: 30px;
-    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -85,7 +77,6 @@ st.markdown("""
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
-# Background Native URL Intercept (Survives WebSocket Drops)
 if "_auth" in st.query_params and not st.session_state.logged_in:
     try:
         decoded_email = base64.b64decode(st.query_params["_auth"]).decode()
@@ -127,7 +118,6 @@ if not st.session_state.logged_in:
             st.session_state.logged_in = True
             st.session_state.user_email = user_email
             
-            # Rehydrate URL to survive tab sleeping
             st.query_params.clear() 
             st.query_params["_auth"] = base64.b64encode(user_email.encode()).decode()
             st.rerun() 
@@ -147,11 +137,10 @@ with col_head2:
         st.query_params.clear()
         st.rerun()
 
-# --- AGGRESSIVE HEARTBEAT (Prevents Idle Timeouts via Streamlit Health Ping) ---
+# --- AGGRESSIVE HEARTBEAT ---
 components.html(
     """
     <script>
-    // Pings the Streamlit server health endpoint every 30 seconds to keep container awake
     setInterval(function() {
         fetch('/_stcore/health').then(response => {
             console.log('Heartbeat verified');
@@ -264,16 +253,20 @@ tab_terminal, tab_matrix = st.tabs(["💬 ORACLE TERMINAL", "📊 MATRIX DASHBOA
 with tab_terminal:
     st.markdown("<h3 class='sub-header'>FCA Diagnostic Chat</h3>", unsafe_allow_html=True)
     
-    # TOP-ANCHORED INPUT FORM
-    with st.form(key="chat_input_form", clear_on_submit=True):
-        col1, col2 = st.columns([6, 1])
-        with col1:
-            prompt = st.text_input("Transmit command to the Oracle...", placeholder="e.g., Sweep for late freight, audit this invoice...")
-        with col2:
-            st.markdown("<br>", unsafe_allow_html=True) # Vertical alignment padding
-            submit_prompt = st.form_submit_button("Send Command", use_container_width=True)
+    # REVERSE CHRONOLOGICAL CHAT LOG 
+    st.divider()
+    st.markdown("<h4 style='color: #0b3d91;'>Communication Log</h4>", unsafe_allow_html=True)
+    
+    chat_log = st.container()
+    with chat_log:
+        for message in reversed(st.session_state.messages):
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+                
+    # BOTTOM-ANCHORED INPUT FORM (Replaces st.form)
+    prompt = st.chat_input("Transmit command to the Oracle... (Shift+Enter for line breaks)")
 
-    if submit_prompt and prompt:
+    if prompt:
         
         file_context = ""
         file_text = ""
@@ -288,16 +281,33 @@ with tab_terminal:
 
         # Append User Message Instantly
         st.session_state.messages.append({"role": "user", "content": prompt + (" *(Files Attached)*" if uploaded_files else "")})
-        
-        # Display Spinner directly under the form while generating
-        with st.spinner("🚀 Oracle is processing telemetry and calculating response..."):
+        st.rerun() # Rerun immediately to show user message
+
+# Execute logic if a new user message was just appended
+if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
+    with tab_terminal:
+        with st.spinner("Processing telemetry and calculating response..."):
             try:
-                search_text = prompt
+                # Reconstruct full query from the latest message
+                latest_msg_content = st.session_state.messages[-1]["content"]
+                search_text = latest_msg_content.replace(" *(Files Attached)*", "")
+                
+                # Fetch file texts again if files are present to build context for AI
+                file_context = ""
+                file_text = ""
                 if uploaded_files:
-                    search_text = f"{prompt} {file_text[:500]}" 
+                    file_context = "\n\nCRITICAL SYSTEM ALERT: The user has directly attached files to this chat session...\n"
+                    for uf in uploaded_files:
+                        extracted = extract_text_from_file(uf)
+                        file_text += f"=== FILE: {uf.name} ===\n{extracted}\n"
+                        file_context += f"=== FILE: {uf.name} ===\n{extracted[:1000]}\n"
+                        
+                search_text_embed = search_text
+                if uploaded_files:
+                    search_text_embed = f"{search_text} {file_text[:500]}"
 
                 embedded_question = client.embeddings.create(
-                    input=search_text, model="text-embedding-3-small"
+                    input=search_text_embed, model="text-embedding-3-small"
                 ).data[0].embedding
                 
                 search_results = index.query(
@@ -327,9 +337,9 @@ with tab_terminal:
                 2. The GSOT (Gmail Source of Truth) Protocol: The historical emails provided below act as your absolute source of truth. They override all other assumptions.
                 3. The "Handshake" Rule: Any carrier commitment found in these emails overrides standard carrier terms.
                 4. Conflict Resolution: If external data conflicts with the GSOT, the GSOT wins. Flag as "Overcharge Alert".
-                5. BOA Protocol: BOA has no TMS data. Use historical quotes. If no record exists, apply a 17% GP rule.
+                5. BOA Protocol: BOA has no TMS data. Use historical quotes. If no record exists, apply a 19% GP rule.
                 6. The "Big 5" Client Rules:
-                   * BOA: No Machship. Use historical quotes. Apply 17% GP rule.
+                   * BOA: No Machship. Use historical quotes. Apply 19% GP rule.
                    * CALM: Scenario A (Freight/Benchmarking) = Client. Scenario B (Warehousing/Pick-Pack) = Supplier. Do not confuse.
                    * AC Solar: Watch for overlength (>2.4m). If no forklift, tailgate is mandatory.
                    * ACRRM: Medical freight. Tier 1 tracking (FedEx/TGE) only.
@@ -341,9 +351,9 @@ with tab_terminal:
                 8. Operational Logic & Tone:
                    * Tone: Independent, professional, firm, transparent. Act as the Star Trek TNG Computer. No chatter.
                    * Output Format: Top of Response: "Forensic Action Plan" or "Recommendation". Body: Analysis, reasoning, and GSOT verification.
-                   * The 17% Rule: Always apply a 17% GP target to the verified carrier cost.
+                   * The 19% Rule: Always apply a 19% GP target to the verified carrier cost.
                    * Prohibition on Hallucination: Never guess. Do not invent data. If you cannot solve a problem, advise the user that you cannot solve the problem.
-                   * Linguistics: Utilise Australian/British English exclusively. Do not use the em dash.
+                   * Linguistics: Utilise Australian/British English exclusively. Do not use the em dash. Use colons or semi-colons instead.
                 9. THE HUNT PROTOCOL: If a user asks for the status of a reference number (e.g., FCU000071), you must autonomously search Machship, Transvirtual, and Carton Cloud. If the first tool returns no result, DO NOT stop. Execute the next tool. Only report failure if all three databases come up empty.
                 10. HYBRID GEMINI PROTOCOL: If the user asks you to analyze a general dataset, cross-reference multiple files, or create a spreadsheet from uploaded CSV/Excel files, execute the `hybrid_gemini_sheet_generator` tool. (CRITICAL FIREWALL: NEVER use Tool 7 if the user mentions 'invoice', 'audit', or 'variances'. Tool 7 cannot ping Machship for pricing.)
                 11. DOCUMENT CREATION PROTOCOL: If the user asks you to write, draft, create, or export a text document, SOP, letter, or report, you MUST use `tool_15_workspace_document_creator`. Do NOT use the spreadsheet generator for text documents. 
@@ -530,11 +540,11 @@ with tab_terminal:
                 
                 api_messages = [{"role": "system", "content": system_prompt}]
 
-                # To maintain context without breaking token limits, grab the last 15 messages.
+                # Limit context to last 15 messages.
                 for msg in st.session_state.messages[-15:-1]:
                     api_messages.append({"role": msg["role"], "content": msg["content"]})
 
-                api_messages.append({"role": "user", "content": full_user_query})
+                api_messages.append({"role": "user", "content": search_text + file_context})
 
                 response = client.chat.completions.create(
                     model="gpt-4o-mini",
@@ -554,7 +564,6 @@ with tab_terminal:
                         function_args = json.loads(tool_call.function.arguments)
                         
                         try:
-                            # Pass the user email into tool_15 explicitly without trusting the AI to grab it
                             if function_name == "tool_15_workspace_document_creator":
                                 function_args["notification_email"] = st.session_state.user_email
                                 
@@ -591,17 +600,6 @@ with tab_terminal:
             except Exception as e:
                 st.error(f"🚨 SYSTEM ANOMALY: {str(e)}")
 
-    # ==========================================
-    # REVERSE CHRONOLOGICAL CHAT LOG 
-    # ==========================================
-    st.divider()
-    st.markdown("<h4 style='color: #0b3d91;'>Communication Log</h4>", unsafe_allow_html=True)
-    
-    chat_log = st.container()
-    with chat_log:
-        for message in reversed(st.session_state.messages):
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
 
 # ==========================================
 # CONSOLE 2: MATRIX DASHBOARD (BULK QUOTING)
@@ -614,7 +612,7 @@ with tab_matrix:
     
     with col1:
         st.markdown("**1. Configure Parameters**")
-        margin_target = st.slider("Target GP Margin (%)", min_value=10, max_value=50, value=17, step=1)
+        margin_target = st.slider("Target GP Margin (%)", min_value=10, max_value=50, value=19, step=1)
         excluded_carriers = st.multiselect(
             "Exclude Specific Carriers", 
             options=["TNT", "FedEx", "Hunter Express", "Direct Freight Express", "Hi-Trans", "Northline"], 
