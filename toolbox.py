@@ -1648,7 +1648,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     Sweeps HubSpot Conversations for new WISMO requests.
     Enforces a strict Python-level 'OPEN' filter.
     Uses a dynamic limit to process up to 2 actionable threads to prevent timeout. 
-    Anti-Loop: Silently bypasses threads already containing internal comments.
+    Anti-Loop: Forensically scans all messages for existing BOOF alerts to prevent duplicate processing.
     Expanded Pipeline: Audits Machship first, executes fallback sequence to Transvirtual if required.
     """
     import datetime
@@ -1706,31 +1706,43 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
             messages = messages_resp.json().get("results", [])
             if not messages: continue
             
-            latest_msg = messages[-1]
-            msg_text = latest_msg.get("text", "")
-            
-            # ANTI-LOOP MECHANISM: If BOOF left the last comment, silently skip and do NOT count towards the processing limit.
-            if latest_msg.get("type") == "COMMENT" or "BOOF" in msg_text:
+            # SAFE ANTI-LOOP: Scan the entire thread history for previous BOOF interaction.
+            boof_actioned = False
+            for m in messages:
+                if m.get("type") == "COMMENT" and "BOOF WISMO Alert" in m.get("text", ""):
+                    boof_actioned = True
+                    break
+                    
+            if boof_actioned:
                 continue
             
-            # Aggregate all real messages in the thread
             msg_texts = [m.get("text", "") for m in messages if m.get("type") != "COMMENT" and m.get("text")]
             if not msg_texts: continue
-            
             combined_text = "\n".join(msg_texts)
             
-            # EXTRACTION FIREWALL
-            extract_prompt = f"Extract ONLY valid freight tracking/consignment numbers (e.g. MS123456) from this customer email text. CRITICAL INSTRUCTION: Do NOT extract phone numbers, dates, or ABNs. Ignore generic 12-digit numeric strings. Return ONLY a valid JSON array of strings containing the exact alphanumeric reference numbers. Text: {combined_text}"
+            # UPGRADED EXTRACTION FIREWALL
+            extract_prompt = f"Extract all freight tracking/consignment numbers (e.g., MS123456, FGY000000990, etc.) from this text. CRITICAL INSTRUCTION: Ignore phone numbers and ABNs. Output ONLY a raw JSON array of strings. Do not wrap in a dictionary. Example: [\"MS123456\"]. Text: {combined_text}"
             extracted_refs_str = call_gemini_api(extract_prompt, json_mode=True)
+            
             try:
                 refs = json.loads(extracted_refs_str)
+                if isinstance(refs, dict):
+                    for val in refs.values():
+                        if isinstance(val, list):
+                            refs = val
+                            break
+                if not isinstance(refs, list):
+                    refs = []
             except:
                 refs = []
                 
-            if not refs or not isinstance(refs, list) or len(refs) == 0:
+            if not refs or len(refs) == 0:
                 if not dry_run:
                     note_payload = { "type": "COMMENT", "text": "BOOF WISMO Alert: No valid tracking reference detected in this thread. Skipping." }
-                    requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload)
+                    req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
+                    if req.status_code not in [200, 201]:
+                        return f"🚨 CRITICAL CRASH: HubSpot POST Note Failed (HTTP {req.status_code}). Payload: {req.text}"
+                        
                 action_log.append(f"Thread {thread_id}: No connote found. Left skip note.")
                 actioned_count += 1
                 continue
@@ -1767,7 +1779,6 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         carrier_source = "Machship"
                         break
 
-            # SECONDARY FALLBACK SEQUENCE: Transvirtual
             if not tracking_info:
                 tv_token = st.secrets.get("transvirtual", {}).get("TRANSVIRTUAL_API_KEY")
                 if tv_token:
@@ -1792,7 +1803,10 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
             if not tracking_info:
                 if not dry_run:
                     note_payload = { "type": "COMMENT", "text": f"BOOF WISMO Alert: Could not locate Machship or Transvirtual data for reference {connote}. Reassigning to human broker." }
-                    requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload)
+                    req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
+                    if req.status_code not in [200, 201]:
+                        return f"🚨 CRITICAL CRASH: HubSpot POST Note Failed (HTTP {req.status_code}). Payload: {req.text}"
+                        
                 action_log.append(f"Thread {thread_id}: Reference {connote} not found across API pipelines. Left internal note.")
                 actioned_count += 1
                 continue
@@ -1824,17 +1838,19 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     
                 if not dry_run:
                     reply_payload = { "type": "MESSAGE", "text": base_message }
-                    req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=reply_payload)
+                    req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=reply_payload, timeout=15)
                     if req.status_code not in [200, 201]:
-                        return f"🚨 CRITICAL CRASH: HubSpot POST Reply Failed (HTTP {req.status_code}). Raw Payload: {req.text}"
+                        return f"🚨 CRITICAL CRASH: HubSpot POST Reply Failed (HTTP {req.status_code}). Payload: {req.text}"
+                        
                 action_log.append(f"Thread {thread_id}: POSITIVE status for {connote} via {carrier_source}. Replied to customer (POD Attached: {has_pod}).")
                 
             else:
                 if not dry_run:
                     note_payload = { "type": "COMMENT", "text": f"BOOF WISMO Alert: {base_message}" }
-                    req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload)
+                    req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
                     if req.status_code not in [200, 201]:
-                        return f"🚨 CRITICAL CRASH: HubSpot POST Note Failed (HTTP {req.status_code}). Raw Payload: {req.text}"
+                        return f"🚨 CRITICAL CRASH: HubSpot POST Note Failed (HTTP {req.status_code}). Payload: {req.text}"
+                        
                 action_log.append(f"Thread {thread_id}: NEGATIVE status for {connote} via {carrier_source}. Left internal broker note.")
                 
             actioned_count += 1
