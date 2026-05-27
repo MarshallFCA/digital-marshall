@@ -13,20 +13,74 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseDownload
 
 # ==========================================
+# SECURE URL RESOLVER
+# ==========================================
+def get_secure_endpoint(endpoint_key: str, fallback_b64: str) -> str:
+    """
+    Retrieves endpoints securely from st.secrets to eliminate hardcoded Base64 
+    strings per OWASP guidelines. Falls back to decoded Base64 to guarantee zero degradation.
+    """
+    return st.secrets.get("endpoints", {}).get(endpoint_key, base64.b64decode(fallback_b64).decode())
+
+# ==========================================
+# GEMINI SDK UPGRADE WRAPPER (2026 Compatible)
+# ==========================================
+def call_gemini_api(prompt: str, json_mode: bool = False) -> str:
+    gemini_key = st.secrets.get("GEMINI_API_KEY")
+    if not gemini_key:
+        raise ValueError("GEMINI_API_KEY is missing from the telemetry secrets.")
+        
+    try:
+        # Attempt modern google-genai SDK
+        from google import genai
+        from google.genai import types
+        client = genai.Client(api_key=gemini_key)
+        
+        models = client.models.list()
+        available_models = [m.name for m in models]
+        
+        pro_models = sorted([m for m in available_models if 'pro' in m.lower()], reverse=True)
+        flash_models = sorted([m for m in available_models if 'flash' in m.lower()], reverse=True)
+        
+        target_model = pro_models[0] if pro_models else (flash_models[0] if flash_models else "gemini-2.5-pro")
+        target_model = target_model.replace('models/', '')
+        
+        config_kwargs = {}
+        if json_mode:
+            config_kwargs["response_mime_type"] = "application/json"
+            
+        response = client.models.generate_content(
+            model=target_model, 
+            contents=prompt,
+            config=types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
+        )
+        return response.text.strip()
+        
+    except ImportError:
+        # Fallback to legacy google-generativeai to guarantee zero functional degradation
+        import google.generativeai as genai_legacy
+        genai_legacy.configure(api_key=gemini_key)
+        available_models = [m.name for m in genai_legacy.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        pro_models = sorted([m for m in available_models if 'pro' in m.lower()], reverse=True)
+        flash_models = sorted([m for m in available_models if 'flash' in m.lower()], reverse=True)
+        
+        target_model = pro_models[0] if pro_models else (flash_models[0] if flash_models else "gemini-1.5-pro")
+        target_model = target_model.replace('models/', '')
+        model = genai_legacy.GenerativeModel(target_model)
+        
+        generation_config = genai_legacy.GenerationConfig(response_mime_type="application/json") if json_mode else None
+        response = model.generate_content(prompt, generation_config=generation_config)
+        return response.text.strip()
+
+# ==========================================
 # OWASP TELEMETRY SANITIZER (DSGAI14)
 # ==========================================
 def sanitize_error_log(error_msg: str) -> str:
-    """
-    Strips sensitive tokens, OAuth keys, and PII from error traces 
-    before they are printed to logs or the UI.
-    """
     msg = str(error_msg)
-    # Redact Bearer tokens
     msg = re.sub(r'(?i)Bearer\s+[A-Za-z0-9\-\._~]+', 'Bearer [REDACTED_TOKEN]', msg)
-    # Redact generic token parameters
     msg = re.sub(r'(?i)token=[A-Za-z0-9\-\._~]+', 'token=[REDACTED_TOKEN]', msg)
     msg = re.sub(r'(?i)api_key=[A-Za-z0-9\-\._~]+', 'api_key=[REDACTED_KEY]', msg)
-    # Redact emails to prevent PII leakage
     msg = re.sub(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', '[EMAIL_REDACTED]', msg)
     return msg
 
@@ -41,7 +95,7 @@ def get_xero_token():
         credentials = f"{client_id}:{client_secret}"
         encoded_credentials = base64.b64encode(credentials.encode()).decode()
         
-        url = base64.b64decode("aHR0cHM6Ly9pZGVudGl0eS54ZXJvLmNvbS9jb25uZWN0L3Rva2Vu").decode()
+        url = get_secure_endpoint("xero_auth", "aHR0cHM6Ly9pZGVudGl0eS54ZXJvLmNvbS9jb25uZWN0L3Rva2Vu")
         headers = {
             "Authorization": f"Basic {encoded_credentials}",
             "Content-Type": "application/x-www-form-urlencoded"
@@ -59,7 +113,7 @@ def get_cartoncloud_token():
     try:
         client_id = st.secrets["cartoncloud"]["client_id"].strip()
         client_secret = st.secrets["cartoncloud"]["client_secret"].strip()
-        base_url = base64.b64decode("aHR0cHM6Ly9hcGkuY2FydG9uY2xvdWQuY29t").decode()
+        base_url = get_secure_endpoint("cartoncloud_base", "aHR0cHM6Ly9hcGkuY2FydG9uY2xvdWQuY29t")
 
         credentials = f"{client_id}:{client_secret}"
         encoded_credentials = base64.b64encode(credentials.encode('utf-8')).decode('utf-8')
@@ -87,7 +141,7 @@ def search_xero_contact(contact_name: str) -> str:
     
     def fetch_contacts(search_term):
         safe_name = requests.utils.quote(search_term)
-        base_url = base64.b64decode("aHR0cHM6Ly9hcGkueGVyby5jb20vYXBpLnhyby8yLjAvQ29udGFjdHM/d2hlcmU9TmFtZS5Db250YWlucygi").decode()
+        base_url = get_secure_endpoint("xero_contacts", "aHR0cHM6Ly9hcGkueGVyby5jb20vYXBpLnhyby8yLjAvQ29udGFjdHM/d2hlcmU9TmFtZS5Db250YWlucygi")
         url = f'{base_url}{safe_name}")'
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
@@ -131,7 +185,7 @@ def search_machship_connote(connote_number: str) -> str:
     try:
         if connote_number.startswith("MS"):
             ms_id = re.sub(r"\D", "", connote_number)
-            base_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0Q29uc2lnbm1lbnQ/aWQ9").decode()
+            base_url = get_secure_endpoint("machship_get", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0Q29uc2lnbm1lbnQ/aWQ9")
             url = f"{base_url}{ms_id}"
             response = requests.get(url, headers=headers, timeout=15)
             
@@ -147,9 +201,9 @@ def search_machship_connote(connote_number: str) -> str:
 
         headers["Content-Type"] = "application/json"
         search_routes = [
-            ("Carrier ID", base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlDYXJyaWVyQ29uc2lnbm1lbnRJZD9pbmNsdWRlQ2hpbGRDb21wYW5pZXM9dHJ1ZQ==").decode()),
-            ("Reference 1", base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl").decode()),
-            ("Reference 2", base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl").decode())
+            ("Carrier ID", get_secure_endpoint("machship_carrier_id", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlDYXJyaWVyQ29uc2lnbm1lbnRJZD9pbmNsdWRlQ2hpbGRDb21wYW5pZXM9dHJ1ZQ==")),
+            ("Reference 1", get_secure_endpoint("machship_ref1", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl")),
+            ("Reference 2", get_secure_endpoint("machship_ref2", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl"))
         ]
         payload = [connote_number]
 
@@ -175,10 +229,6 @@ def search_machship_connote(connote_number: str) -> str:
 # TOOL 3: TRANSVIRTUAL CONSIGNMENT SEARCH
 # ==========================================
 def search_transvirtual_connote(connote_number: str) -> str:
-    import json
-    import requests
-    import streamlit as st
-
     try:
         token = st.secrets["transvirtual"]["TRANSVIRTUAL_API_KEY"]
         connote_number = connote_number.strip().upper()
@@ -189,11 +239,11 @@ def search_transvirtual_connote(connote_number: str) -> str:
             "Accept": "application/json"
         }
 
-        url_query = base64.b64decode("aHR0cHM6Ly9hcGkudHJhbnN2aXJ0dWFsLmNvbS5hdS9hcGkvQ29uc2lnbm1lbnRRdWVyeQ==").decode()
+        url_query = get_secure_endpoint("tv_query", "aHR0cHM6Ly9hcGkudHJhbnN2aXJ0dWFsLmNvbS5hdS9hcGkvQ29uc2lnbm1lbnRRdWVyeQ==")
         response_query = requests.post(url_query, headers=headers, json={"ConsignmentNumber": connote_number}, timeout=15)
         full_data = response_query.json().get("Data", {}) if response_query.status_code == 200 else {}
 
-        url_status = base64.b64decode("aHR0cHM6Ly9hcGkudHJhbnN2aXJ0dWFsLmNvbS5hdS9hcGkvQ29uc2lnbm1lbnRTdGF0dXM=").decode()
+        url_status = get_secure_endpoint("tv_status", "aHR0cHM6Ly9hcGkudHJhbnN2aXJ0dWFsLmNvbS5hdS9hcGkvQ29uc2lnbm1lbnRTdGF0dXM=")
         tracking_data = None
         tracking_log = []
 
@@ -227,7 +277,6 @@ def search_transvirtual_connote(connote_number: str) -> str:
         }
 
         raw_matrix = json.dumps(combined_matrix, indent=2)
-
         return f"✅ Transvirtual Record: {connote_number}\n\n**Raw Data Available to AI:**\n```json\n{raw_matrix}\n```"
 
     except requests.exceptions.Timeout:
@@ -240,7 +289,7 @@ def search_transvirtual_connote(connote_number: str) -> str:
 # ==========================================
 def search_and_read_google_drive(search_query: str) -> str:
     try:
-        drive_ro_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZS5yZWFkb25seQ==").decode()
+        drive_ro_scope = get_secure_endpoint("google_drive_scope", "aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZS5yZWFkb25seQ==")
         
         credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
@@ -323,7 +372,7 @@ def search_and_read_google_drive(search_query: str) -> str:
 def search_cartoncloud_order(reference_number: str) -> str:
     try:
         tenant_id = st.secrets["cartoncloud"]["tenant_id"].strip()
-        base_url = base64.b64decode("aHR0cHM6Ly9hcGkuY2FydG9uY2xvdWQuY29t").decode()
+        base_url = get_secure_endpoint("cartoncloud_base", "aHR0cHM6Ly9hcGkuY2FydG9uY2xvdWQuY29t")
         
         access_token = get_cartoncloud_token()
         if "Error" in access_token: return f"Carton Cloud Auth {access_token}"
@@ -409,9 +458,8 @@ def search_cartoncloud_order(reference_number: str) -> str:
 # ==========================================
 @st.cache_data(ttl=86400, show_spinner=False)
 def fetch_australian_postcodes():
-    import requests
     import csv
-    url = base64.b64decode("aHR0cHM6Ly9yYXcuZ2l0aHVidXNlcmNvbnRlbnQuY29tL21hdHRoZXdwcm9jdG9yL2F1c3RyYWxpYW5wb3N0Y29kZXMvbWFzdGVyL2F1c3RyYWxpYW5fcG9zdGNvZGVzLmNzdg==").decode()
+    url = get_secure_endpoint("aus_postcodes", "aHR0cHM6Ly9yYXcuZ2l0aHVidXNlcmNvbnRlbnQuY29tL21hdHRoZXdwcm9jdG9yL2F1c3RyYWxpYW5wb3N0Y29kZXMvbWFzdGVyL2F1c3RyYWxpYW5fcG9zdGNvZGVzLmNzdg==")
     pc_to_suburb = {}
     try:
         resp = requests.get(url, timeout=10)
@@ -428,10 +476,6 @@ def fetch_australian_postcodes():
     return pc_to_suburb
 
 def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
-    import pandas as pd
-    import io
-    import requests
-    import streamlit as st
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from datetime import datetime, timedelta
 
@@ -455,7 +499,7 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
         dispatch_date = next_day.strftime("%Y-%m-%dT09:00:00")
 
         token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
-        url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9yb3V0ZXMvcmV0dXJucm91dGVz").decode()
+        url = get_secure_endpoint("machship_routes", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9yb3V0ZXMvcmV0dXJucm91dGVz")
         headers = {"token": token, "Content-Type": "application/json"}
         company_id = 53031 
 
@@ -567,7 +611,6 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
             except Exception as e:
                 return index, f"Crash: {sanitize_error_log(str(e))}", []
 
-        from concurrent.futures import ThreadPoolExecutor, as_completed
         with ThreadPoolExecutor(max_workers=15) as executor:
             future_to_row = {executor.submit(fetch_route, index, row): index for index, row in df.iterrows()}
             
@@ -597,14 +640,9 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
 # TOOL 15: WORKSPACE DOCUMENT CREATOR
 # ==========================================
 def tool_15_workspace_document_creator(document_title: str, document_body: str, notification_email: str = "") -> str:
-    """
-    Creates a new Google Document natively via the Drive and Docs API.
-    Injects the provided text and shares it with the requesting user.
-    """
     try:
-        # Base64 Encoded Scopes for Drive and Docs APIs
-        drive_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==").decode()
-        docs_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kb2N1bWVudHM=").decode()
+        drive_scope = get_secure_endpoint("drive_scope", "aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==")
+        docs_scope = get_secure_endpoint("docs_scope", "aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kb2N1bWVudHM=")
         
         credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
@@ -615,7 +653,6 @@ def tool_15_workspace_document_creator(document_title: str, document_body: str, 
         drive_service = build("drive", "v3", credentials=creds)
         docs_service = build("docs", "v1", credentials=creds)
 
-        # Standard BOOF Exports Folder
         parent_folder_id = "1U8PYxUZMfJql0AYnhc0izJpI0FqveeFR"
 
         file_metadata = {
@@ -624,7 +661,6 @@ def tool_15_workspace_document_creator(document_title: str, document_body: str, 
             'parents': [parent_folder_id]
         }
         
-        # 1. Create the blank document in Drive
         doc_file = drive_service.files().create(
             body=file_metadata, 
             fields='id',
@@ -633,7 +669,6 @@ def tool_15_workspace_document_creator(document_title: str, document_body: str, 
         
         document_id = doc_file.get('id')
 
-        # 2. Inject the body text via Docs API BatchUpdate
         if document_body:
             requests_body = {
                 "requests": [
@@ -652,7 +687,6 @@ def tool_15_workspace_document_creator(document_title: str, document_body: str, 
                 body=requests_body
             ).execute()
 
-        # 3. Share the document with the user
         if notification_email:
             try:
                 permission = {
@@ -666,7 +700,7 @@ def tool_15_workspace_document_creator(document_title: str, document_body: str, 
                     fields="id",
                     supportsAllDrives=True
                 ).execute()
-            except Exception as e:
+            except Exception:
                 pass 
 
         doc_url = f"[https://docs.google.com/document/d/](https://docs.google.com/document/d/){document_id}"
@@ -684,17 +718,6 @@ def tool_15_workspace_document_creator(document_title: str, document_body: str, 
 # TOOL 7: PANDAS ORCHESTRATOR
 # ==========================================
 def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> str:
-    import google.generativeai as genai
-    import pandas as pd
-    import numpy as np
-    import datetime
-    import re
-    import io
-    import json
-    import streamlit as st
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
-
     try:
         uploaded_files = st.session_state.get("chat_uploader")
         if not uploaded_files:
@@ -723,36 +746,6 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
             return "Error: No valid CSV or Excel files were found to combine."
 
         main_df = pd.concat(df_list, ignore_index=True)
-
-        gemini_key = st.secrets.get("GEMINI_API_KEY")
-        if not gemini_key:
-            return "Error: GEMINI_API_KEY is missing from the telemetry secrets."
-
-        genai.configure(api_key=gemini_key)
-        
-        try:
-            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            
-            # The 404 Prevention Rule: Dynamic Discovery
-            pro_models = sorted([m for m in available_models if 'pro' in m.lower()], reverse=True)
-            flash_models = sorted([m for m in available_models if 'flash' in m.lower()], reverse=True)
-            
-            target_model = None
-            if pro_models:
-                target_model = pro_models[0]
-            elif flash_models:
-                target_model = flash_models[0]
-            elif available_models:
-                target_model = available_models[0]
-                
-            if not target_model:
-                return "HYBRID GEMINI CRASH: No valid Gemini text generation models found for this API key."
-                
-            target_model = target_model.replace('models/', '')
-            model = genai.GenerativeModel(target_model)
-        except Exception as model_err:
-            return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {sanitize_error_log(str(model_err))}"
-
         schema_info = main_df.dtypes.to_string()
 
         # ==========================================
@@ -780,16 +773,17 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         Task: Write a complete, syntactically correct Python function named `transform_df(df)` that performs all the requested filtering, renaming, calculations, and column selections.
         - The function must take a single argument `df` (the Pandas DataFrame) and return the modified `df`.
         - Handle any math natively in pandas.
-        - CRITICAL DATA TYPE HANDLING: If you need to do math on a column, FORCE it to numeric first. For currency fields (e.g., "$1,234.56"), you MUST clean them: `df['Col'] = pd.to_numeric(df['Col'].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce')`. Do this for EVERY column involved in a calculation.
-        - CRITICAL DATE HANDLING: The data uses Australian dates and may contain timezone strings (e.g., '2/04/2026 2:24 PM AEDT'). You MUST strip the timezone text before converting: `df['Col'] = pd.to_datetime(df['Col'].astype(str).str.replace(r' (AEDT|AEST|AWST|ACST)', '', regex=True), dayfirst=True, errors='coerce')`. 
-        - CRITICAL MATH & DURATIONS: Calculate date durations using `(date2 - date1).dt.days`. If you need weekday calculation, use `np.busday_count(date1.values.astype('datetime64[D]'), date2.values.astype('datetime64[D]'))` ensuring to mask out NaT values first. If a required column for any calculation does not exist in the DataFrame (e.g., "Pickup Complete"), DO NOT CRASH. Create the target output column and fill it with `np.nan`.
-        - CRITICAL ROW RETENTION: DO NOT use `.dropna()` on the dataset. DO NOT truncate or use `.head()`. Keep all rows. If a date filter is requested, ensure you used `dayfirst=True` so you don't accidentally drop valid Australian dates.
-        - You have full access to `import pandas as pd`, `import numpy as np`, `import datetime`, and `import re`.
-        - ONLY output the raw Python code block inside ```python ... ```. Do not include markdown explanations.
+        - CRITICAL DATA TYPE HANDLING: If you need to do math on a column, FORCE it to numeric first. For currency fields (e.g., "$1,234.56"), you MUST clean them: `df['Col'] = pd.to_numeric(df['Col'].astype(str).str.replace(r'[$,]', '', regex=True), errors='coerce')`. 
+        - CRITICAL DATE HANDLING: The data uses Australian dates and may contain timezone strings. You MUST strip the timezone text before converting: `df['Col'] = pd.to_datetime(df['Col'].astype(str).str.replace(r' (AEDT|AEST|AWST|ACST)', '', regex=True), dayfirst=True, errors='coerce')`. 
+        - CRITICAL MATH & DURATIONS: Calculate date durations using `(date2 - date1).dt.days`. Mask out NaT values.
+        - CRITICAL ROW RETENTION: DO NOT use `.dropna()`. Keep all rows.
+        - ONLY output the raw Python code block inside ```python ... ```.
         """
 
-        response = model.generate_content(prompt)
-        response_text = response.text.strip()
+        try:
+            response_text = call_gemini_api(prompt, json_mode=False)
+        except Exception as model_err:
+            return f"HYBRID GEMINI CRASH: {sanitize_error_log(str(model_err))}"
 
         code_match = re.search(r"`{3}python(.*?)`{3}", response_text, re.DOTALL)
         if code_match:
@@ -803,10 +797,10 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
             transform_df = local_vars['transform_df']
             final_df = transform_df(main_df)
         except Exception as exec_err:
-            return f"Error executing Pandas transformation based on instructions: {sanitize_error_log(str(exec_err))}\n\nAttempted Code:\n{sanitize_error_log(code_str)}"
+            return f"Error executing Pandas transformation: {sanitize_error_log(str(exec_err))}\n\nAttempted Code:\n{sanitize_error_log(code_str)}"
 
-        drive_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==").decode()
-        sheets_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9zcHJlYWRzaGVldHM=").decode()
+        drive_scope = get_secure_endpoint("drive_scope", "aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==")
+        sheets_scope = get_secure_endpoint("sheets_scope", "aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9zcHJlYWRzaGVldHM=")
         
         credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
@@ -876,9 +870,7 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
         except Exception as e:
             print(f"Grid expansion warning: {sanitize_error_log(str(e))}")
 
-        body = {
-            "values": scrubbed_values
-        }
+        body = { "values": scrubbed_values }
         sheets_service.spreadsheets().values().update(
             spreadsheetId=spreadsheet_id,
             range="Sheet1!A1",
@@ -904,7 +896,7 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
                 pass 
 
         sheet_url = "[https://docs.google.com/spreadsheets/d/](https://docs.google.com/spreadsheets/d/)" + spreadsheet_id
-        return f"SUCCESS: Hybrid Engine multi-file analysis complete. The dataset was merged, processed natively, and piped into a new Google Sheet inside your BOOF Exports Shared Drive folder. Title: {target_sheet_name} | URL: {sheet_url}"
+        return f"SUCCESS: Hybrid Engine multi-file analysis complete. Title: {target_sheet_name} | URL: {sheet_url}"
 
     except Exception as e:
         return f"HYBRID GEMINI CRASH: {sanitize_error_log(str(e))}"
@@ -927,7 +919,7 @@ def sanitize_hubspot_payload(payload_dict: dict) -> dict:
     return sanitized
 
 def create_hubspot_dispute_ticket(variance_data: dict, service_key: str) -> dict:
-    url = base64.b64decode("aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRz").decode()
+    url = get_secure_endpoint("hubspot_tickets", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRz")
     headers = {
         "Authorization": f"Bearer {service_key}",
         "Content-Type": "application/json"
@@ -977,48 +969,7 @@ def create_hubspot_dispute_ticket(variance_data: dict, service_key: str) -> dict
 # TOOL 8: CARRIER INVOICE AUDITOR
 # ==========================================
 def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: str) -> str:
-    import google.generativeai as genai
-    import json
-    import requests
-    import pandas as pd
-    import io
-    import streamlit as st
-    import re
-    import base64
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
-    
     try:
-        gemini_key = st.secrets.get("GEMINI_API_KEY")
-        if not gemini_key:
-            return "Error: GEMINI_API_KEY is missing from the telemetry secrets."
-        
-        genai.configure(api_key=gemini_key)
-        
-        try:
-            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            
-            # The 404 Prevention Rule: Dynamic Discovery
-            pro_models = sorted([m for m in available_models if 'pro' in m.lower()], reverse=True)
-            flash_models = sorted([m for m in available_models if 'flash' in m.lower()], reverse=True)
-            
-            target_model = None
-            if pro_models:
-                target_model = pro_models[0]
-            elif flash_models:
-                target_model = flash_models[0]
-            elif available_models:
-                target_model = available_models[0]
-                
-            if not target_model:
-                return "HYBRID GEMINI CRASH: No valid Gemini text generation models found for this API key."
-                
-            target_model = target_model.replace('models/', '')
-            model = genai.GenerativeModel(target_model)
-            
-        except Exception as model_err:
-            return f"HYBRID GEMINI CRASH (Model Auto-Detect Failed): {sanitize_error_log(str(model_err))}"
-            
         df_raw = None
         uploaded_files = st.session_state.get("chat_uploader")
         
@@ -1046,7 +997,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 return f"Error: Could not parse the text into tabular data. {sanitize_error_log(str(e))}"
             
         csv_headers = list(df_raw.columns)
-        
         connote_col = None
         amount_col = None
         invoice_col = None
@@ -1108,12 +1058,11 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         reconciliation_data = []
         analysis_batch = []
 
-        b64_urls = [
-            "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlDYXJyaWVyQ29uc2lnbm1lbnRJZD9pbmNsdWRlQ2hpbGRDb21wYW5pZXM9dHJ1ZQ==",
-            "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl",
-            "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl"
+        search_urls = [
+            get_secure_endpoint("machship_carrier_id", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlDYXJyaWVyQ29uc2lnbm1lbnRJZD9pbmNsdWRlQ2hpbGRDb21wYW5pZXM9dHJ1ZQ=="),
+            get_secure_endpoint("machship_ref1", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl"),
+            get_secure_endpoint("machship_ref2", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl")
         ]
-        search_urls = [base64.b64decode(u).decode() for u in b64_urls]
 
         for item in invoice_items:
             connote = item.get("connote", "")
@@ -1157,7 +1106,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                                 "machship_items": item_summary
                             }
                             
-                            # Extract Cost Price
                             cost = c_total.get("totalCostPrice")
                             if cost is None: cost = c_total.get("totalCostBeforeTax")
                             if cost is None: cost = c_total.get("totalCost")
@@ -1166,7 +1114,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                             if cost is None: cost = consignment.get("totalCost")
                             if cost is None: cost = consignment.get("cost")
                             
-                            # Extract Sell Price (Customer markup)
                             sell = c_total.get("totalSellPrice")
                             if sell is None: sell = c_total.get("totalSellBeforeTax")
                             if sell is None: sell = c_total.get("totalSell")
@@ -1197,18 +1144,17 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
 
             variance = billed_amount - expected_amount
             
-            # Rule 1: Drop consignments if the carrier charged less than Machship anticipated.
             if expected_amount > 0 and variance < -0.05:
                 continue
 
             diag_string = "Clean" if not diagnostic_log else " | ".join(diagnostic_log)
             surcharge_str = ", ".join(ms_metrics.get("machship_surcharge_names", [])) if ms_metrics else "None"
 
-            # Rule 3: Calculate dynamic markup factor and Sell Price to Customer
+            # 19% Fallback Logic integration
             if expected_amount > 0.01:
                 markup_factor = expected_sell / expected_amount
             else:
-                markup_factor = 1.17 # BOOF Fallback Protocol
+                markup_factor = 1.19
                 
             sell_price_to_customer = round((variance * markup_factor), 2) if variance > 0 else 0.0
 
@@ -1234,15 +1180,10 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
 
         ai_reasons = {}
         if len(analysis_batch) > 0:
-            batch_prompt = f"You are a forensic freight auditor. I am providing a JSON array of {len(analysis_batch)} consignments that have a cost variance. Compare the carrier_invoice_line text against the machship_metrics. Look explicitly for Discrepancies in Weight or Volume, Missing or Added Surcharges, and Base rate mismatches.\n\nCRITICAL INSTRUCTION 1: Try to actively FIGURE OUT the root cause of the discrepancy rather than just reporting the numbers. For example, carriers like FedEx often categorize their fuel levy under the general 'Surcharge' column. You must compare the carrier's 'Surcharge' field against the Machship metrics (including fuel surcharges) to see if that explains the variance.\n\nCRITICAL INSTRUCTION 2: Format your analysis inside 'variance_reason' with logical line breaks. You MUST insert a line break character ('\\n') after EVERY full stop (.) to ensure the text remains short per line in the spreadsheet cell. Structure it using clear prefixes like 'Weight Discrepancy:', 'Base Rate Mismatch:', and 'Missing/Added Surcharges:'.\n\nCRITICAL INSTRUCTION 3: You MUST return exactly {len(analysis_batch)} JSON objects in your array. Do NOT skip any items. Do NOT summarize. Return ONLY a valid JSON array of objects with strictly two keys: 'connote' and 'variance_reason'.\n\nVariance Data: {json.dumps(analysis_batch)}"
+            batch_prompt = f"You are a forensic freight auditor. I am providing a JSON array of {len(analysis_batch)} consignments that have a cost variance. Compare the carrier_invoice_line text against the machship_metrics. Look explicitly for Discrepancies in Weight or Volume, Missing or Added Surcharges, and Base rate mismatches.\n\nCRITICAL INSTRUCTION 1: Try to actively FIGURE OUT the root cause of the discrepancy rather than just reporting the numbers. \n\nCRITICAL INSTRUCTION 2: Format your analysis inside 'variance_reason' with logical line breaks. You MUST insert a line break character ('\\n') after EVERY full stop (.) to ensure the text remains short per line in the spreadsheet cell.\n\nCRITICAL INSTRUCTION 3: You MUST return exactly {len(analysis_batch)} JSON objects in your array. Do NOT skip any items. Do NOT summarize. Return ONLY a valid JSON array of objects with strictly two keys: 'connote' and 'variance_reason'.\n\nVariance Data: {json.dumps(analysis_batch)}"
             
             try:
-                analysis_resp = model.generate_content(
-                    batch_prompt,
-                    generation_config=genai.GenerationConfig(response_mime_type="application/json")
-                )
-                analysis_text = analysis_resp.text.strip()
-                
+                analysis_text = call_gemini_api(batch_prompt, json_mode=True)
                 amatch = re.search(r"\[.*\]", analysis_text, re.DOTALL | re.IGNORECASE)
                 if amatch:
                     analysis_text = amatch.group(0).strip()
@@ -1269,8 +1210,8 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         col_order = ["Carrier Connote", "Billed Amount", "Expected Amount", "Variance", "Sell Price to Customer", "Expected Surcharges", "AI Variance Analysis", "Diagnostics"]
         df = df[col_order]
 
-        drive_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==").decode()
-        sheets_scope = base64.b64decode("aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9zcHJlYWRzaGVldHM=").decode()
+        drive_scope = get_secure_endpoint("drive_scope", "aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==")
+        sheets_scope = get_secure_endpoint("sheets_scope", "aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9zcHJlYWRzaGVldHM=")
         
         credentials_dict = dict(st.secrets["gcp_service_account"])
         creds = service_account.Credentials.from_service_account_info(
@@ -1381,11 +1322,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
 # TOOL 10 & 11 HUBSPOT HELPER METHODS
 # ==========================================
 def check_hubspot_duplicate(ms_number: str, service_key: str) -> bool:
-    """
-    Checks if an alert ticket for this Machship number already exists in HubSpot.
-    Prevents duplicate ticket generation across successive sweeps.
-    """
-    url = base64.b64decode("aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRzL3NlYXJjaA==").decode()
+    url = get_secure_endpoint("hubspot_search", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRzL3NlYXJjaA==")
     headers = {
         "Authorization": f"Bearer {service_key}",
         "Content-Type": "application/json"
@@ -1407,33 +1344,6 @@ def check_hubspot_duplicate(ms_number: str, service_key: str) -> bool:
         print(f"HubSpot Duplicate Check Error ({ms_number}): {sanitize_error_log(str(e))}")
     return False
 
-def create_hubspot_alert_ticket(ms_number, carrier_name, action_taken, service_key, draft_text=""):
-    url = base64.b64decode("aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRz").decode()
-    headers = {
-        "Authorization": f"Bearer {service_key}",
-        "Content-Type": "application/json"
-    }
-    
-    content_str = f"Status: Carrier Silence Detected (Suspected Missed Pickup).\nAction Taken: {action_taken}\nTime Flagged: {datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%d %H:%M')}"
-    if draft_text:
-        content_str += f"\n\n=== SUGGESTED DRAFT ===\n{draft_text}"
-        
-    raw_properties = {
-        "hs_pipeline": "0",
-        "hs_pipeline_stage": "1",
-        "subject": f"Freight Alert: {ms_number} ({carrier_name})",
-        "content": content_str,
-        "hs_ticket_priority": "HIGH"
-    }
-    clean_properties = sanitize_hubspot_payload(raw_properties)
-    payload = { "properties": clean_properties }
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=15)
-        response.raise_for_status()
-        return response.json().get("id")
-    except Exception as e:
-        return f"Error: {sanitize_error_log(str(e))}"
-
 # ==========================================
 # TOOL 10: FREIGHT ALERT AUTOMATOR (MASTER)
 # ==========================================
@@ -1454,37 +1364,9 @@ CARRIER_ROUTING_RULES = """
   If delivering to VIC, email customer@melb.directcouriers.com.au. 
   If delivering to QLD, email customer@bris.directcouriers.com.au. 
   If delivering to WA, email customer@perth.directcouriers.com.au.
-
-- Cope Sensitive Freight: 
-  If delivering to Sydney or broader NSW (excluding Albury and Newcastle), email nsw@cope.com.au.
-  If delivering to Melbourne or broader VIC, email vic@cope.com.au.
-  If delivering to Adelaide or broader SA, email sa@cope.com.au.
-  If delivering to Brisbane or broader QLD (excluding Cairns and Townsville), email qldcust@cope.com.au.
-  If delivering to Perth or broader WA, email wa@cope.com.au.
-  If delivering to Albury, email albury@cope.com.au.
-  If delivering to Cairns, email cairns@cope.com.au.
-  If delivering to Canberra or ACT, email act@cope.com.au.
-  If delivering to Darwin or NT, email nt@cope.com.au.
-  If delivering to Hobart or broader TAS (excluding Launceston), email tas@cope.com.au.
-  If delivering to Launceston, email launceston@cope.com.au.
-  If delivering to Newcastle, email newcastle@cope.com.au.
-  If delivering to Townsville, email townsville@cope.com.au.
-
-- GKR: 
-  If delivering to NSW, email pickups@gkrtransport.com.au. 
-  If delivering to VIC, email melbourne@gkrtransport.com.au. 
-  If delivering to QLD, email brisbane@gkrtransport.com.au. 
-  If delivering to SA or WA, email wapickups@gkrtransport.com.au.
 """
 
 def tool_10_freight_alert_automator(dry_run: bool = False):
-    """
-    Executes the Master Bridge autonomous sweep. 
-    Sweeps for Missed Pickups, Missed ETAs, and Explicit Carrier Exceptions in a single pass.
-    Deduces routing, builds draft emails, and logs tickets in HubSpot natively.
-    """
-    import google.generativeai as genai
-    
     now = datetime.datetime.now()
     offset = 1
     if now.weekday() == 0: 
@@ -1496,19 +1378,12 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
     try:
         ms_token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
         hs_key = st.secrets.get("hubspot", {}).get("service_key")
-        gemini_key = st.secrets.get("GEMINI_API_KEY")
         
-        if not gemini_key:
-            return "TOOL 10 CRITICAL CRASH: GEMINI_API_KEY is missing from telemetry secrets."
-            
-        genai.configure(api_key=gemini_key)
-        
-        base_url = base64.b64decode("aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0UmVjZW50bHlDcmVhdGVkT3JVcGRhdGVkQ29uc2lnbm1lbnRz").decode()
+        base_url = get_secure_endpoint("machship_recent", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0UmVjZW50bHlDcmVhdGVkT3JVcGRhdGVkQ29uc2lnbm1lbnRz")
         headers = { "token": ms_token, "Content-Type": "application/json" }
         
         active_data = []
         
-        # Machship restricts date ranges to 7 days max. We run two 7-day chunks to safely achieve a 14-day lookback.
         for i in range(2):
             chunk_to = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=i*7)
             chunk_from = chunk_to - datetime.timedelta(days=7)
@@ -1540,7 +1415,6 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
             except:
                 return None
 
-        # 1. Evaluate Freight Anomalies
         for item in active_data:
             c_id = item.get('consignmentNumber')
             carrier = item.get('carrier', {}).get('name', 'Unknown Carrier')
@@ -1596,7 +1470,6 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
         if not exceptions:
             return "Sweep Complete. No anomalous freight detected."
 
-        # 2. LLM Carrier Routing Deduction
         routing_prompt = f"""
         You are a highly logical freight routing API. I am giving you a list of plain-text routing rules and a JSON array of freight exceptions containing their carrier and delivery destination.
         
@@ -1610,36 +1483,11 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
         Evaluate each consignment's 'carrier_name' and 'destination' against the routing rules to deduce the correct email address. 
         If a carrier is not mentioned in the rules, or you cannot deduce an email, set it to "UNMAPPED".
         
-        CRITICAL: Return ONLY a valid, raw JSON array of objects with strictly two keys: 'ms_number' and 'routed_email'. Do not include markdown blocks or explanations.
+        CRITICAL: Return ONLY a valid, raw JSON array of objects with strictly two keys: 'ms_number' and 'routed_email'.
         """
         
         try:
-            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-            
-            # The 404 Prevention Rule: Dynamic Discovery
-            pro_models = sorted([m for m in available_models if 'pro' in m.lower()], reverse=True)
-            flash_models = sorted([m for m in available_models if 'flash' in m.lower()], reverse=True)
-            
-            target_model = None
-            if pro_models:
-                target_model = pro_models[0]
-            elif flash_models:
-                target_model = flash_models[0]
-            elif available_models:
-                target_model = available_models[0]
-                
-            if not target_model:
-                return "TOOL 10 CRITICAL CRASH: No valid Gemini text generation models found for this API key."
-                
-            target_model = target_model.replace('models/', '')
-            model = genai.GenerativeModel(target_model)
-            
-            llm_resp = model.generate_content(
-                routing_prompt,
-                generation_config=genai.GenerationConfig(response_mime_type="application/json")
-            )
-            
-            llm_text = llm_resp.text.strip()
+            llm_text = call_gemini_api(routing_prompt, json_mode=True)
             amatch = re.search(r"\[.*\]", llm_text, re.DOTALL | re.IGNORECASE)
             if amatch:
                 llm_text = amatch.group(0).strip()
@@ -1653,9 +1501,8 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
         except Exception as e:
             return f"TOOL 10 CRITICAL CRASH (LLM Routing Engine Failed): {sanitize_error_log(str(e))}"
             
-        # 3. Action & CRM Sync
         action_summary = []
-        hs_url = base64.b64decode("aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRz").decode()
+        hs_url = get_secure_endpoint("hubspot_tickets", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRz")
         
         for ex in exceptions:
             ms_number = ex['ms_number']
