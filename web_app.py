@@ -70,6 +70,10 @@ st.markdown("""
         padding-top: 10px;
         padding-bottom: 10px;
     }
+    
+    .chat-input-form {
+        margin-bottom: 30px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -253,20 +257,16 @@ tab_terminal, tab_matrix = st.tabs(["💬 ORACLE TERMINAL", "📊 MATRIX DASHBOA
 with tab_terminal:
     st.markdown("<h3 class='sub-header'>FCA Diagnostic Chat</h3>", unsafe_allow_html=True)
     
-    # REVERSE CHRONOLOGICAL CHAT LOG 
-    st.divider()
-    st.markdown("<h4 style='color: #0b3d91;'>Communication Log</h4>", unsafe_allow_html=True)
-    
-    chat_log = st.container()
-    with chat_log:
-        for message in reversed(st.session_state.messages):
-            with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-                
-    # BOTTOM-ANCHORED INPUT FORM (Replaces st.form)
-    prompt = st.chat_input("Transmit command to the Oracle... (Shift+Enter for line breaks)")
+    # TOP-ANCHORED INPUT FORM
+    with st.form(key="chat_input_form", clear_on_submit=True):
+        prompt = st.text_area(
+            "Transmit command to the Oracle... (Enter for new lines, Ctrl+Enter to execute)", 
+            placeholder="e.g., Sweep for late freight, audit this invoice...",
+            height=120
+        )
+        submit_prompt = st.form_submit_button("🚀 Send Command", use_container_width=True)
 
-    if prompt:
+    if submit_prompt and prompt:
         
         file_context = ""
         file_text = ""
@@ -281,33 +281,16 @@ with tab_terminal:
 
         # Append User Message Instantly
         st.session_state.messages.append({"role": "user", "content": prompt + (" *(Files Attached)*" if uploaded_files else "")})
-        st.rerun() # Rerun immediately to show user message
-
-# Execute logic if a new user message was just appended
-if st.session_state.messages and st.session_state.messages[-1]["role"] == "user":
-    with tab_terminal:
-        with st.spinner("Processing telemetry and calculating response..."):
+        
+        # Display Spinner directly under the form while generating
+        with st.spinner("🚀 Oracle is processing telemetry and calculating response..."):
             try:
-                # Reconstruct full query from the latest message
-                latest_msg_content = st.session_state.messages[-1]["content"]
-                search_text = latest_msg_content.replace(" *(Files Attached)*", "")
-                
-                # Fetch file texts again if files are present to build context for AI
-                file_context = ""
-                file_text = ""
+                search_text = prompt
                 if uploaded_files:
-                    file_context = "\n\nCRITICAL SYSTEM ALERT: The user has directly attached files to this chat session...\n"
-                    for uf in uploaded_files:
-                        extracted = extract_text_from_file(uf)
-                        file_text += f"=== FILE: {uf.name} ===\n{extracted}\n"
-                        file_context += f"=== FILE: {uf.name} ===\n{extracted[:1000]}\n"
-                        
-                search_text_embed = search_text
-                if uploaded_files:
-                    search_text_embed = f"{search_text} {file_text[:500]}"
+                    search_text = f"{prompt} {file_text[:500]}" 
 
                 embedded_question = client.embeddings.create(
-                    input=search_text_embed, model="text-embedding-3-small"
+                    input=search_text, model="text-embedding-3-small"
                 ).data[0].embedding
                 
                 search_results = index.query(
@@ -540,11 +523,11 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                 
                 api_messages = [{"role": "system", "content": system_prompt}]
 
-                # Limit context to last 15 messages.
+                # To maintain context without breaking token limits, grab the last 15 messages.
                 for msg in st.session_state.messages[-15:-1]:
                     api_messages.append({"role": msg["role"], "content": msg["content"]})
 
-                api_messages.append({"role": "user", "content": search_text + file_context})
+                api_messages.append({"role": "user", "content": full_user_query})
 
                 response = client.chat.completions.create(
                     model="gpt-4o-mini",
@@ -564,6 +547,7 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
                         function_args = json.loads(tool_call.function.arguments)
                         
                         try:
+                            # Pass the user email into tool_15 explicitly without trusting the AI to grab it
                             if function_name == "tool_15_workspace_document_creator":
                                 function_args["notification_email"] = st.session_state.user_email
                                 
@@ -600,6 +584,17 @@ if st.session_state.messages and st.session_state.messages[-1]["role"] == "user"
             except Exception as e:
                 st.error(f"🚨 SYSTEM ANOMALY: {str(e)}")
 
+    # ==========================================
+    # REVERSE CHRONOLOGICAL CHAT LOG 
+    # ==========================================
+    st.divider()
+    st.markdown("<h4 style='color: #0b3d91;'>Communication Log</h4>", unsafe_allow_html=True)
+    
+    chat_log = st.container()
+    with chat_log:
+        for message in reversed(st.session_state.messages):
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
 
 # ==========================================
 # CONSOLE 2: MATRIX DASHBOARD (BULK QUOTING)
