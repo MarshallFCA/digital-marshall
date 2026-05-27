@@ -1567,7 +1567,7 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
             else:
                 email_dict = {}
         except Exception as e:
-            return f"TOOL 10 CRITICAL CRASH (LLM Routing Engine Failed): {sanitize_error_log(str(e))}"
+            return f"🚨 CRITICAL CRASH (LLM Routing Engine Failed): {sanitize_error_log(str(e))}"
             
         action_summary = []
         hs_url = get_secure_endpoint("hubspot_tickets", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRz")
@@ -1638,7 +1638,7 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
         return f"Sweep Complete. Processed {len(exceptions)} anomalies.\n" + "\n".join(action_summary)
         
     except Exception as e:
-        return f"TOOL 10 CRITICAL CRASH: {sanitize_error_log(str(e))}"
+        return f"🚨 CRITICAL CRASH: {sanitize_error_log(str(e))}"
 
 # ==========================================
 # TOOL 16: WISMO CLIENT CONCIERGE
@@ -1652,10 +1652,10 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     import datetime
     
     hs_key = st.secrets.get("hubspot", {}).get("service_key")
-    if not hs_key: return "CRITICAL ERROR: HubSpot API Key not found."
+    if not hs_key: return "🚨 CRITICAL CRASH: HubSpot API Key not found in st.secrets."
     
     ms_token = st.secrets.get("machship", {}).get("MACHSHIP_API_TOKEN")
-    if not ms_token: return "CRITICAL ERROR: Machship API Token not found."
+    if not ms_token: return "🚨 CRITICAL CRASH: Machship API Token not found in st.secrets."
     
     hs_headers = {
         "Authorization": f"Bearer {hs_key}",
@@ -1667,11 +1667,11 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     try:
         threads_resp = requests.get(f"{hs_threads_url}?status=OPEN", headers=hs_headers, timeout=15)
         if threads_resp.status_code != 200:
-            return f"HubSpot API Request Failed (HTTP {threads_resp.status_code}). Ensure Conversations API scopes are enabled."
+            return f"🚨 CRITICAL CRASH: HubSpot API Request Failed (HTTP {threads_resp.status_code}). Raw Payload: {threads_resp.text}"
             
         threads_data = threads_resp.json().get("results", [])
         if not threads_data:
-            return "Sweep Complete. No open conversational threads found."
+            return "WISMO Sweep Complete. No open conversational threads found."
             
         action_log = []
         
@@ -1679,7 +1679,8 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
             thread_id = thread.get("id")
             
             messages_resp = requests.get(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, timeout=15)
-            if messages_resp.status_code != 200: continue
+            if messages_resp.status_code != 200:
+                return f"🚨 CRITICAL CRASH: HubSpot Messages API Failed (HTTP {messages_resp.status_code}). Raw Payload: {messages_resp.text}"
             
             messages = messages_resp.json().get("results", [])
             if not messages: continue
@@ -1762,19 +1763,23 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     
                 if not dry_run:
                     reply_payload = { "type": "MESSAGE", "text": base_message }
-                    requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=reply_payload)
+                    req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=reply_payload)
+                    if req.status_code not in [200, 201]:
+                        return f"🚨 CRITICAL CRASH: HubSpot POST Reply Failed (HTTP {req.status_code}). Raw Payload: {req.text}"
                 action_log.append(f"Thread {thread_id}: POSITIVE status for {connote}. Replied to customer (POD Attached: {has_pod}).")
                 
             else:
                 if not dry_run:
                     note_payload = { "type": "COMMENT", "text": f"BOOF WISMO Alert: {base_message}" }
-                    requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload)
+                    req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload)
+                    if req.status_code not in [200, 201]:
+                        return f"🚨 CRITICAL CRASH: HubSpot POST Note Failed (HTTP {req.status_code}). Raw Payload: {req.text}"
                 action_log.append(f"Thread {thread_id}: NEGATIVE status for {connote}. Left internal broker note.")
                 
         return "WISMO Sweep Complete.\n" + "\n".join(action_log) if action_log else "WISMO Sweep Complete. No actionable items."
             
     except Exception as e:
-        return f"TOOL 16 CRITICAL CRASH: {sanitize_error_log(str(e))}"
+        return f"🚨 CRITICAL CRASH: {sanitize_error_log(str(e))}"
 
 # ==========================================
 # BACKWARD COMPATIBILITY ALIASES 
