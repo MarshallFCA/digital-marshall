@@ -1641,13 +1641,13 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
         return f"🚨 CRITICAL CRASH: {sanitize_error_log(str(e))}"
 
 # ==========================================
-# TOOL 16: WISMO CLIENT CONCIERGE (CONVERSATIONS API)
+# TOOL 16: WISMO CLIENT CONCIERGE (CONVERSATIONS API - SMART SWEEP)
 # ==========================================
 def tool_16_wismo_client_concierge(dry_run: bool = False):
     """
-    Sweeps HubSpot Conversations for new WISMO requests (Bounded to 2 threads).
-    Extracts references, queries Machship, evaluates sentiment (Positive/Negative).
-    If positive, replies to customer with tracking/POD link. If negative, leaves internal note.
+    Sweeps HubSpot Conversations for new WISMO requests.
+    Uses 'Smart Sweep' to pull up to 10 sorted threads, evaluates texts safely, 
+    and stops after processing 2 actionable threads to prevent timeout.
     """
     import datetime
     
@@ -1665,19 +1665,22 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     hs_threads_url = get_secure_endpoint("hs_threads", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jb252ZXJzYXRpb25zL3YzL2NvbnZlcnNhdGlvbnMvdGhyZWFkcw==")
     
     try:
-        # Micro-batching patch applied: limit=2
-        threads_resp = requests.get(f"{hs_threads_url}?status=OPEN&limit=2", headers=hs_headers, timeout=15)
+        # Smart Sweep: Pull 10, sort by latest timestamp descending to catch the newest emails first.
+        threads_resp = requests.get(f"{hs_threads_url}?status=OPEN&sort=-latestMessageTimestamp&limit=10", headers=hs_headers, timeout=15)
         if threads_resp.status_code != 200:
             return f"🚨 CRITICAL CRASH: HubSpot API Request Failed (HTTP {threads_resp.status_code}). Raw Payload: {threads_resp.text}"
             
-        # Hard fail-safe slice to 2 items to prevent WebSocket timeout
-        threads_data = threads_resp.json().get("results", [])[:2]
+        threads_data = threads_resp.json().get("results", [])
         if not threads_data:
             return "WISMO Sweep Complete. No open conversational threads found."
             
         action_log = []
+        processed_count = 0
         
         for thread in threads_data:
+            if processed_count >= 2:
+                break # Timeout Breaker
+                
             thread_id = thread.get("id")
             
             messages_resp = requests.get(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, timeout=15)
@@ -1687,11 +1690,13 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
             messages = messages_resp.json().get("results", [])
             if not messages: continue
             
-            latest_msg = messages[-1]
-            msg_text = latest_msg.get("text", "")
-            if not msg_text or latest_msg.get("type") == "COMMENT": continue
+            # Aggregate all real messages in the thread to guarantee we don't miss the user's text
+            msg_texts = [m.get("text", "") for m in messages if m.get("type") != "COMMENT" and m.get("text")]
+            if not msg_texts: continue
             
-            extract_prompt = f"Extract any specific alphanumeric tracking/consignment numbers (e.g. MS123456, REF999) from this customer email text. Return ONLY a valid JSON array of strings containing the exact reference numbers. Text: {msg_text}"
+            combined_text = "\n".join(msg_texts)
+            
+            extract_prompt = f"Extract any specific alphanumeric tracking/consignment numbers (e.g. MS123456, REF999) from this customer email text. Return ONLY a valid JSON array of strings containing the exact reference numbers. Text: {combined_text}"
             extracted_refs_str = call_gemini_api(extract_prompt, json_mode=True)
             try:
                 refs = json.loads(extracted_refs_str)
@@ -1736,6 +1741,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     note_payload = { "type": "COMMENT", "text": f"BOOF WISMO Alert: Could not locate Machship data for reference {connote}. Reassigning to human broker." }
                     requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload)
                 action_log.append(f"Thread {thread_id}: Reference {connote} not found. Left internal note.")
+                processed_count += 1
                 continue
                 
             eval_prompt = f"""
@@ -1769,6 +1775,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     if req.status_code not in [200, 201]:
                         return f"🚨 CRITICAL CRASH: HubSpot POST Reply Failed (HTTP {req.status_code}). Raw Payload: {req.text}"
                 action_log.append(f"Thread {thread_id}: POSITIVE status for {connote}. Replied to customer (POD Attached: {has_pod}).")
+                processed_count += 1
                 
             else:
                 if not dry_run:
@@ -1777,6 +1784,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     if req.status_code not in [200, 201]:
                         return f"🚨 CRITICAL CRASH: HubSpot POST Note Failed (HTTP {req.status_code}). Raw Payload: {req.text}"
                 action_log.append(f"Thread {thread_id}: NEGATIVE status for {connote}. Left internal broker note.")
+                processed_count += 1
                 
         return "WISMO Sweep Complete.\n" + "\n".join(action_log) if action_log else "WISMO Sweep Complete. No actionable items."
             
