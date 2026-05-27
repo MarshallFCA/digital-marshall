@@ -1667,8 +1667,8 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     hs_threads_url = get_secure_endpoint("hs_threads", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jb252ZXJzYXRpb25zL3YzL2NvbnZlcnNhdGlvbnMvdGhyZWFkcw==")
     
     try:
-        # PULL UP TO 20 THREADS (Without the broken status parameter)
-        threads_resp = requests.get(f"{hs_threads_url}?limit=20", headers=hs_headers, timeout=15)
+        # PULL UP TO 20 THREADS (Forcing descending temporal sort)
+        threads_resp = requests.get(f"{hs_threads_url}?limit=20&sort=-latestMessageTimestamp", headers=hs_headers, timeout=15)
         if threads_resp.status_code != 200:
             return f"🚨 CRITICAL CRASH: HubSpot API Request Failed (HTTP {threads_resp.status_code}). Raw Payload: {threads_resp.text}"
             
