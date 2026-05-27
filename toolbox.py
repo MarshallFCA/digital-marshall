@@ -1646,8 +1646,9 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
 def tool_16_wismo_client_concierge(dry_run: bool = False):
     """
     Sweeps HubSpot Conversations for new WISMO requests.
-    Uses 'Smart Sweep' to pull up to 10 sorted threads, evaluates texts safely, 
-    and stops after processing 2 actionable threads to prevent timeout.
+    Uses 'Smart Sweep' to pull up to 10 threads, manually sorts them in Python 
+    by newest first, evaluates texts safely, and stops after processing 
+    2 actionable threads to prevent timeout.
     """
     import datetime
     
@@ -1665,14 +1666,20 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     hs_threads_url = get_secure_endpoint("hs_threads", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jb252ZXJzYXRpb25zL3YzL2NvbnZlcnNhdGlvbnMvdGhyZWFkcw==")
     
     try:
-        # Smart Sweep: Pull 10, sort by latest timestamp descending to catch the newest emails first.
-        threads_resp = requests.get(f"{hs_threads_url}?status=OPEN&sort=-latestMessageTimestamp&limit=10", headers=hs_headers, timeout=15)
+        # PULL ONLY - We removed the forbidden sort parameter
+        threads_resp = requests.get(f"{hs_threads_url}?status=OPEN&limit=10", headers=hs_headers, timeout=15)
         if threads_resp.status_code != 200:
             return f"🚨 CRITICAL CRASH: HubSpot API Request Failed (HTTP {threads_resp.status_code}). Raw Payload: {threads_resp.text}"
             
         threads_data = threads_resp.json().get("results", [])
         if not threads_data:
             return "WISMO Sweep Complete. No open conversational threads found."
+            
+        # NATIVE PYTHON SORT: Force newest threads to the top
+        try:
+            threads_data = sorted(threads_data, key=lambda x: x.get("latestMessageTimestamp", ""), reverse=True)
+        except Exception:
+            pass
             
         action_log = []
         processed_count = 0
