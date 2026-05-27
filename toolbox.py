@@ -1667,8 +1667,14 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     hs_threads_url = get_secure_endpoint("hs_threads", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jb252ZXJzYXRpb25zL3YzL2NvbnZlcnNhdGlvbnMvdGhyZWFkcw==")
     
     try:
-        # PULL UP TO 100 THREADS (Forcing descending temporal sort and expanding limit to prevent data loss)
-        threads_resp = requests.get(f"{hs_threads_url}?limit=100&sort=-latestMessageTimestamp", headers=hs_headers, timeout=15)
+        # CONSTRUCT TEMPORAL CUTOFF (30 DAYS) TO BYPASS ASCENDING ARCHIVE LIMITS
+        cutoff_dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)
+        cutoff_str = cutoff_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+        
+        # PULL UP TO 100 THREADS FROM THE LAST 30 DAYS 
+        target_url = f"{hs_threads_url}?limit=100&sort=latestMessageTimestamp&latestMessageTimestampAfter={cutoff_str}"
+        threads_resp = requests.get(target_url, headers=hs_headers, timeout=15)
+        
         if threads_resp.status_code != 200:
             return f"🚨 CRITICAL CRASH: HubSpot API Request Failed (HTTP {threads_resp.status_code}). Raw Payload: {threads_resp.text}"
             
