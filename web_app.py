@@ -223,14 +223,18 @@ with st.sidebar:
     t_stat = "🟢" if "TRANSVIRTUAL_API_KEY" in st.secrets.get("transvirtual", {}) else "🔴"
     c_stat = "🟢" if "tenant_id" in st.secrets.get("cartoncloud", {}) else "🔴"
     g_stat = "🟢" if "project_id" in st.secrets.get("gcp_service_account", {}) else "🔴"
+    gem_stat = "🟢" if "GEMINI_API_KEY" in st.secrets else "🔴"
+    hub_stat = "🟢" if "service_key" in st.secrets.get("hubspot", {}) else "🔴"
     
     st.markdown(f"<div class='status-text'>{x_stat} <b>XERO</b> (Financial)</div>", unsafe_allow_html=True)
     st.markdown(f"<div class='status-text'>{m_stat} <b>MACHSHIP</b> (Routing)</div>", unsafe_allow_html=True)
     st.markdown(f"<div class='status-text'>{t_stat} <b>TRANSVIRTUAL</b> (Live)</div>", unsafe_allow_html=True)
     st.markdown(f"<div class='status-text'>{c_stat} <b>CARTON CLOUD</b> (WMS)</div>", unsafe_allow_html=True)
     st.markdown(f"<div class='status-text'>{g_stat} <b>GOOGLE DRIVE</b> (Docs)</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='status-text'>{gem_stat} <b>GEMINI API</b> (LLM)</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='status-text'>{hub_stat} <b>HUBSPOT</b> (CRM)</div>", unsafe_allow_html=True)
     
-    if all(s == "🟢" for s in [x_stat, m_stat, t_stat, c_stat, g_stat]):
+    if all(s == "🟢" for s in [x_stat, m_stat, t_stat, c_stat, g_stat, gem_stat, hub_stat]):
         st.success("STATUS: ALL SYSTEMS NOMINAL")
     else:
         st.error("STATUS: TELEMETRY ANOMALY DETECTED")
@@ -444,7 +448,7 @@ with tab_terminal:
                         "type": "function",
                         "function": {
                             "name": "hybrid_gemini_sheet_generator",
-                            "description": "Uses Gemini natively to analyze general datasets (CSV/Excel) and process logic instructions into a Google Sheet. CRITICAL WARNING: DO NOT use this tool for carrier invoices, variance reports, or auditing bills. DO NOT use this tool to create text documents or SOPs.",
+                            "description": "Uses Gemini natively to analyze general datasets (CSV/Excel/PDFs) and process logic instructions into a Google Sheet. CRITICAL WARNING: DO NOT use this tool for carrier invoices, variance reports, or auditing bills. DO NOT use this tool to create text documents or SOPs.",
                             "parameters": {
                                 "type": "object",
                                 "properties": {
