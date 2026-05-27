@@ -31,7 +31,6 @@ def call_gemini_api(prompt: str, json_mode: bool = False) -> str:
         raise ValueError("GEMINI_API_KEY is missing from the telemetry secrets.")
         
     try:
-        # Attempt modern google-genai SDK
         from google import genai
         from google.genai import types
         client = genai.Client(api_key=gemini_key)
@@ -57,7 +56,6 @@ def call_gemini_api(prompt: str, json_mode: bool = False) -> str:
         return response.text.strip()
         
     except ImportError:
-        # Fallback to legacy google-generativeai to guarantee zero functional degradation
         import google.generativeai as genai_legacy
         genai_legacy.configure(api_key=gemini_key)
         available_models = [m.name for m in genai_legacy.list_models() if 'generateContent' in m.supported_generation_methods]
@@ -1150,7 +1148,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
             diag_string = "Clean" if not diagnostic_log else " | ".join(diagnostic_log)
             surcharge_str = ", ".join(ms_metrics.get("machship_surcharge_names", [])) if ms_metrics else "None"
 
-            # 19% Fallback Logic integration
             if expected_amount > 0.01:
                 markup_factor = expected_sell / expected_amount
             else:
@@ -1375,6 +1372,13 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
         offset = 2
     prev_weekday = (now - datetime.timedelta(days=offset)).date()
     
+    def get_next_business_day_10am():
+        now_dt = datetime.datetime.now()
+        next_dt = now_dt + datetime.timedelta(days=1)
+        while next_dt.weekday() >= 5: 
+            next_dt += datetime.timedelta(days=1)
+        return next_dt.replace(hour=10, minute=0, second=0, microsecond=0).strftime('%Y-%m-%dT%H:%M:%S')
+    
     try:
         ms_token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
         hs_key = st.secrets.get("hubspot", {}).get("service_key")
@@ -1415,8 +1419,11 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
             except:
                 return None
 
+        next_biz_10am = get_next_business_day_10am()
+
         for item in active_data:
             c_id = item.get('consignmentNumber')
+            internal_id = item.get('id')
             carrier = item.get('carrier', {}).get('name', 'Unknown Carrier')
             
             track_status = item.get('consignmentTrackingStatus', {}).get('name', '').lower()
@@ -1461,6 +1468,7 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
                 
             exceptions.append({
                 "ms_number": c_id,
+                "internal_id": internal_id,
                 "carrier_name": carrier,
                 "destination": destination,
                 "status_display": (track_status or gen_status).title(),
@@ -1506,6 +1514,7 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
         
         for ex in exceptions:
             ms_number = ex['ms_number']
+            internal_id = ex.get('internal_id')
             carrier_name = ex['carrier_name']
             destination = ex['destination']
             status_display = ex['status_display']
@@ -1521,10 +1530,31 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
                     if check_hubspot_duplicate(ms_number, hs_key):
                         action_taken = f"Skipped: HubSpot Ticket already exists for {ms_number}."
                     else:
+                        hs_priority = "MEDIUM"
+                        
                         if reason == "Missed Pickup":
-                            message_text = f"Hello,\n\nWe are requesting an urgent status update. Consignment {ms_number} was manifested and ready for dispatch but appears to have missed its pickup.\n\nPlease prioritize collection.\n\nThank you,\nFreight Companies Australia"
+                            rebook_url = get_secure_endpoint("machship_rebook", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9tYW5pZmVzdHMvcmVib29rUGlja3Vw")
+                            rebook_payload = {
+                                "consignmentIds": [internal_id],
+                                "despatchDateTimeLocal": next_biz_10am
+                            }
+                            rebook_status = "Failed to autonomously rebook."
+                            try:
+                                rb_resp = requests.post(rebook_url, headers=headers, json=rebook_payload, timeout=15)
+                                if rb_resp.status_code == 200:
+                                    rebook_status = f"Autonomously rebooked via API for {next_biz_10am}."
+                                else:
+                                    rebook_status = f"Rebook API rejected payload (HTTP {rb_resp.status_code})."
+                                    hs_priority = "HIGH"
+                            except Exception as e:
+                                rebook_status = f"Rebook API Crash: {sanitize_error_log(str(e))}"
+                                hs_priority = "HIGH"
+
+                            message_text = f"Hello,\n\nConsignment {ms_number} was manifested but missed its pickup. {rebook_status}\n\nPlease ensure collection occurs.\n\nThank you,\nFreight Companies Australia"
+                            action_taken = rebook_status
                         else:
                             message_text = f"Hello,\n\nWe are requesting a formal status update on consignment {ms_number}. It is currently showing as '{status_display}' and has been flagged for {reason}.\n\nPlease investigate and provide an updated ETA.\n\nThank you,\nFreight Companies Australia"
+                            action_taken = f"Ticket successfully created. Draft routed to {carrier_email}."
                         
                         hs_headers = { "Authorization": f"Bearer {hs_key}", "Content-Type": "application/json" }
                         raw_properties = {
@@ -1532,13 +1562,12 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
                             "hs_pipeline_stage": "1",  
                             "subject": f"SERVICE ALERT: {ms_number} ({carrier_name})",
                             "content": f"An autonomous query has flagged a freight anomaly.\n\nConsignment: {ms_number}\nCarrier: {carrier_name}\nDestination: {destination}\nAnomaly Trigger: {reason}\nCurrent Status: {status_display}\n\n=== DRAFT EMAIL TO COPY/PASTE FOR {carrier_email} ===\n{message_text}",
-                            "hs_ticket_priority": "HIGH" if reason == "Missed Pickup" else "MEDIUM"
+                            "hs_ticket_priority": hs_priority
                         }
                         
                         clean_properties = sanitize_hubspot_payload(raw_properties)
                         try:
                             requests.post(hs_url, headers=hs_headers, json={"properties": clean_properties}, timeout=15)
-                            action_taken = f"Ticket successfully created. Draft routed to {carrier_email}."
                         except Exception:
                             action_taken = "Failed to sync to HubSpot."
                 else:
