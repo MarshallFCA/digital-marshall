@@ -1667,8 +1667,8 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     hs_threads_url = get_secure_endpoint("hs_threads", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jb252ZXJzYXRpb25zL3YzL2NvbnZlcnNhdGlvbnMvdGhyZWFkcw==")
     
     try:
-        # CONSTRUCT TEMPORAL CUTOFF (30 DAYS) TO BYPASS ASCENDING ARCHIVE LIMITS
-        cutoff_dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=30)
+        # CONSTRUCT TEMPORAL CUTOFF (7 DAYS) TO PREVENT ASCENDING ARCHIVE TRUNCATION
+        cutoff_dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)
         cutoff_str = cutoff_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
         
         # PULL UP TO 100 THREADS FROM THE LAST 30 DAYS 
