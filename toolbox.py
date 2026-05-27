@@ -1747,39 +1747,53 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 actioned_count += 1
                 continue
                 
-            connote = str(refs[0]).upper()
+            connote = str(refs[0]).upper().strip()
             
             ms_headers_dict = { "token": ms_token, "Content-Type": "application/json" }
-            ms_search_urls = [
-                get_secure_endpoint("machship_get", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0Q29uc2lnbm1lbnQ/aWQ9"),
-                get_secure_endpoint("machship_carrier_id", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlDYXJyaWVyQ29uc2lnbm1lbnRJZD9pbmNsdWRlQ2hpbGRDb21wYW5pZXM9dHJ1ZQ=="),
-                get_secure_endpoint("machship_ref1", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl"),
-                get_secure_endpoint("machship_ref2", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl")
-            ]
             
             tracking_info = None
             ms_consign_id = None
             has_pod = False
             carrier_source = "None"
             
-            for url in ms_search_urls:
-                if "?id=" in url and connote.startswith("MS"):
-                    ms_id = re.sub(r"\D", "", connote)
-                    r = requests.get(f"{url}{ms_id}", headers=ms_headers_dict, timeout=10)
-                else:
-                    r = requests.post(url, headers=ms_headers_dict, json=[connote], timeout=10)
-                    
-                if r.status_code == 200:
-                    data = r.json()
-                    obj = data.get("object")
-                    if isinstance(obj, list) and len(obj) > 0: obj = obj[0]
-                    
-                    if obj:
-                        tracking_info = json.dumps(obj)
-                        ms_consign_id = obj.get("id")
-                        has_pod = obj.get("attachmentCount", 0) > 0
-                        carrier_source = "Machship"
-                        break
+            # ISOLATED GET PIPELINE
+            if connote.startswith("MS"):
+                ms_id = re.sub(r"\D", "", connote)
+                get_url = get_secure_endpoint("machship_get", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0Q29uc2lnbm1lbnQ/aWQ9")
+                try:
+                    r = requests.get(f"{get_url}{ms_id}", headers=ms_headers_dict, timeout=10)
+                    if r.status_code == 200:
+                        obj = r.json().get("object")
+                        if obj:
+                            tracking_info = json.dumps(obj)
+                            ms_consign_id = obj.get("id")
+                            has_pod = obj.get("attachmentCount", 0) > 0
+                            carrier_source = "Machship"
+                except Exception as e:
+                    action_log.append(f"MS GET Fetch Error: {sanitize_error_log(str(e))}")
+
+            # ISOLATED POST MATRIX PIPELINE
+            if not tracking_info:
+                ms_post_urls = [
+                    get_secure_endpoint("machship_carrier_id", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlDYXJyaWVyQ29uc2lnbm1lbnRJZD9pbmNsdWRlQ2hpbGRDb21wYW5pZXM9dHJ1ZQ=="),
+                    get_secure_endpoint("machship_ref1", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl"),
+                    get_secure_endpoint("machship_ref2", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl")
+                ]
+                for url in ms_post_urls:
+                    try:
+                        r = requests.post(url, headers=ms_headers_dict, json=[connote], timeout=10)
+                        if r.status_code == 200:
+                            data = r.json()
+                            obj_list = data.get("object")
+                            if obj_list and isinstance(obj_list, list) and len(obj_list) > 0:
+                                obj = obj_list[0]
+                                tracking_info = json.dumps(obj)
+                                ms_consign_id = obj.get("id")
+                                has_pod = obj.get("attachmentCount", 0) > 0
+                                carrier_source = "Machship"
+                                break
+                    except Exception as e:
+                        action_log.append(f"MS POST Fetch Error: {sanitize_error_log(str(e))}")
 
             if not tracking_info:
                 tv_token = st.secrets.get("transvirtual", {}).get("TRANSVIRTUAL_API_KEY")
