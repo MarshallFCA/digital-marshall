@@ -1649,6 +1649,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     Enforces a strict Python-level 'OPEN' filter.
     Uses 'Smart Sweep' to process only 2 open actionable threads to prevent timeout. 
     Anti-Loop: Leaves a hard skip note if no connote is found.
+    Expanded Pipeline: Audits Machship first, executes fallback sequence to Transvirtual if required.
     """
     import datetime
     
@@ -1717,7 +1718,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
             combined_text = "\n".join(msg_texts)
             
             # STRICT EXTRACTION FIREWALL: Ignore phone numbers and ABNs
-            extract_prompt = f"Extract ONLY valid freight tracking/consignment numbers (e.g. MS123456) from this customer email text. CRITICAL INSTRUCTION: Do NOT extract phone numbers, dates, or ABNs. Return ONLY a valid JSON array of strings containing the exact reference numbers. Text: {combined_text}"
+            extract_prompt = f"Extract ONLY valid freight tracking/consignment numbers (e.g. MS123456) from this customer email text. CRITICAL INSTRUCTION: Do NOT extract phone numbers, dates, or ABNs. Ignore generic 12-digit numeric strings. Return ONLY a valid JSON array of strings containing the exact alphanumeric reference numbers. Text: {combined_text}"
             extracted_refs_str = call_gemini_api(extract_prompt, json_mode=True)
             try:
                 refs = json.loads(extracted_refs_str)
@@ -1727,14 +1728,14 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
             if not refs or not isinstance(refs, list) or len(refs) == 0:
                 # LOGIC BLACK HOLE FIX: Leave an internal skip note so this thread is ignored on the next sweep
                 if not dry_run:
-                    note_payload = { "type": "COMMENT", "text": f"BOOF WISMO Alert: No valid tracking reference detected in this thread. Skipping." }
+                    note_payload = { "type": "COMMENT", "text": "BOOF WISMO Alert: No valid tracking reference detected in this thread. Skipping." }
                     requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload)
                 action_log.append(f"Thread {thread_id}: No connote found. Left skip note.")
                 continue
                 
-            connote = refs[0].upper()
+            connote = str(refs[0]).upper()
             
-            ms_headers = { "token": ms_token, "Content-Type": "application/json" }
+            ms_headers_dict = { "token": ms_token, "Content-Type": "application/json" }
             ms_search_urls = [
                 get_secure_endpoint("machship_get", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0Q29uc2lnbm1lbnQ/aWQ9"),
                 get_secure_endpoint("machship_ref1", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl")
@@ -1743,13 +1744,14 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
             tracking_info = None
             ms_consign_id = None
             has_pod = False
+            carrier_source = "None"
             
             for url in ms_search_urls:
                 if "?id=" in url and connote.startswith("MS"):
                     ms_id = re.sub(r"\D", "", connote)
-                    r = requests.get(f"{url}{ms_id}", headers=ms_headers, timeout=10)
+                    r = requests.get(f"{url}{ms_id}", headers=ms_headers_dict, timeout=10)
                 else:
-                    r = requests.post(url, headers=ms_headers, json=[connote], timeout=10)
+                    r = requests.post(url, headers=ms_headers_dict, json=[connote], timeout=10)
                     
                 if r.status_code == 200:
                     data = r.json()
@@ -1760,17 +1762,40 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         tracking_info = json.dumps(obj)
                         ms_consign_id = obj.get("id")
                         has_pod = obj.get("attachmentCount", 0) > 0
+                        carrier_source = "Machship"
                         break
+
+            # SECONDARY FALLBACK SEQUENCE: Transvirtual
+            if not tracking_info:
+                tv_token = st.secrets.get("transvirtual", {}).get("TRANSVIRTUAL_API_KEY")
+                if tv_token:
+                    tv_headers = {
+                        "Authorization": tv_token,
+                        "Content-Type": "application/json",
+                        "Accept": "application/json"
+                    }
+                    tv_status_url = get_secure_endpoint("tv_status", "aHR0cHM6Ly9hcGkudHJhbnN2aXJ0dWFsLmNvbS5hdS9hcGkvQ29uc2lnbm1lbnRTdGF0dXM=")
+                    try:
+                        tv_payload = {"Number": connote}
+                        tv_resp = requests.post(tv_status_url, headers=tv_headers, json=tv_payload, timeout=10)
+                        if tv_resp.status_code == 200 and "Missing" not in tv_resp.text:
+                            tv_data = tv_resp.json().get("Data", tv_resp.json())
+                            if tv_data:
+                                tracking_info = json.dumps(tv_data)
+                                has_pod = False
+                                carrier_source = "Transvirtual"
+                    except Exception as e:
+                        action_log.append(f"Thread {thread_id}: Transvirtual Fallback API Error: {sanitize_error_log(str(e))}")
                         
             if not tracking_info:
                 if not dry_run:
-                    note_payload = { "type": "COMMENT", "text": f"BOOF WISMO Alert: Could not locate Machship data for reference {connote}. Reassigning to human broker." }
+                    note_payload = { "type": "COMMENT", "text": f"BOOF WISMO Alert: Could not locate Machship or Transvirtual data for reference {connote}. Reassigning to human broker." }
                     requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload)
-                action_log.append(f"Thread {thread_id}: Reference {connote} not found. Left internal note.")
+                action_log.append(f"Thread {thread_id}: Reference {connote} not found across API pipelines. Left internal note.")
                 continue
                 
             eval_prompt = f"""
-            You are the BOOF Freight Concierge. Analyze this JSON freight tracking data: {tracking_info}
+            You are the BOOF Freight Concierge. Analyze this JSON freight tracking data retrieved via {carrier_source}: {tracking_info}
             
             Task:
             1. Evaluate status. POSITIVE = (Delivered, Booked, On board for delivery, Manifested, In Transit). NEGATIVE = (Delayed, Exception, Damaged, Lost, Missed Pickup).
@@ -1790,7 +1815,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
             base_message = eval_res.get("message", "Status unavailable.")
             
             if sentiment == "POSITIVE":
-                if has_pod and ms_consign_id:
+                if carrier_source == "Machship" and has_pod and ms_consign_id:
                     pod_link = f"[https://live.machship.com/tracking?id=](https://live.machship.com/tracking?id=){ms_consign_id}"
                     base_message += f"\n\nProof of Delivery and live tracking are securely accessible via the carrier portal: {pod_link}"
                     
@@ -1799,7 +1824,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=reply_payload)
                     if req.status_code not in [200, 201]:
                         return f"🚨 CRITICAL CRASH: HubSpot POST Reply Failed (HTTP {req.status_code}). Raw Payload: {req.text}"
-                action_log.append(f"Thread {thread_id}: POSITIVE status for {connote}. Replied to customer (POD Attached: {has_pod}).")
+                action_log.append(f"Thread {thread_id}: POSITIVE status for {connote} via {carrier_source}. Replied to customer (POD Attached: {has_pod}).")
                 
             else:
                 if not dry_run:
@@ -1807,7 +1832,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload)
                     if req.status_code not in [200, 201]:
                         return f"🚨 CRITICAL CRASH: HubSpot POST Note Failed (HTTP {req.status_code}). Raw Payload: {req.text}"
-                action_log.append(f"Thread {thread_id}: NEGATIVE status for {connote}. Left internal broker note.")
+                action_log.append(f"Thread {thread_id}: NEGATIVE status for {connote} via {carrier_source}. Left internal broker note.")
                 
         return "WISMO Sweep Complete.\n" + "\n".join(action_log) if action_log else "WISMO Sweep Complete. No actionable items."
             
