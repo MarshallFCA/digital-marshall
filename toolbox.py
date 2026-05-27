@@ -7,6 +7,8 @@ import pandas as pd
 import numpy as np
 import datetime
 import pypdf
+import os
+import tempfile
 import streamlit as st
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
@@ -70,6 +72,56 @@ def call_gemini_api(prompt: str, json_mode: bool = False) -> str:
         generation_config = genai_legacy.GenerationConfig(response_mime_type="application/json") if json_mode else None
         response = model.generate_content(prompt, generation_config=generation_config)
         return response.text.strip()
+
+# ==========================================
+# VISION BRIDGE PROTOCOL (Multimodal PDF to CSV)
+# ==========================================
+def vision_bridge_pdf_to_csv(file_obj) -> str:
+    gemini_key = st.secrets.get("GEMINI_API_KEY")
+    if not gemini_key: 
+        return ""
+        
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(file_obj.read())
+        tmp_path = tmp.name
+        
+    prompt = "Extract all tabular data, tables, and structured lists from this PDF. Convert the data into a strict, raw CSV format. Include column headers. Output ONLY the raw CSV text. Do not include markdown blocks or any other explanation."
+    csv_text = ""
+    
+    try:
+        try:
+            from google import genai
+            client = genai.Client(api_key=gemini_key)
+            models = client.models.list()
+            pro_models = sorted([m.name.replace('models/', '') for m in models if 'pro' in m.name.lower()], reverse=True)
+            target_model = pro_models[0] if pro_models else "gemini-2.5-pro"
+            
+            uploaded_file = client.files.upload(file=tmp_path, config={'mime_type': 'application/pdf'})
+            response = client.models.generate_content(
+                model=target_model,
+                contents=[uploaded_file, prompt]
+            )
+            csv_text = response.text
+            client.files.delete(name=uploaded_file.name)
+        except ImportError:
+            import google.generativeai as genai_legacy
+            genai_legacy.configure(api_key=gemini_key)
+            available_models = [m.name for m in genai_legacy.list_models() if 'generateContent' in m.supported_generation_methods]
+            pro_models = sorted([m.replace('models/', '') for m in available_models if 'pro' in m.lower()], reverse=True)
+            target_model = pro_models[0] if pro_models else "gemini-1.5-pro"
+            
+            uploaded_file = genai_legacy.upload_file(path=tmp_path, mime_type="application/pdf")
+            model = genai_legacy.GenerativeModel(target_model)
+            response = model.generate_content([uploaded_file, prompt])
+            csv_text = response.text
+            genai_legacy.delete_file(uploaded_file.name)
+    except Exception as e:
+        print(f"Vision Bridge API Failure: {sanitize_error_log(str(e))}")
+    finally:
+        os.remove(tmp_path)
+        
+    csv_text = re.sub(r"^```(csv)?\n|\n```$", "", csv_text.strip(), flags=re.IGNORECASE).strip()
+    return csv_text
 
 # ==========================================
 # OWASP TELEMETRY SANITIZER (DSGAI14)
@@ -734,6 +786,12 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
                         temp_df = pd.read_csv(uf, encoding='cp1252', encoding_errors='replace')
                 elif file_extension in ["xlsx", "xls"]:
                     temp_df = pd.read_excel(uf)
+                elif file_extension == "pdf":
+                    csv_string = vision_bridge_pdf_to_csv(uf)
+                    if csv_string:
+                        temp_df = pd.read_csv(io.StringIO(csv_string))
+                    else:
+                        continue
                 else:
                     continue
                 df_list.append(temp_df)
@@ -741,7 +799,7 @@ def hybrid_gemini_sheet_generator(instructions: str, target_sheet_name: str) -> 
                 return f"Error reading file {uf.name}: {sanitize_error_log(str(read_err))}"
 
         if not df_list:
-            return "Error: No valid CSV or Excel files were found to combine."
+            return "Error: No valid CSV, Excel, or PDF data tables were found to combine."
 
         main_df = pd.concat(df_list, ignore_index=True)
         schema_info = main_df.dtypes.to_string()
@@ -974,11 +1032,16 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
         if uploaded_files:
             for uf in uploaded_files:
                 uf.seek(0)
+                file_ext = uf.name.lower().split('.')[-1]
                 try:
-                    if uf.name.lower().endswith('.csv'):
+                    if file_ext == 'csv':
                         df_raw = pd.read_csv(uf, sep=None, engine='python')
-                    elif uf.name.lower().endswith(('.xls', '.xlsx')):
+                    elif file_ext in ['xls', 'xlsx']:
                         df_raw = pd.read_excel(uf)
+                    elif file_ext == 'pdf':
+                        csv_string = vision_bridge_pdf_to_csv(uf)
+                        if csv_string:
+                            df_raw = pd.read_csv(io.StringIO(csv_string))
                     if df_raw is not None and not df_raw.empty:
                         break
                 except:
