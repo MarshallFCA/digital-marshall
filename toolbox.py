@@ -1096,9 +1096,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 
             i_val = str(row.get(invoice_col, "Unknown")).strip() if invoice_col else "Unknown"
 
-            # ==========================================
-            # OWASP CONTEXT MINIMIZER (DSGAI15)
-            # ==========================================
             pii_keywords = ['name', 'address', 'email', 'phone', 'contact', 'receiver', 'sender', 'attention', 'company', 'town', 'suburb', 'street']
             safe_row_items = []
             for k, v in row.items():
@@ -1642,6 +1639,142 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
         
     except Exception as e:
         return f"TOOL 10 CRITICAL CRASH: {sanitize_error_log(str(e))}"
+
+# ==========================================
+# TOOL 16: WISMO CLIENT CONCIERGE
+# ==========================================
+def tool_16_wismo_client_concierge(dry_run: bool = False):
+    """
+    Sweeps HubSpot Conversations for new WISMO requests.
+    Extracts references, queries Machship, evaluates sentiment (Positive/Negative).
+    If positive, replies to customer with tracking/POD link. If negative, leaves internal note.
+    """
+    import datetime
+    
+    hs_key = st.secrets.get("hubspot", {}).get("service_key")
+    if not hs_key: return "CRITICAL ERROR: HubSpot API Key not found."
+    
+    ms_token = st.secrets.get("machship", {}).get("MACHSHIP_API_TOKEN")
+    if not ms_token: return "CRITICAL ERROR: Machship API Token not found."
+    
+    hs_headers = {
+        "Authorization": f"Bearer {hs_key}",
+        "Content-Type": "application/json"
+    }
+    
+    hs_threads_url = get_secure_endpoint("hs_threads", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jb252ZXJzYXRpb25zL3YzL2NvbnZlcnNhdGlvbnMvdGhyZWFkcw==")
+    
+    try:
+        threads_resp = requests.get(f"{hs_threads_url}?status=OPEN", headers=hs_headers, timeout=15)
+        if threads_resp.status_code != 200:
+            return f"HubSpot API Request Failed (HTTP {threads_resp.status_code}). Ensure Conversations API scopes are enabled."
+            
+        threads_data = threads_resp.json().get("results", [])
+        if not threads_data:
+            return "Sweep Complete. No open conversational threads found."
+            
+        action_log = []
+        
+        for thread in threads_data:
+            thread_id = thread.get("id")
+            
+            messages_resp = requests.get(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, timeout=15)
+            if messages_resp.status_code != 200: continue
+            
+            messages = messages_resp.json().get("results", [])
+            if not messages: continue
+            
+            latest_msg = messages[-1]
+            msg_text = latest_msg.get("text", "")
+            if not msg_text or latest_msg.get("type") == "COMMENT": continue
+            
+            extract_prompt = f"Extract any specific alphanumeric tracking/consignment numbers (e.g. MS123456, REF999) from this customer email text. Return ONLY a valid JSON array of strings containing the exact reference numbers. Text: {msg_text}"
+            extracted_refs_str = call_gemini_api(extract_prompt, json_mode=True)
+            try:
+                refs = json.loads(extracted_refs_str)
+            except:
+                refs = []
+                
+            if not refs or not isinstance(refs, list):
+                continue
+                
+            connote = refs[0].upper()
+            
+            ms_headers = { "token": ms_token, "Content-Type": "application/json" }
+            ms_search_urls = [
+                get_secure_endpoint("machship_get", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0Q29uc2lnbm1lbnQ/aWQ9"),
+                get_secure_endpoint("machship_ref1", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl")
+            ]
+            
+            tracking_info = None
+            ms_consign_id = None
+            has_pod = False
+            
+            for url in ms_search_urls:
+                if "?id=" in url and connote.startswith("MS"):
+                    ms_id = re.sub(r"\D", "", connote)
+                    r = requests.get(f"{url}{ms_id}", headers=ms_headers, timeout=10)
+                else:
+                    r = requests.post(url, headers=ms_headers, json=[connote], timeout=10)
+                    
+                if r.status_code == 200:
+                    data = r.json()
+                    obj = data.get("object")
+                    if isinstance(obj, list) and len(obj) > 0: obj = obj[0]
+                    
+                    if obj:
+                        tracking_info = json.dumps(obj)
+                        ms_consign_id = obj.get("id")
+                        has_pod = obj.get("attachmentCount", 0) > 0
+                        break
+                        
+            if not tracking_info:
+                if not dry_run:
+                    note_payload = { "type": "COMMENT", "text": f"BOOF WISMO Alert: Could not locate Machship data for reference {connote}. Reassigning to human broker." }
+                    requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload)
+                action_log.append(f"Thread {thread_id}: Reference {connote} not found. Left internal note.")
+                continue
+                
+            eval_prompt = f"""
+            You are the BOOF Freight Concierge. Analyze this JSON freight tracking data: {tracking_info}
+            
+            Task:
+            1. Evaluate status. POSITIVE = (Delivered, Booked, On board for delivery, Manifested, In Transit). NEGATIVE = (Delayed, Exception, Damaged, Lost, Missed Pickup).
+            2. If POSITIVE, draft a highly professional, concise, non-chatty message for the customer. E.g., 'Consignment [ID] is currently in transit. Expected ETA is [Date].'
+            3. If NEGATIVE, draft an internal note for the FCA broker. E.g., 'ACTION REQUIRED: [ID] is delayed. Exception flagged.'
+            
+            Return ONLY a valid JSON object with keys: 'sentiment' (strictly "POSITIVE" or "NEGATIVE") and 'message' (the drafted text).
+            """
+            
+            eval_str = call_gemini_api(eval_prompt, json_mode=True)
+            try:
+                eval_res = json.loads(eval_str)
+            except:
+                eval_res = {"sentiment": "NEGATIVE", "message": "Failed to parse AI evaluation."}
+                
+            sentiment = eval_res.get("sentiment", "NEGATIVE")
+            base_message = eval_res.get("message", "Status unavailable.")
+            
+            if sentiment == "POSITIVE":
+                if has_pod and ms_consign_id:
+                    pod_link = f"[https://live.machship.com/tracking?id=](https://live.machship.com/tracking?id=){ms_consign_id}"
+                    base_message += f"\n\nProof of Delivery and live tracking are securely accessible via the carrier portal: {pod_link}"
+                    
+                if not dry_run:
+                    reply_payload = { "type": "MESSAGE", "text": base_message }
+                    requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=reply_payload)
+                action_log.append(f"Thread {thread_id}: POSITIVE status for {connote}. Replied to customer (POD Attached: {has_pod}).")
+                
+            else:
+                if not dry_run:
+                    note_payload = { "type": "COMMENT", "text": f"BOOF WISMO Alert: {base_message}" }
+                    requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload)
+                action_log.append(f"Thread {thread_id}: NEGATIVE status for {connote}. Left internal broker note.")
+                
+        return "WISMO Sweep Complete.\n" + "\n".join(action_log) if action_log else "WISMO Sweep Complete. No actionable items."
+            
+    except Exception as e:
+        return f"TOOL 16 CRITICAL CRASH: {sanitize_error_log(str(e))}"
 
 # ==========================================
 # BACKWARD COMPATIBILITY ALIASES 
