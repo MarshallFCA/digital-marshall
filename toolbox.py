@@ -1732,6 +1732,10 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 customer_actor_id = None
                 customer_delivery_identifier = None
                 
+                # 1. Check thread-level assignee first
+                if thread.get("assigneeId"):
+                    sender_actor_id = str(thread.get("assigneeId"))
+                
                 for m in messages:
                     if not channel_id and m.get("channelId"):
                         channel_id = str(m.get("channelId"))
@@ -1762,19 +1766,25 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         elif not root_actor.startswith("S-"):
                             if not customer_actor_id: customer_actor_id = root_actor
                             
-                # FALLBACK FOR SENDER ACTOR ID (Harvest primary CRM Owner)
+                # FALLBACK FOR SENDER ACTOR ID (Harvest primary CRM Owner User ID)
                 if not sender_actor_id:
                     try:
-                        owner_req = requests.get("[https://api.hubapi.com/crm/v3/owners?limit=1](https://api.hubapi.com/crm/v3/owners?limit=1)", headers=hs_headers, timeout=10)
+                        owner_req = requests.get("[https://api.hubapi.com/crm/v3/owners?limit=10](https://api.hubapi.com/crm/v3/owners?limit=10)", headers=hs_headers, timeout=10)
                         if owner_req.status_code == 200:
                             owners = owner_req.json().get('results', [])
-                            if owners:
-                                sender_actor_id = f"A-{owners[0]['id']}"
+                            for o in owners:
+                                uid = o.get("userId")
+                                if uid:
+                                    sender_actor_id = f"A-{uid}"
+                                    break
                     except Exception:
                         pass
                         
+                # FINAL FAILSAFE: If no sender actor ID can be found, skip the thread to prevent HTTP 400 validation crash
                 if not sender_actor_id:
-                    sender_actor_id = "A-1" 
+                    action_log.append(f"Thread {thread_id}: CRITICAL ERROR - Cannot deduce a valid Agent ID (A-{{userId}}) to send the reply from. Thread skipped.")
+                    actioned_count += 1
+                    continue
 
                 def build_payload(msg_type, text):
                     p = { "type": msg_type, "text": text, "senderActorId": sender_actor_id }
