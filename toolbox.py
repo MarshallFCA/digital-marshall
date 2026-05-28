@@ -1647,8 +1647,8 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     """
     Sweeps HubSpot Conversations for new WISMO requests.
     Enforces a strict Python-level 'OPEN' filter.
-    Uses a dynamic limit to process up to 2 actionable threads to prevent timeout. 
-    Anti-Loop: Forensically scans all messages for existing BOOF alerts to prevent duplicate processing.
+    Uses a dynamic limit to process up to 8 actionable threads to prevent timeout. 
+    Anti-Loop: Forensically compares timestamps to ensure threads can re-open.
     Expanded Pipeline: Audits Machship first, executes fallback sequence to Transvirtual if required.
     Channel Injection: Harvests and applies channelId/channelAccountId to outbound POST requests.
     """
@@ -1684,7 +1684,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
         open_threads = [t for t in all_threads if str(t.get("status", "")).upper() == "OPEN"]
         
         try:
-            open_threads = sorted(open_threads, key=lambda x: x.get("latestMessageTimestamp", ""), reverse=True)
+            open_threads = sorted(open_threads, key=lambda x: str(x.get("latestMessageTimestamp", "")), reverse=True)
         except Exception:
             pass
             
@@ -1696,7 +1696,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
         
         for thread in open_threads:
             try:
-                if actioned_count >= 2:
+                if actioned_count >= 8:
                     break
                     
                 thread_id = thread.get("id")
@@ -1726,14 +1726,22 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         p["channelAccountId"] = str(channel_account_id)
                     return p
                 
-                # SAFE ANTI-LOOP: Scan the entire thread history for previous BOOF interaction.
-                boof_actioned = False
+                # TIME-AWARE ANTI-LOOP
+                latest_customer_time = ""
+                latest_boof_time = ""
                 for m in messages:
-                    if m.get("type") == "COMMENT" and "BOOF WISMO Alert" in m.get("text", ""):
-                        boof_actioned = True
-                        break
-                        
-                if boof_actioned:
+                    m_time = str(m.get("createdAt", ""))
+                    m_type = str(m.get("type", ""))
+                    m_text = str(m.get("text", ""))
+                    
+                    if m_type == "COMMENT" and "BOOF WISMO Alert" in m_text:
+                        if m_time > latest_boof_time:
+                            latest_boof_time = m_time
+                    elif m_type != "COMMENT":
+                        if m_time > latest_customer_time:
+                            latest_customer_time = m_time
+                            
+                if latest_boof_time and latest_customer_time and latest_boof_time >= latest_customer_time:
                     continue
                 
                 msg_texts = [m.get("text", "") for m in messages if m.get("type") != "COMMENT" and m.get("text")]
