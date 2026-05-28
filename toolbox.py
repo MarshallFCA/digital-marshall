@@ -1647,7 +1647,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     """
     Sweeps HubSpot Conversations for new WISMO requests.
     Enforces a strict Python-level 'OPEN' filter.
-    Uses a dynamic limit to process up to 8 actionable threads to prevent timeout. 
+    Uses a dynamic limit to process up to 20 actionable threads to prevent timeout. 
     Anti-Loop: Forensically compares timestamps to ensure threads can re-open.
     Expanded Pipeline: Audits Machship first, executes fallback sequence to Transvirtual if required.
     Channel Injection: Harvests and applies channelId/channelAccountId to outbound POST requests.
@@ -1696,7 +1696,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
         
         for thread in open_threads:
             try:
-                if actioned_count >= 8:
+                if actioned_count >= 20:
                     break
                     
                 thread_id = thread.get("id")
@@ -1720,10 +1720,17 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 print(f"DIAGNOSTIC: Thread {thread_id} - Extracted channelId: {channel_id} | channelAccountId: {channel_account_id}")
 
                 def build_payload(msg_type, text):
+                    # Fail-safe: Downgrade outbound external messages to internal comments if routing IDs are missing
+                    if msg_type == "MESSAGE" and not (channel_id and channel_account_id):
+                        msg_type = "COMMENT"
+                        text = f"BOOF WISMO Alert [DRAFT: Missing Channel Routing IDs, cannot reply to client natively]:\n\n{text}"
+                        
                     p = { "type": msg_type, "text": text }
-                    if channel_id and channel_account_id:
+                    
+                    if msg_type == "MESSAGE" and channel_id and channel_account_id:
                         p["channelId"] = str(channel_id)
                         p["channelAccountId"] = str(channel_account_id)
+                        
                     return p
                 
                 # TIME-AWARE ANTI-LOOP
