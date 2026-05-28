@@ -1669,11 +1669,11 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     hs_threads_url = get_secure_endpoint("hs_threads", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jb252ZXJzYXRpb25zL3YzL2NvbnZlcnNhdGlvbnMvdGhyZWFkcw==")
     
     try:
-        # CHRONOLOGICAL FIREWALL STRICTLY RECALIBRATED TO 2 DAYS
+        # CHRONOLOGICAL FIREWALL STRICTLY RECALIBRATED TO 2 DAYS (Epoch MS)
         cutoff_dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=2)
-        cutoff_str = cutoff_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+        cutoff_ms = int(cutoff_dt.timestamp() * 1000)
         
-        target_url = f"{hs_threads_url}?limit=100&sort=latestMessageTimestamp&latestMessageTimestampAfter={cutoff_str}"
+        target_url = f"{hs_threads_url}?limit=100&sort=latestMessageTimestamp&latestMessageTimestampAfter={cutoff_ms}"
         threads_resp = requests.get(target_url, headers=hs_headers, timeout=15)
         
         if threads_resp.status_code != 200:
@@ -1717,17 +1717,32 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 customer_actor_id = None
                 
                 for m in messages:
-                    if not channel_id and m.get("channelId") and m.get("channelAccountId"):
-                        channel_id = m.get("channelId")
-                        channel_account_id = m.get("channelAccountId")
+                    if not channel_id and m.get("channelId"):
+                        channel_id = str(m.get("channelId"))
+                    if not channel_account_id and m.get("channelAccountId"):
+                        channel_account_id = str(m.get("channelAccountId"))
                     
-                    actor = str(m.get("senderActorId", ""))
-                    if actor.startswith("A-") or actor.startswith("B-"):
-                        if not sender_actor_id:
-                            sender_actor_id = actor
-                    elif actor:
-                        if not customer_actor_id:
-                            customer_actor_id = actor
+                    senders = m.get("senders", [])
+                    if not isinstance(senders, list):
+                        senders = []
+                        
+                    for s in senders:
+                        actor = str(s.get("actorId", ""))
+                        if actor:
+                            if actor.startswith("A-") or actor.startswith("B-"):
+                                if not sender_actor_id:
+                                    sender_actor_id = actor
+                            else:
+                                if not customer_actor_id:
+                                    customer_actor_id = actor
+                                    
+                    # Fallback check on root senderActorId property
+                    root_actor = str(m.get("senderActorId", ""))
+                    if root_actor:
+                        if root_actor.startswith("A-") or root_actor.startswith("B-"):
+                            if not sender_actor_id: sender_actor_id = root_actor
+                        else:
+                            if not customer_actor_id: customer_actor_id = root_actor
                             
                 # FALLBACK FOR SENDER ACTOR ID (Harvest primary CRM Owner)
                 if not sender_actor_id:
@@ -1741,7 +1756,6 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         pass
                         
                 if not sender_actor_id:
-                    # Absolute fallback to prevent null crashes
                     sender_actor_id = "A-1" 
 
                 def build_payload(msg_type, text):
@@ -1762,25 +1776,42 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     if msg_type == "MESSAGE" and not (channel_id and channel_account_id and customer_actor_id):
                         p["type"] = "COMMENT"
                         p["text"] = f"BOOF WISMO Alert [DRAFT: Missing recipient or sender actor IDs, cannot send external email natively]:\n\n{text}"
+                        p.pop("recipients", None)
+                        p.pop("channelId", None)
+                        p.pop("channelAccountId", None)
                         
                     return p
                 
                 # TIME-AWARE ANTI-LOOP
                 latest_customer_time = ""
-                latest_boof_time = ""
+                latest_agent_time = ""
                 for m in messages:
                     m_time = str(m.get("createdAt", ""))
-                    m_type = str(m.get("type", ""))
-                    m_text = str(m.get("text", ""))
                     
-                    if m_type == "COMMENT" and "BOOF WISMO" in m_text:
-                        if m_time > latest_boof_time:
-                            latest_boof_time = m_time
-                    elif m_type != "COMMENT":
+                    # Determine if message was sent by an agent or system
+                    is_agent = False
+                    if m.get("type") == "COMMENT":
+                        is_agent = True
+                    else:
+                        senders = m.get("senders", [])
+                        if not isinstance(senders, list): senders = []
+                        for s in senders:
+                            actor = str(s.get("actorId", ""))
+                            if actor.startswith("A-") or actor.startswith("B-"):
+                                is_agent = True
+                        
+                        root_actor = str(m.get("senderActorId", ""))
+                        if root_actor.startswith("A-") or root_actor.startswith("B-"):
+                            is_agent = True
+                    
+                    if is_agent:
+                        if m_time > latest_agent_time:
+                            latest_agent_time = m_time
+                    else:
                         if m_time > latest_customer_time:
                             latest_customer_time = m_time
                             
-                if latest_boof_time and latest_customer_time and latest_boof_time >= latest_customer_time:
+                if latest_agent_time and latest_customer_time and latest_agent_time >= latest_customer_time:
                     continue
                 
                 msg_texts = [m.get("text", "") for m in messages if m.get("type") != "COMMENT" and m.get("text")]
@@ -1807,7 +1838,6 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     refs = []
                     for r in raw_refs:
                         clean_r = str(r).strip().upper()
-                        # Physically verify the AI's extraction against the raw string data.
                         if clean_r and clean_r in combined_text.upper():
                             refs.append(clean_r)
                             
