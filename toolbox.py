@@ -1901,3 +1901,8 @@ def tool_11_transit_delay_engine(*args, **kwargs):
     
 def tool_10_temporal_anomaly_detector(*args, **kwargs):
     return tool_10_freight_alert_automator()
+
+if __name__ == "__main__":
+    print("EXECUTING WISMO SWEEP DIRECTLY...")
+    result = tool_16_wismo_client_concierge(dry_run=True)
+    print(f"RESULT: {result}")
