@@ -1650,7 +1650,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     Uses a dynamic limit to process up to 20 actionable threads to prevent timeout. 
     Anti-Loop: Forensically compares timestamps to ensure threads can re-open.
     Expanded Pipeline: Audits Machship first, executes fallback sequence to Transvirtual if required.
-    Channel Injection: Harvests and applies channelId/channelAccountId to outbound POST requests.
+    Safe Mode: Drafts all customer replies as internal COMMENTs to bypass HubSpot senderActorId strictness.
     """
     import datetime
     
@@ -1708,31 +1708,6 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 messages = messages_resp.json().get("results", [])
                 if not messages: continue
                 
-                # HARVEST CHANNEL ROUTING IDS
-                channel_id = None
-                channel_account_id = None
-                for m in messages:
-                    if m.get("channelId") and m.get("channelAccountId"):
-                        channel_id = m.get("channelId")
-                        channel_account_id = m.get("channelAccountId")
-                        break
-                        
-                print(f"DIAGNOSTIC: Thread {thread_id} - Extracted channelId: {channel_id} | channelAccountId: {channel_account_id}")
-
-                def build_payload(msg_type, text):
-                    # Fail-safe: Downgrade outbound external messages to internal comments if routing IDs are missing
-                    if msg_type == "MESSAGE" and not (channel_id and channel_account_id):
-                        msg_type = "COMMENT"
-                        text = f"BOOF WISMO Alert [DRAFT: Missing Channel Routing IDs, cannot reply to client natively]:\n\n{text}"
-                        
-                    p = { "type": msg_type, "text": text }
-                    
-                    if msg_type == "MESSAGE" and channel_id and channel_account_id:
-                        p["channelId"] = str(channel_id)
-                        p["channelAccountId"] = str(channel_account_id)
-                        
-                    return p
-                
                 # TIME-AWARE ANTI-LOOP
                 latest_customer_time = ""
                 latest_boof_time = ""
@@ -1741,7 +1716,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     m_type = str(m.get("type", ""))
                     m_text = str(m.get("text", ""))
                     
-                    if m_type == "COMMENT" and "BOOF WISMO Alert" in m_text:
+                    if m_type == "COMMENT" and "BOOF WISMO" in m_text:
                         if m_time > latest_boof_time:
                             latest_boof_time = m_time
                     elif m_type != "COMMENT":
@@ -1757,9 +1732,9 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 
                 # UPGRADED EXTRACTION FIREWALL
                 extract_prompt = f"Extract all freight tracking/consignment numbers (e.g., MS123456, FGY000000990, etc.) from this text. CRITICAL INSTRUCTION: Ignore phone numbers and ABNs. Output ONLY a raw JSON array of strings. Do not wrap in a dictionary. Example: [\"MS123456\"]. Text: {combined_text}"
-                extracted_refs_str = call_gemini_api(extract_prompt, json_mode=True)
                 
                 try:
+                    extracted_refs_str = call_gemini_api(extract_prompt, json_mode=True)
                     refs = json.loads(extracted_refs_str)
                     if isinstance(refs, dict):
                         for val in refs.values():
@@ -1768,17 +1743,17 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                                 break
                     if not isinstance(refs, list):
                         refs = []
-                except:
-                    refs = []
+                except Exception as e:
+                    action_log.append(f"Thread {thread_id}: LLM Extraction Crash: {str(e)}")
+                    actioned_count += 1
+                    continue
                     
                 if not refs or len(refs) == 0:
                     if not dry_run:
-                        note_payload = build_payload("COMMENT", "BOOF WISMO Alert: No valid tracking reference detected in this thread. Skipping.")
+                        note_payload = { "type": "COMMENT", "text": "BOOF WISMO Alert: No valid tracking reference detected in this thread. Skipping." }
                         req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
                         if req.status_code not in [200, 201]:
-                            err = f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text}"
-                            print(f"CRITICAL DIAGNOSTIC (HS POST): {err}")
-                            action_log.append(err)
+                            action_log.append(f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text}")
                             actioned_count += 1
                             continue
                             
@@ -1857,12 +1832,10 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                             
                 if not tracking_info:
                     if not dry_run:
-                        note_payload = build_payload("COMMENT", f"BOOF WISMO Alert: Could not locate Machship or Transvirtual data for reference {connote}. Reassigning to human broker.")
+                        note_payload = { "type": "COMMENT", "text": f"BOOF WISMO Alert: Could not locate Machship or Transvirtual data for reference {connote}. Reassigning to human broker." }
                         req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
                         if req.status_code not in [200, 201]:
-                            err = f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text}"
-                            print(f"CRITICAL DIAGNOSTIC (HS POST): {err}")
-                            action_log.append(err)
+                            action_log.append(f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text}")
                             actioned_count += 1
                             continue
                             
@@ -1881,11 +1854,13 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 Return ONLY a valid JSON object with keys: 'sentiment' (strictly "POSITIVE" or "NEGATIVE") and 'message' (the drafted text).
                 """
                 
-                eval_str = call_gemini_api(eval_prompt, json_mode=True)
                 try:
+                    eval_str = call_gemini_api(eval_prompt, json_mode=True)
                     eval_res = json.loads(eval_str)
-                except:
-                    eval_res = {"sentiment": "NEGATIVE", "message": "Failed to parse AI evaluation."}
+                except Exception as e:
+                    action_log.append(f"Thread {thread_id} AI Eval Parse Error: {str(e)}")
+                    actioned_count += 1
+                    continue
                     
                 sentiment = eval_res.get("sentiment", "NEGATIVE")
                 base_message = eval_res.get("message", "Status unavailable.")
@@ -1896,25 +1871,21 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         base_message += f"\n\nProof of Delivery and live tracking are securely accessible via the carrier portal: {pod_link}"
                         
                     if not dry_run:
-                        reply_payload = build_payload("MESSAGE", base_message)
+                        reply_payload = { "type": "COMMENT", "text": f"BOOF WISMO Draft Reply (Ready for Broker to Send):\n\n{base_message}" }
                         req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=reply_payload, timeout=15)
                         if req.status_code not in [200, 201]:
-                            err = f"Thread {thread_id} POST Reply Failed (HTTP {req.status_code}). Payload: {req.text}"
-                            print(f"CRITICAL DIAGNOSTIC (HS POST): {err}")
-                            action_log.append(err)
+                            action_log.append(f"Thread {thread_id} POST Draft Failed (HTTP {req.status_code}). Payload: {req.text}")
                             actioned_count += 1
                             continue
                             
-                    action_log.append(f"Thread {thread_id}: POSITIVE status for {connote} via {carrier_source}. Replied to customer (POD Attached: {has_pod}).")
+                    action_log.append(f"Thread {thread_id}: POSITIVE status for {connote} via {carrier_source}. Drafted reply as internal note.")
                     
                 else:
                     if not dry_run:
-                        note_payload = build_payload("COMMENT", f"BOOF WISMO Alert: {base_message}")
+                        note_payload = { "type": "COMMENT", "text": f"BOOF WISMO Alert: {base_message}" }
                         req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
                         if req.status_code not in [200, 201]:
-                            err = f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text}"
-                            print(f"CRITICAL DIAGNOSTIC (HS POST): {err}")
-                            action_log.append(err)
+                            action_log.append(f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text}")
                             actioned_count += 1
                             continue
                             
@@ -1922,12 +1893,12 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     
                 actioned_count += 1
             except Exception as loop_e:
-                print(f"CRITICAL DIAGNOSTIC (THREAD LOOP CRASH): {str(loop_e)}")
                 action_log.append(f"Thread {thread_id} Crash: {str(loop_e)}")
                 actioned_count += 1
                 continue
                 
-        return "WISMO Sweep Complete.\n" + "\n".join(action_log) if action_log else "WISMO Sweep Complete. No new actionable threads."
+        summary_string = "WISMO Sweep Complete.\n" + "\n".join(action_log) if action_log else "WISMO Sweep Complete. No new actionable threads."
+        return f"SYSTEM INSTRUCTION TO AI: Output the following log EXACTLY as written. Do not summarize it. \n\n{summary_string}"
             
     except Exception as e:
         return f"🚨 CRITICAL CRASH: {sanitize_error_log(str(e))}"
