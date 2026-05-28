@@ -1709,7 +1709,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 master_agent_id = assigned
                 break
                 
-        # Second pass: if no active assignees exist, query recent closed threads for historical human replies
+        # Second pass: query recent closed threads for historical human replies within the fetched array
         if not master_agent_id:
             closed_threads = [t for t in all_threads if str(t.get("status", "")).upper() != "OPEN"]
             for t in closed_threads[:3]: # Efficient cap
@@ -1732,6 +1732,32 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 except:
                     pass
                 if master_agent_id: break
+
+        # THIRD PASS: Absolute Fallback - Hard fetch historical closed threads globally
+        if not master_agent_id:
+            try:
+                fallback_url = f"{hs_threads_url}?limit=10&status=CLOSED"
+                f_resp = requests.get(fallback_url, headers=hs_headers, timeout=10)
+                if f_resp.status_code == 200:
+                    for t in f_resp.json().get("results", []):
+                        assigned = str(t.get("assignedTo") or t.get("assigneeId") or "")
+                        if assigned.startswith("A-") or assigned.startswith("B-"):
+                            master_agent_id = assigned
+                            break
+                        
+                        # If still no assignee, check messages of this closed thread
+                        if not master_agent_id:
+                            m_resp = requests.get(f"{hs_threads_url}/{t.get('id')}/messages", headers=hs_headers, timeout=5)
+                            if m_resp.status_code == 200:
+                                for m in m_resp.json().get("results", []):
+                                    actor = str(m.get("senderActorId", ""))
+                                    if actor.startswith("A-") or actor.startswith("B-"):
+                                        master_agent_id = actor
+                                        break
+                                    if master_agent_id: break
+                        if master_agent_id: break
+            except:
+                pass
 
         open_threads = [t for t in all_threads if str(t.get("status", "")).upper() == "OPEN"]
         
@@ -1826,19 +1852,18 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         p["channelAccountId"] = str(channel_account_id)
                         
                     # MANDATORY HUB-SPOT EMAIL REQUIREMENT
-                    if msg_type == "MESSAGE" and customer_actor_id:
+                    if msg_type == "MESSAGE" and customer_actor_id and customer_delivery_identifier:
                         recipient_node = {
                             "actorId": customer_actor_id,
-                            "deliveryType": "TO"
+                            "deliveryType": "TO",
+                            "deliveryIdentifiers": [customer_delivery_identifier]
                         }
-                        if customer_delivery_identifier:
-                            recipient_node["deliveryIdentifiers"] = [customer_delivery_identifier]
                         p["recipients"] = [recipient_node]
                         
                     # Fail-safe: Downgrade outbound external messages to internal comments if routing IDs are missing
-                    if msg_type == "MESSAGE" and not (channel_id and channel_account_id and customer_actor_id):
+                    if msg_type == "MESSAGE" and not (channel_id and channel_account_id and customer_actor_id and customer_delivery_identifier):
                         p["type"] = "COMMENT"
-                        p["text"] = f"BOOF WISMO Alert [DRAFT: Missing recipient or sender actor IDs, cannot send external email natively]:\n\n{text}"
+                        p["text"] = f"BOOF WISMO Alert [DRAFT: Missing recipient/agent data, cannot send external email natively]:\n\n{text}"
                         p.pop("recipients", None)
                         p.pop("channelId", None)
                         p.pop("channelAccountId", None)
