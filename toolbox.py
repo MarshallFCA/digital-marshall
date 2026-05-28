@@ -1973,28 +1973,6 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         action_log.append(f"MS GET Fetch Error: {sanitize_error_log(str(e))}")
 
                 # ISOLATED POST MATRIX PIPELINE
-                if not tracking_info:
-                    ms_post_urls = [
-                        get_secure_endpoint("machship_carrier_id", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlDYXJyaWVyQ29uc2lnbm1lbnRJZD9pbmNsdWRlQ2hpbGRDb21wYW5pZXM9dHJ1ZQ=="),
-                        get_secure_endpoint("machship_ref1", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl"),
-                        get_secure_endpoint("machship_ref2", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl")
-                    ]
-                    for url in ms_post_urls:
-                        try:
-                            r = requests.post(url, headers=ms_headers_dict, json=[connote], timeout=10)
-                            if r.status_code == 200:
-                                data = r.json()
-                                obj_list = data.get("object")
-                                if obj_list and isinstance(obj_list, list) and len(obj_list) > 0:
-                                    obj = obj_list[0]
-                                    tracking_info = json.dumps(obj)
-                                    ms_consign_id = obj.get("id")
-                                    has_pod = obj.get("attachmentCount", 0) > 0
-                                    carrier_source = "Machship"
-                                    public_token = find_tracking_token(obj)
-                                    break
-                        except Exception as e:
-                            action_log.append(f"MS POST Fetch Error: {sanitize_error_log(str(e))}")
 
                 if not tracking_info:
                     tv_token = st.secrets.get("transvirtual", {}).get("TRANSVIRTUAL_API_KEY")
