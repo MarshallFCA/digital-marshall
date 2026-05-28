@@ -1669,8 +1669,8 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     hs_threads_url = get_secure_endpoint("hs_threads", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jb252ZXJzYXRpb25zL3YzL2NvbnZlcnNhdGlvbnMvdGhyZWFkcw==")
     
     try:
-        # EXPANDED CHRONOLOGICAL FIREWALL TO 7 DAYS
-        cutoff_dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)
+        # CHRONOLOGICAL FIREWALL STRICTLY RECALIBRATED TO 2 DAYS
+        cutoff_dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=2)
         cutoff_str = cutoff_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
         
         target_url = f"{hs_threads_url}?limit=100&sort=latestMessageTimestamp&latestMessageTimestampAfter={cutoff_str}"
