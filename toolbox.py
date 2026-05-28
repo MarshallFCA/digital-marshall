@@ -1673,7 +1673,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
         cutoff_dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=2)
         cutoff_ms = int(cutoff_dt.timestamp() * 1000)
         
-        target_url = f"{hs_threads_url}?limit=100&sort=latestMessageTimestamp&latestMessageTimestampAfter={cutoff_ms}"
+        target_url = f"{hs_threads_url}?limit=100&sort=-latestMessageTimestamp&latestMessageTimestampAfter={cutoff_ms}"
         threads_resp = requests.get(target_url, headers=hs_headers, timeout=15)
         
         if threads_resp.status_code != 200:
