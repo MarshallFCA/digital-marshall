@@ -2087,7 +2087,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     pod_line = ""
                     if carrier_source == "Machship" and public_token:
                         pod_msg = "A Proof of Delivery (POD) has been uploaded. " if has_pod else ""
-                        pod_line = f"\n\n{pod_msg}Live tracking and documentation are securely accessible via the carrier portal: [https://live.machship.com/trackingv2/#/consignments/](https://live.machship.com/trackingv2/#/consignments/){public_token}"
+                        pod_line = f"\n\n{pod_msg}Live tracking and documentation are securely accessible via the following carrier link:\nhttps://live.machship.com/trackingv2/#/consignments/{public_token}"
                         
                     base_message = f"Thank you for your enquiry about connote {connote}\n\nPicked up from {sender_comp}, {sender_sub}\nFor delivery to {receiver_comp}, {receiver_sub}\n\n{status_line}{pod_line}\n\nAs this is a good news email, it has been responded to automatically by FCA's AI assistant (BOOF). If the email response isn't accurate or appropriate, that's Marshall's fault. Please forward this email directly to marshall@fca.net.au and he will investigate."
                     if not dry_run:
