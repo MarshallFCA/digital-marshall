@@ -1698,66 +1698,30 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
             return "WISMO Sweep Complete. No conversational threads found in the API response."
             
         # ==========================================
-        # ZERO-API-CALL MASTER AGENT FALLBACK MINING
+        # SENDER HARDCODING (THE "JIM" OVERRIDE)
         # ==========================================
         master_agent_id = None
+        target_email = "jim@freightcompaniesaustralia.com.au"
         
-        # First pass: check root assignees of any active thread
-        for t in all_threads:
-            assigned = str(t.get("assignedTo") or t.get("assigneeId") or "")
-            if assigned.startswith("A-") or assigned.startswith("B-"):
-                master_agent_id = assigned
-                break
-                
-        # Second pass: query recent closed threads for historical human replies within the fetched array
-        if not master_agent_id:
-            closed_threads = [t for t in all_threads if str(t.get("status", "")).upper() != "OPEN"]
-            for t in closed_threads[:3]: # Efficient cap
-                try:
-                    m_resp = requests.get(f"{hs_threads_url}/{t.get('id')}/messages", headers=hs_headers, timeout=5)
-                    if m_resp.status_code == 200:
-                        for m in m_resp.json().get("results", []):
-                            actor = str(m.get("senderActorId", ""))
-                            if actor.startswith("A-") or actor.startswith("B-"):
-                                master_agent_id = actor
-                                break
-                            senders = m.get("senders", [])
-                            if isinstance(senders, list):
-                                for s in senders:
-                                    s_actor = str(s.get("actorId", ""))
-                                    if s_actor.startswith("A-") or s_actor.startswith("B-"):
-                                        master_agent_id = s_actor
-                                        break
-                            if master_agent_id: break
-                except:
-                    pass
-                if master_agent_id: break
+        try:
+            owners_url = get_secure_endpoint("hs_owners", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb3duZXJz")
+            owners_resp = requests.get(owners_url, headers=hs_headers, timeout=10)
+            if owners_resp.status_code == 200:
+                owners_data = owners_resp.json().get("results", [])
+                for owner in owners_data:
+                    if owner.get("email") == target_email:
+                        master_agent_id = f"A-{owner.get('id')}"
+                        break
+        except Exception:
+            pass
 
-        # THIRD PASS: Absolute Fallback - Hard fetch historical closed threads globally
+        # If the API fails to fetch Jim's ID, default to a robust fallback check of active threads
         if not master_agent_id:
-            try:
-                fallback_url = f"{hs_threads_url}?limit=10&status=CLOSED"
-                f_resp = requests.get(fallback_url, headers=hs_headers, timeout=10)
-                if f_resp.status_code == 200:
-                    for t in f_resp.json().get("results", []):
-                        assigned = str(t.get("assignedTo") or t.get("assigneeId") or "")
-                        if assigned.startswith("A-") or assigned.startswith("B-"):
-                            master_agent_id = assigned
-                            break
-                        
-                        # If still no assignee, check messages of this closed thread
-                        if not master_agent_id:
-                            m_resp = requests.get(f"{hs_threads_url}/{t.get('id')}/messages", headers=hs_headers, timeout=5)
-                            if m_resp.status_code == 200:
-                                for m in m_resp.json().get("results", []):
-                                    actor = str(m.get("senderActorId", ""))
-                                    if actor.startswith("A-") or actor.startswith("B-"):
-                                        master_agent_id = actor
-                                        break
-                                    if master_agent_id: break
-                        if master_agent_id: break
-            except:
-                pass
+            for t in all_threads:
+                assigned = str(t.get("assignedTo") or t.get("assigneeId") or "")
+                if assigned.startswith("A-") or assigned.startswith("B-"):
+                    master_agent_id = assigned
+                    break
 
         open_threads = [t for t in all_threads if str(t.get("status", "")).upper() == "OPEN"]
         
@@ -1820,11 +1784,11 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                                 
                                 deliv_id = s.get("deliveryIdentifier")
                                 if deliv_id and not customer_delivery_identifier:
-                                    # JSON Matrix Wrapper (prevents array-to-string payload conflicts)
+                                    # STRICT RECIPIENT ARRAY VALIDATION
                                     if isinstance(deliv_id, str):
                                         customer_delivery_identifier = {"type": "SMTP", "value": deliv_id}
-                                    else:
-                                        customer_delivery_identifier = deliv_id
+                                    elif isinstance(deliv_id, dict) and "value" in deliv_id:
+                                        customer_delivery_identifier = {"type": deliv_id.get("type", "SMTP"), "value": deliv_id.get("value")}
                                     
                     # Fallback check on root senderActorId property
                     root_actor = str(m.get("senderActorId", ""))
@@ -1834,7 +1798,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         elif not root_actor.startswith("S-"):
                             if not customer_actor_id: customer_actor_id = root_actor
                             
-                # APPLY ZERO-API MASTER FALLBACK
+                # APPLY SENDER HARDCODE OVERRIDE
                 if not sender_actor_id:
                     sender_actor_id = master_agent_id
                         
