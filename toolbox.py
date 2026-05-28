@@ -1641,6 +1641,22 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
         return f"🚨 CRITICAL CRASH: {sanitize_error_log(str(e))}"
 
 # ==========================================
+# RECURSIVE HASH EXTRACTION
+# ==========================================
+def find_tracking_token(data):
+    if isinstance(data, dict):
+        for k, v in data.items():
+            if k in ['publicTrackingToken', 'trackingToken'] and v:
+                return str(v)
+            res = find_tracking_token(v)
+            if res: return res
+    elif isinstance(data, list):
+        for item in data:
+            res = find_tracking_token(item)
+            if res: return res
+    return ""
+
+# ==========================================
 # TOOL 16: WISMO CLIENT CONCIERGE (CONVERSATIONS API - SMART SWEEP)
 # ==========================================
 def tool_16_wismo_client_concierge(dry_run: bool = False):
@@ -1950,9 +1966,9 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                             if obj:
                                 tracking_info = json.dumps(obj)
                                 ms_consign_id = obj.get("id")
-                                public_token = obj.get("publicTrackingToken") or obj.get("trackingToken") or ""
                                 has_pod = obj.get("attachmentCount", 0) > 0
                                 carrier_source = "Machship"
+                                public_token = find_tracking_token(obj)
                     except Exception as e:
                         action_log.append(f"MS GET Fetch Error: {sanitize_error_log(str(e))}")
 
@@ -1973,9 +1989,9 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                                     obj = obj_list[0]
                                     tracking_info = json.dumps(obj)
                                     ms_consign_id = obj.get("id")
-                                    public_token = obj.get("publicTrackingToken") or obj.get("trackingToken") or ""
                                     has_pod = obj.get("attachmentCount", 0) > 0
                                     carrier_source = "Machship"
+                                    public_token = find_tracking_token(obj)
                                     break
                         except Exception as e:
                             action_log.append(f"MS POST Fetch Error: {sanitize_error_log(str(e))}")
@@ -2015,36 +2031,28 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     actioned_count += 1
                     continue
                     
-                pod_insertion = ""
-                if carrier_source == "Machship" and has_pod:
-                    pod_url = f"[https://live.machship.com/trackingv2/#/consignments/](https://live.machship.com/trackingv2/#/consignments/){public_token}" if public_token else f"[https://live.machship.com/tracking?id=](https://live.machship.com/tracking?id=){ms_consign_id}"
-                    pod_insertion = f"\n\nProof of Delivery and live tracking are securely accessible via the carrier portal: {pod_url}"
-
                 current_date = datetime.datetime.now().strftime("%Y-%m-%d")
-                eval_prompt = f"""
-                You are the BOOF Freight Concierge. Analyze this JSON freight tracking data retrieved via {carrier_source}: {tracking_info}
                 
+                eval_prompt = f"""
+                You are the BOOF Freight Concierge Data Extraction Module.
+                Analyze this JSON freight tracking data retrieved via {carrier_source}: {tracking_info}
                 Today's Date is: {current_date}
                 
                 Task:
                 1. Evaluate status. POSITIVE = (Delivered, Booked, On board for delivery, Manifested, In Transit) AND the ETA is NOT breached.
-                2. CRITICAL ETA CHECK: If Today's Date ({current_date}) is strictly greater than the Expected Delivery Date or ETA found in the data (and the freight is not yet delivered), you MUST classify sentiment as NEGATIVE, even if the scan says 'In Transit' or 'Scanned into Depot'.
+                2. CRITICAL ETA CHECK: If Today's Date ({current_date}) is strictly greater than the Expected Delivery Date or ETA found in the data (and the freight is not yet delivered), you MUST classify sentiment as NEGATIVE.
                 3. NEGATIVE = (Delayed, Exception, Damaged, Lost, Missed Pickup, OR ETA Breached).
-                4. If POSITIVE, draft the message EXACTLY following this structure, replacing bracketed items with extracted JSON data:
+                4. Extract the following properties EXACTLY from the JSON. If a property is not found, output "Unknown".
+                - sender_company_name
+                - sender_suburb
+                - receiver_company_name
+                - receiver_suburb
+                - status (e.g. In Transit, Delivered, Scanned into Depot)
+                - delivery_time (If delivered, format strictly as h.mma or h.mmpm, e.g., 11.26am. If not delivered, leave blank)
+                - delivery_date (If delivered, format strictly as DD-MM-YYYY. If not delivered, leave blank)
+                - eta_date (If not delivered, format strictly as DD-MM-YYYY. If delivered, leave blank)
                 
-                Thank you for your enquiry about connote {connote}
-                
-                Picked up from [Extract Sender Company Name], [Extract Sender Suburb]
-                For delivery to [Extract Receiver Company Name], [Extract Receiver Suburb]
-                
-                [If Delivered]: Consignment {connote} was delivered at [Time in h.mma/pm, e.g., 11.26am] on [Date in DD-MM-YYYY, e.g., 25-05-2026].
-                [If In Transit/Not Delivered]: Consignment {connote} is currently [Status]. Expected delivery is by [ETA Date in DD-MM-YYYY].{pod_insertion}
-                
-                As this is a good news email, it has been responded to automatically by FCA's AI assistant (BOOF). If the email response isn't accurate or appropriate, that's Marshall's fault. Please forward this email directly to marshall@fca.net.au and he will investigate.
-                
-                5. If NEGATIVE, draft an internal note for the FCA broker. E.g., 'ACTION REQUIRED: [ID] is delayed/ETA breached. Current status is [Status].'
-                
-                Return ONLY a valid JSON object with keys: 'sentiment' (strictly "POSITIVE" or "NEGATIVE") and 'message' (the drafted text).
+                Return ONLY a valid JSON object matching the exact keys requested above, plus the 'sentiment' key. Do not write the final email message.
                 """
                 
                 try:
@@ -2056,9 +2064,28 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     continue
                     
                 sentiment = eval_res.get("sentiment", "NEGATIVE")
-                base_message = eval_res.get("message", "Status unavailable.")
+                sender_comp = eval_res.get("sender_company_name", "Unknown Sender")
+                sender_sub = eval_res.get("sender_suburb", "Unknown Suburb")
+                receiver_comp = eval_res.get("receiver_company_name", "Unknown Receiver")
+                receiver_sub = eval_res.get("receiver_suburb", "Unknown Suburb")
+                status_str = eval_res.get("status", "Unknown Status")
+                deliv_time = eval_res.get("delivery_time", "")
+                deliv_date = eval_res.get("delivery_date", "")
+                eta_date = eval_res.get("eta_date", "Unknown ETA")
                 
                 if sentiment == "POSITIVE":
+                    status_line = ""
+                    if "delivered" in status_str.lower() and deliv_time and deliv_date:
+                        status_line = f"Consignment {connote} was delivered at {deliv_time} on {deliv_date}."
+                    else:
+                        status_line = f"Consignment {connote} is currently {status_str}. Expected delivery is by {eta_date}."
+                        
+                    pod_line = ""
+                    if carrier_source == "Machship" and public_token:
+                        pod_line = f"\n\nProof of Delivery and live tracking are securely accessible via the carrier portal: [https://live.machship.com/trackingv2/#/consignments/](https://live.machship.com/trackingv2/#/consignments/){public_token}"
+                        
+                    base_message = f"Thank you for your enquiry about connote {connote}\n\nPicked up from {sender_comp}, {sender_sub}\nFor delivery to {receiver_comp}, {receiver_sub}\n\n{status_line}{pod_line}\n\nAs this is a good news email, it has been responded to automatically by FCA's AI assistant (BOOF). If the email response isn't accurate or appropriate, that's Marshall's fault. Please forward this email directly to marshall@fca.net.au and he will investigate."
+                    
                     if not dry_run:
                         reply_payload = build_payload("MESSAGE", base_message)
                         req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=reply_payload, timeout=15)
@@ -2071,6 +2098,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     action_log.append(f"Thread {thread_id}: POSITIVE status for {connote} via {carrier_source}. Replied to customer (POD Attached: {has_pod}).")
                     
                 else:
+                    base_message = f"ACTION REQUIRED: {connote} is delayed/ETA breached. Current status is {status_str}."
                     if not dry_run:
                         note_payload = build_payload("COMMENT", f"BOOF WISMO Alert: {base_message}")
                         req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
