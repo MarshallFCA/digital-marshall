@@ -1651,7 +1651,6 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     Anti-Loop: Forensically compares timestamps to ensure threads can re-open.
     Expanded Pipeline: Audits Machship first, executes fallback sequence to Transvirtual if required.
     Channel Injection: Harvests and applies channelId/channelAccountId to outbound POST requests.
-    Safe Mode: Drafts all customer replies as internal COMMENTs to bypass HubSpot senderActorId strictness.
     """
     import datetime
     
@@ -1743,6 +1742,12 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     if channel_id and channel_account_id:
                         p["channelId"] = str(channel_id)
                         p["channelAccountId"] = str(channel_account_id)
+                        
+                    # Fail-safe: Downgrade outbound external messages to internal comments if routing IDs are missing
+                    if msg_type == "MESSAGE" and not (channel_id and channel_account_id):
+                        p["type"] = "COMMENT"
+                        p["text"] = f"BOOF WISMO Alert [DRAFT: Missing Channel Routing IDs, cannot reply to client natively]:\n\n{text}"
+                        
                     return p
                 
                 # TIME-AWARE ANTI-LOOP
@@ -1910,15 +1915,15 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         base_message += f"\n\nProof of Delivery and live tracking are securely accessible via the carrier portal: {pod_link}"
                         
                     if not dry_run:
-                        reply_payload = build_payload("COMMENT", f"BOOF WISMO Draft Reply (Ready for Broker to Send):\n\n{base_message}")
+                        reply_payload = build_payload("MESSAGE", base_message)
                         req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=reply_payload, timeout=15)
                         if req.status_code not in [200, 201]:
-                            err = f"Thread {thread_id} POST Draft Failed (HTTP {req.status_code}). Payload: {req.text}"
+                            err = f"Thread {thread_id} POST Reply Failed (HTTP {req.status_code}). Payload: {req.text}"
                             action_log.append(err)
                             actioned_count += 1
                             continue
                             
-                    action_log.append(f"Thread {thread_id}: POSITIVE status for {connote} via {carrier_source}. Drafted reply as internal note.")
+                    action_log.append(f"Thread {thread_id}: POSITIVE status for {connote} via {carrier_source}. Replied to customer (POD Attached: {has_pod}).")
                     
                 else:
                     if not dry_run:
