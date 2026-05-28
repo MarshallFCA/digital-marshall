@@ -1784,11 +1784,11 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                                 
                                 deliv_id = s.get("deliveryIdentifier")
                                 if deliv_id and not customer_delivery_identifier:
-                                    # STRICT RECIPIENT ARRAY VALIDATION (FORCE SMTP)
+                                    # DYNAMIC RECIPIENT ARRAY VALIDATION (MIRROR INBOUND TYPE)
                                     if isinstance(deliv_id, str):
-                                        customer_delivery_identifier = {"type": "SMTP", "value": deliv_id}
+                                        customer_delivery_identifier = {"type": "HS_EMAIL_ADDRESS", "value": deliv_id}
                                     elif isinstance(deliv_id, dict) and "value" in deliv_id:
-                                        customer_delivery_identifier = {"type": "SMTP", "value": deliv_id.get("value")}
+                                        customer_delivery_identifier = {"type": deliv_id.get("type", "HS_EMAIL_ADDRESS"), "value": deliv_id.get("value")}
                                     
                     # Fallback check on root senderActorId property
                     root_actor = str(m.get("senderActorId", ""))
