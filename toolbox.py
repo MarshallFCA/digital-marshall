@@ -1792,14 +1792,25 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 
                 try:
                     extracted_refs_str = call_gemini_api(extract_prompt, json_mode=True)
-                    refs = json.loads(extracted_refs_str)
-                    if isinstance(refs, dict):
-                        for val in refs.values():
+                    raw_refs = json.loads(extracted_refs_str)
+                    if isinstance(raw_refs, dict):
+                        for val in raw_refs.values():
                             if isinstance(val, list):
-                                refs = val
+                                raw_refs = val
                                 break
-                    if not isinstance(refs, list):
-                        refs = []
+                    if not isinstance(raw_refs, list):
+                        raw_refs = []
+                        
+                    # ==========================================
+                    # THE HARD-CODED HALLUCINATION FIREWALL
+                    # ==========================================
+                    refs = []
+                    for r in raw_refs:
+                        clean_r = str(r).strip().upper()
+                        # Physically verify the AI's extraction against the raw string data.
+                        if clean_r and clean_r in combined_text.upper():
+                            refs.append(clean_r)
+                            
                 except Exception as e:
                     action_log.append(f"Thread {thread_id}: LLM Extraction Crash: {str(e)}")
                     actioned_count += 1
