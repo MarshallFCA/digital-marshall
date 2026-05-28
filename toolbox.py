@@ -1821,6 +1821,10 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                             "deliveryType": "TO",
                             "deliveryIdentifiers": [customer_delivery_identifier]
                         }
+                        # RE-BIND DIAGNOSTIC ACTOR ID
+                        if customer_actor_id:
+                            recipient_node["actorId"] = customer_actor_id
+                            
                         p["recipients"] = [recipient_node]
                         
                     # Fail-safe: Downgrade outbound external messages to internal comments if routing IDs are missing
@@ -2040,7 +2044,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         reply_payload = build_payload("MESSAGE", base_message)
                         req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=reply_payload, timeout=15)
                         if req.status_code not in [200, 201]:
-                            err = f"Thread {thread_id} POST Reply Failed (HTTP {req.status_code}). Payload: {req.text}"
+                            err = f"Thread {thread_id} POST Reply Failed (HTTP {req.status_code}). Payload: {req.text} | DIAGNOSTIC DUMP: customer_actor_id={customer_actor_id}, channelId={channel_id}, deliveryIdentifier={customer_delivery_identifier}, Outbound JSON={json.dumps(reply_payload)}"
                             action_log.append(err)
                             actioned_count += 1
                             continue
@@ -2052,7 +2056,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         note_payload = build_payload("COMMENT", f"BOOF WISMO Alert: {base_message}")
                         req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
                         if req.status_code not in [200, 201]:
-                            err = f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text}"
+                            err = f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text} | DIAGNOSTIC DUMP: customer_actor_id={customer_actor_id}, channelId={channel_id}, deliveryIdentifier={customer_delivery_identifier}, Outbound JSON={json.dumps(note_payload)}"
                             action_log.append(err)
                             actioned_count += 1
                             continue
