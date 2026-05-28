@@ -1669,7 +1669,8 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     hs_threads_url = get_secure_endpoint("hs_threads", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jb252ZXJzYXRpb25zL3YzL2NvbnZlcnNhdGlvbnMvdGhyZWFkcw==")
     
     try:
-        cutoff_dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
+        # EXPANDED CHRONOLOGICAL FIREWALL TO 7 DAYS
+        cutoff_dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=7)
         cutoff_str = cutoff_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
         
         target_url = f"{hs_threads_url}?limit=100&sort=latestMessageTimestamp&latestMessageTimestampAfter={cutoff_str}"
@@ -1709,10 +1710,11 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 messages = messages_resp.json().get("results", [])
                 if not messages: continue
                 
-                # HARVEST CHANNEL ROUTING IDS & SENDER ACTOR ID
+                # HARVEST CHANNEL ROUTING IDS & ACTOR IDS
                 channel_id = None
                 channel_account_id = None
                 sender_actor_id = None
+                customer_actor_id = None
                 
                 for m in messages:
                     if not channel_id and m.get("channelId") and m.get("channelAccountId"):
@@ -1720,9 +1722,13 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         channel_account_id = m.get("channelAccountId")
                     
                     actor = str(m.get("senderActorId", ""))
-                    if not sender_actor_id and (actor.startswith("A-") or actor.startswith("B-")):
-                        sender_actor_id = actor
-                        
+                    if actor.startswith("A-") or actor.startswith("B-"):
+                        if not sender_actor_id:
+                            sender_actor_id = actor
+                    elif actor:
+                        if not customer_actor_id:
+                            customer_actor_id = actor
+                            
                 # FALLBACK FOR SENDER ACTOR ID (Harvest primary CRM Owner)
                 if not sender_actor_id:
                     try:
@@ -1740,14 +1746,22 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
 
                 def build_payload(msg_type, text):
                     p = { "type": msg_type, "text": text, "senderActorId": sender_actor_id }
+                    
                     if channel_id and channel_account_id:
                         p["channelId"] = str(channel_id)
                         p["channelAccountId"] = str(channel_account_id)
                         
+                    # MANDATORY HUB-SPOT EMAIL REQUIREMENT
+                    if msg_type == "MESSAGE" and customer_actor_id:
+                        p["recipients"] = [{
+                            "actorId": customer_actor_id,
+                            "deliveryType": "TO"
+                        }]
+                        
                     # Fail-safe: Downgrade outbound external messages to internal comments if routing IDs are missing
-                    if msg_type == "MESSAGE" and not (channel_id and channel_account_id):
+                    if msg_type == "MESSAGE" and not (channel_id and channel_account_id and customer_actor_id):
                         p["type"] = "COMMENT"
-                        p["text"] = f"BOOF WISMO Alert [DRAFT: Missing Channel Routing IDs, cannot reply to client natively]:\n\n{text}"
+                        p["text"] = f"BOOF WISMO Alert [DRAFT: Missing recipient or sender actor IDs, cannot send external email natively]:\n\n{text}"
                         
                     return p
                 
