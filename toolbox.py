@@ -1651,7 +1651,6 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     Anti-Loop: Forensically compares timestamps to ensure threads can re-open.
     Expanded Pipeline: Audits Machship first, executes fallback sequence to Transvirtual if required.
     Channel Injection: Harvests and applies channelId/channelAccountId to outbound POST requests.
-    Safe Mode: Drafts all customer replies as internal COMMENTs to bypass HubSpot senderActorId strictness.
     """
     import datetime
     
@@ -1709,10 +1708,11 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 messages = messages_resp.json().get("results", [])
                 if not messages: continue
                 
-                # HARVEST CHANNEL ROUTING IDS & SENDER ACTOR ID
+                # HARVEST CHANNEL ROUTING IDS & SENDER ACTOR ID & RECIPIENT
                 channel_id = None
                 channel_account_id = None
-                sender_actor_id = None
+                sender_actor_id = thread.get("assignedTo")
+                target_recipient_id = None
                 
                 for m in messages:
                     if not channel_id and m.get("channelId") and m.get("channelAccountId"):
@@ -1723,32 +1723,37 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     if not sender_actor_id and (actor.startswith("A-") or actor.startswith("B-")):
                         sender_actor_id = actor
                         
-                # FALLBACK FOR SENDER ACTOR ID (Harvest primary CRM Owner)
+                    if not target_recipient_id and (actor.startswith("V-") or actor.startswith("E-")):
+                        target_recipient_id = actor
+                        
+                # FALLBACK FOR SENDER ACTOR ID
                 if not sender_actor_id:
                     try:
                         owner_req = requests.get("[https://api.hubapi.com/crm/v3/owners?limit=1](https://api.hubapi.com/crm/v3/owners?limit=1)", headers=hs_headers, timeout=10)
                         if owner_req.status_code == 200:
                             owners = owner_req.json().get('results', [])
                             if owners:
-                                sender_actor_id = f"A-{owners[0]['id']}"
+                                sender_actor_id = f"A-{owners[0]['userId']}" if owners[0].get('userId') else f"A-{owners[0]['id']}"
                     except Exception:
                         pass
-                        
-                if not sender_actor_id:
-                    # Absolute fallback to prevent null crashes
-                    sender_actor_id = "A-1" 
 
                 def build_payload(msg_type, text):
-                    p = { "type": msg_type, "text": text, "senderActorId": sender_actor_id }
+                    p = { "type": msg_type, "text": text }
+                    
+                    if sender_actor_id:
+                        p["senderActorId"] = str(sender_actor_id)
                     if channel_id and channel_account_id:
                         p["channelId"] = str(channel_id)
                         p["channelAccountId"] = str(channel_account_id)
                         
-                    # Fail-safe: Downgrade outbound external messages to internal comments if routing IDs are missing
-                    if msg_type == "MESSAGE" and not (channel_id and channel_account_id):
-                        p["type"] = "COMMENT"
-                        p["text"] = f"BOOF WISMO Alert [DRAFT: Missing Channel Routing IDs, cannot reply to client natively]:\n\n{text}"
-                        
+                    # Target Recipient Injection & Fail-Safe Downgrade
+                    if msg_type == "MESSAGE":
+                        if target_recipient_id and sender_actor_id:
+                            p["recipients"] = [{"actorId": str(target_recipient_id)}]
+                        else:
+                            p["type"] = "COMMENT"
+                            p["text"] = f"BOOF WISMO Alert [DRAFT: Missing recipient or sender actor IDs, cannot send external email natively]:\n\n{text}"
+                            
                     return p
                 
                 # TIME-AWARE ANTI-LOOP
