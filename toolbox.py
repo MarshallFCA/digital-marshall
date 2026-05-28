@@ -2074,18 +2074,22 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 eta_date = eval_res.get("eta_date", "Unknown ETA")
                 
                 if sentiment == "POSITIVE":
-                    status_line = ""
-                    if "delivered" in status_str.lower() and deliv_time and deliv_date:
-                        status_line = f"Consignment {connote} was delivered at {deliv_time} on {deliv_date}."
+                    status_str_lower = status_str.lower()
+                    is_delivered = any(keyword in status_str_lower for keyword in ["delivered", "complete", "completed"])
+                    
+                    if is_delivered:
+                        time_segment = f" at {deliv_time}" if deliv_time else ""
+                        date_segment = f" on {deliv_date}" if deliv_date else " recently"
+                        status_line = f"Consignment {connote} was completed/delivered{time_segment}{date_segment}."
                     else:
                         status_line = f"Consignment {connote} is currently {status_str}. Expected delivery is by {eta_date}."
                         
                     pod_line = ""
                     if carrier_source == "Machship" and public_token:
-                        pod_line = f"\n\nProof of Delivery and live tracking are securely accessible via the carrier portal: [https://live.machship.com/trackingv2/#/consignments/](https://live.machship.com/trackingv2/#/consignments/){public_token}"
+                        pod_msg = "A Proof of Delivery (POD) has been uploaded. " if has_pod else ""
+                        pod_line = f"\n\n{pod_msg}Live tracking and documentation are securely accessible via the carrier portal: [https://live.machship.com/trackingv2/#/consignments/](https://live.machship.com/trackingv2/#/consignments/){public_token}"
                         
                     base_message = f"Thank you for your enquiry about connote {connote}\n\nPicked up from {sender_comp}, {sender_sub}\nFor delivery to {receiver_comp}, {receiver_sub}\n\n{status_line}{pod_line}\n\nAs this is a good news email, it has been responded to automatically by FCA's AI assistant (BOOF). If the email response isn't accurate or appropriate, that's Marshall's fault. Please forward this email directly to marshall@fca.net.au and he will investigate."
-                    
                     if not dry_run:
                         reply_payload = build_payload("MESSAGE", base_message)
                         req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=reply_payload, timeout=15)
@@ -2096,10 +2100,10 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                             continue
                         
                         close_req = requests.patch(f"{hs_threads_url}/{thread_id}", headers=hs_headers, json={"status": "CLOSED"}, timeout=15)
-                        if close_req.status_code in [200, 201]:
+                        if close_req.status_code in [200, 201, 204]:
                             action_log.append(f"Thread {thread_id}: POSITIVE status for {connote} via {carrier_source}. Replied to customer and closed thread.")
                         else:
-                            action_log.append(f"Thread {thread_id}: Replied to customer, but automated thread closure failed (HTTP {close_req.status_code}).")
+                            action_log.append(f"Thread {thread_id}: Reply sent, but automated thread closure failed (HTTP {close_req.status_code}). Reason: {close_req.text}")
                     else:
                         action_log.append(f"[DRY RUN] Thread {thread_id}: POSITIVE status for {connote} via {carrier_source}. Would reply to customer and close thread.")
                     
