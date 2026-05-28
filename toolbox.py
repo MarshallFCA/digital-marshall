@@ -1758,7 +1758,9 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     note_payload = build_payload("COMMENT", "BOOF WISMO Alert: No valid tracking reference detected in this thread. Skipping.")
                     req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
                     if req.status_code not in [200, 201]:
-                        return f"🚨 CRITICAL CRASH: HubSpot POST Note Failed (HTTP {req.status_code}). Payload: {req.text}"
+                        action_log.append(f"Thread {thread_id} POST Failed (HTTP {req.status_code}). Payload: {req.text}")
+                        actioned_count += 1
+                        continue
                         
                 action_log.append(f"Thread {thread_id}: No connote found. Left skip note.")
                 actioned_count += 1
@@ -1838,7 +1840,9 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     note_payload = build_payload("COMMENT", f"BOOF WISMO Alert: Could not locate Machship or Transvirtual data for reference {connote}. Reassigning to human broker.")
                     req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
                     if req.status_code not in [200, 201]:
-                        return f"🚨 CRITICAL CRASH: HubSpot POST Note Failed (HTTP {req.status_code}). Payload: {req.text}"
+                        action_log.append(f"Thread {thread_id} POST Failed (HTTP {req.status_code}). Payload: {req.text}")
+                        actioned_count += 1
+                        continue
                         
                 action_log.append(f"Thread {thread_id}: Reference {connote} not found across API pipelines. Left internal note.")
                 actioned_count += 1
@@ -1873,7 +1877,9 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     reply_payload = build_payload("MESSAGE", base_message)
                     req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=reply_payload, timeout=15)
                     if req.status_code not in [200, 201]:
-                        return f"🚨 CRITICAL CRASH: HubSpot POST Reply Failed (HTTP {req.status_code}). Payload: {req.text}"
+                        action_log.append(f"Thread {thread_id} POST Reply Failed (HTTP {req.status_code}). Payload: {req.text}")
+                        actioned_count += 1
+                        continue
                         
                 action_log.append(f"Thread {thread_id}: POSITIVE status for {connote} via {carrier_source}. Replied to customer (POD Attached: {has_pod}).")
                 
@@ -1882,7 +1888,9 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     note_payload = build_payload("COMMENT", f"BOOF WISMO Alert: {base_message}")
                     req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
                     if req.status_code not in [200, 201]:
-                        return f"🚨 CRITICAL CRASH: HubSpot POST Note Failed (HTTP {req.status_code}). Payload: {req.text}"
+                        action_log.append(f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text}")
+                        actioned_count += 1
+                        continue
                         
                 action_log.append(f"Thread {thread_id}: NEGATIVE status for {connote} via {carrier_source}. Left internal broker note.")
                 
@@ -1901,8 +1909,3 @@ def tool_11_transit_delay_engine(*args, **kwargs):
     
 def tool_10_temporal_anomaly_detector(*args, **kwargs):
     return tool_10_freight_alert_automator()
-
-if __name__ == "__main__":
-    print("EXECUTING WISMO SWEEP DIRECTLY...")
-    result = tool_16_wismo_client_concierge(dry_run=True)
-    print(f"RESULT: {result}")
