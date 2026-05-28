@@ -1788,7 +1788,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 combined_text = "\n".join(msg_texts)
                 
                 # UPGRADED EXTRACTION FIREWALL
-                extract_prompt = f"Extract all freight tracking/consignment numbers (e.g., MS123456, FGY000000990, etc.) from this text. CRITICAL INSTRUCTION: Ignore phone numbers and ABNs. Output ONLY a raw JSON array of strings. Do not wrap in a dictionary. Example: [\"MS123456\"]. Text: {combined_text}"
+                extract_prompt = f"Extract all freight tracking/consignment numbers (e.g., MS123456, FGY000000990, etc.) from this text. CRITICAL INSTRUCTION 1: Ignore phone numbers and ABNs. CRITICAL INSTRUCTION 2: If no freight reference is explicitly found, you MUST return an empty array []. DO NOT hallucinate, invent, or guess tracking numbers based on the examples. Output ONLY a raw JSON array of strings. Example: [\"MS123456\"] or []. Text: {combined_text}"
                 
                 try:
                     extracted_refs_str = call_gemini_api(extract_prompt, json_mode=True)
