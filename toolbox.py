@@ -523,7 +523,7 @@ def fetch_australian_postcodes():
                     pc_to_suburb[pc] = loc.upper()
     except:
         pass
-    return pc_to_suburb
+    return pc_to_suburb.copy()
 
 def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -1695,206 +1695,222 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
         actioned_count = 0
         
         for thread in open_threads:
-            if actioned_count >= 2:
-                break
-                
-            thread_id = thread.get("id")
-            
-            messages_resp = requests.get(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, timeout=15)
-            if messages_resp.status_code != 200:
-                continue
-            
-            messages = messages_resp.json().get("results", [])
-            if not messages: continue
-            
-            # HARVEST CHANNEL ROUTING IDS
-            channel_id = None
-            channel_account_id = None
-            for m in messages:
-                if m.get("channelId") and m.get("channelAccountId"):
-                    channel_id = m.get("channelId")
-                    channel_account_id = m.get("channelAccountId")
-                    break
-
-            def build_payload(msg_type, text):
-                p = { "type": msg_type, "text": text }
-                if channel_id and channel_account_id:
-                    p["channelId"] = channel_id
-                    p["channelAccountId"] = channel_account_id
-                return p
-            
-            # SAFE ANTI-LOOP: Scan the entire thread history for previous BOOF interaction.
-            boof_actioned = False
-            for m in messages:
-                if m.get("type") == "COMMENT" and "BOOF WISMO Alert" in m.get("text", ""):
-                    boof_actioned = True
+            try:
+                if actioned_count >= 2:
                     break
                     
-            if boof_actioned:
-                continue
-            
-            msg_texts = [m.get("text", "") for m in messages if m.get("type") != "COMMENT" and m.get("text")]
-            if not msg_texts: continue
-            combined_text = "\n".join(msg_texts)
-            
-            # UPGRADED EXTRACTION FIREWALL
-            extract_prompt = f"Extract all freight tracking/consignment numbers (e.g., MS123456, FGY000000990, etc.) from this text. CRITICAL INSTRUCTION: Ignore phone numbers and ABNs. Output ONLY a raw JSON array of strings. Do not wrap in a dictionary. Example: [\"MS123456\"]. Text: {combined_text}"
-            extracted_refs_str = call_gemini_api(extract_prompt, json_mode=True)
-            
-            try:
-                refs = json.loads(extracted_refs_str)
-                if isinstance(refs, dict):
-                    for val in refs.values():
-                        if isinstance(val, list):
-                            refs = val
-                            break
-                if not isinstance(refs, list):
-                    refs = []
-            except:
-                refs = []
+                thread_id = thread.get("id")
                 
-            if not refs or len(refs) == 0:
-                if not dry_run:
-                    note_payload = build_payload("COMMENT", "BOOF WISMO Alert: No valid tracking reference detected in this thread. Skipping.")
-                    req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
-                    if req.status_code not in [200, 201]:
-                        action_log.append(f"Thread {thread_id} POST Failed (HTTP {req.status_code}). Payload: {req.text}")
-                        actioned_count += 1
-                        continue
+                messages_resp = requests.get(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, timeout=15)
+                if messages_resp.status_code != 200:
+                    continue
+                
+                messages = messages_resp.json().get("results", [])
+                if not messages: continue
+                
+                # HARVEST CHANNEL ROUTING IDS
+                channel_id = None
+                channel_account_id = None
+                for m in messages:
+                    if m.get("channelId") and m.get("channelAccountId"):
+                        channel_id = m.get("channelId")
+                        channel_account_id = m.get("channelAccountId")
+                        break
                         
-                action_log.append(f"Thread {thread_id}: No connote found. Left skip note.")
-                actioned_count += 1
-                continue
-                
-            connote = str(refs[0]).upper().strip()
-            
-            ms_headers_dict = { "token": ms_token, "Content-Type": "application/json" }
-            
-            tracking_info = None
-            ms_consign_id = None
-            has_pod = False
-            carrier_source = "None"
-            
-            # ISOLATED GET PIPELINE
-            if connote.startswith("MS"):
-                ms_id = re.sub(r"\D", "", connote)
-                get_url = get_secure_endpoint("machship_get", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0Q29uc2lnbm1lbnQ/aWQ9")
-                try:
-                    r = requests.get(f"{get_url}{ms_id}", headers=ms_headers_dict, timeout=10)
-                    if r.status_code == 200:
-                        obj = r.json().get("object")
-                        if obj:
-                            tracking_info = json.dumps(obj)
-                            ms_consign_id = obj.get("id")
-                            has_pod = obj.get("attachmentCount", 0) > 0
-                            carrier_source = "Machship"
-                except Exception as e:
-                    action_log.append(f"MS GET Fetch Error: {sanitize_error_log(str(e))}")
+                print(f"DIAGNOSTIC: Thread {thread_id} - Extracted channelId: {channel_id} | channelAccountId: {channel_account_id}")
 
-            # ISOLATED POST MATRIX PIPELINE
-            if not tracking_info:
-                ms_post_urls = [
-                    get_secure_endpoint("machship_carrier_id", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlDYXJyaWVyQ29uc2lnbm1lbnRJZD9pbmNsdWRlQ2hpbGRDb21wYW5pZXM9dHJ1ZQ=="),
-                    get_secure_endpoint("machship_ref1", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl"),
-                    get_secure_endpoint("machship_ref2", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl")
-                ]
-                for url in ms_post_urls:
+                def build_payload(msg_type, text):
+                    p = { "type": msg_type, "text": text }
+                    if channel_id and channel_account_id:
+                        p["channelId"] = str(channel_id)
+                        p["channelAccountId"] = str(channel_account_id)
+                    return p
+                
+                # SAFE ANTI-LOOP: Scan the entire thread history for previous BOOF interaction.
+                boof_actioned = False
+                for m in messages:
+                    if m.get("type") == "COMMENT" and "BOOF WISMO Alert" in m.get("text", ""):
+                        boof_actioned = True
+                        break
+                        
+                if boof_actioned:
+                    continue
+                
+                msg_texts = [m.get("text", "") for m in messages if m.get("type") != "COMMENT" and m.get("text")]
+                if not msg_texts: continue
+                combined_text = "\n".join(msg_texts)
+                
+                # UPGRADED EXTRACTION FIREWALL
+                extract_prompt = f"Extract all freight tracking/consignment numbers (e.g., MS123456, FGY000000990, etc.) from this text. CRITICAL INSTRUCTION: Ignore phone numbers and ABNs. Output ONLY a raw JSON array of strings. Do not wrap in a dictionary. Example: [\"MS123456\"]. Text: {combined_text}"
+                extracted_refs_str = call_gemini_api(extract_prompt, json_mode=True)
+                
+                try:
+                    refs = json.loads(extracted_refs_str)
+                    if isinstance(refs, dict):
+                        for val in refs.values():
+                            if isinstance(val, list):
+                                refs = val
+                                break
+                    if not isinstance(refs, list):
+                        refs = []
+                except:
+                    refs = []
+                    
+                if not refs or len(refs) == 0:
+                    if not dry_run:
+                        note_payload = build_payload("COMMENT", "BOOF WISMO Alert: No valid tracking reference detected in this thread. Skipping.")
+                        req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
+                        if req.status_code not in [200, 201]:
+                            err = f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text}"
+                            print(f"CRITICAL DIAGNOSTIC (HS POST): {err}")
+                            action_log.append(err)
+                            actioned_count += 1
+                            continue
+                            
+                    action_log.append(f"Thread {thread_id}: No connote found. Left skip note.")
+                    actioned_count += 1
+                    continue
+                    
+                connote = str(refs[0]).upper().strip()
+                
+                ms_headers_dict = { "token": ms_token, "Content-Type": "application/json" }
+                
+                tracking_info = None
+                ms_consign_id = None
+                has_pod = False
+                carrier_source = "None"
+                
+                # ISOLATED GET PIPELINE
+                if connote.startswith("MS"):
+                    ms_id = re.sub(r"\D", "", connote)
+                    get_url = get_secure_endpoint("machship_get", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0Q29uc2lnbm1lbnQ/aWQ9")
                     try:
-                        r = requests.post(url, headers=ms_headers_dict, json=[connote], timeout=10)
+                        r = requests.get(f"{get_url}{ms_id}", headers=ms_headers_dict, timeout=10)
                         if r.status_code == 200:
-                            data = r.json()
-                            obj_list = data.get("object")
-                            if obj_list and isinstance(obj_list, list) and len(obj_list) > 0:
-                                obj = obj_list[0]
+                            obj = r.json().get("object")
+                            if obj:
                                 tracking_info = json.dumps(obj)
                                 ms_consign_id = obj.get("id")
                                 has_pod = obj.get("attachmentCount", 0) > 0
                                 carrier_source = "Machship"
-                                break
                     except Exception as e:
-                        action_log.append(f"MS POST Fetch Error: {sanitize_error_log(str(e))}")
+                        action_log.append(f"MS GET Fetch Error: {sanitize_error_log(str(e))}")
 
-            if not tracking_info:
-                tv_token = st.secrets.get("transvirtual", {}).get("TRANSVIRTUAL_API_KEY")
-                if tv_token:
-                    tv_headers = {
-                        "Authorization": tv_token,
-                        "Content-Type": "application/json",
-                        "Accept": "application/json"
-                    }
-                    tv_status_url = get_secure_endpoint("tv_status", "aHR0cHM6Ly9hcGkudHJhbnN2aXJ0dWFsLmNvbS5hdS9hcGkvQ29uc2lnbm1lbnRTdGF0dXM=")
-                    try:
-                        tv_payload = {"Number": connote}
-                        tv_resp = requests.post(tv_status_url, headers=tv_headers, json=tv_payload, timeout=10)
-                        if tv_resp.status_code == 200 and "Missing" not in tv_resp.text:
-                            tv_data = tv_resp.json().get("Data", tv_resp.json())
-                            if tv_data:
-                                tracking_info = json.dumps(tv_data)
-                                has_pod = False
-                                carrier_source = "Transvirtual"
-                    except Exception as e:
-                        action_log.append(f"Thread {thread_id}: Transvirtual Fallback API Error: {sanitize_error_log(str(e))}")
+                # ISOLATED POST MATRIX PIPELINE
+                if not tracking_info:
+                    ms_post_urls = [
+                        get_secure_endpoint("machship_carrier_id", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlDYXJyaWVyQ29uc2lnbm1lbnRJZD9pbmNsdWRlQ2hpbGRDb21wYW5pZXM9dHJ1ZQ=="),
+                        get_secure_endpoint("machship_ref1", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl"),
+                        get_secure_endpoint("machship_ref2", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl")
+                    ]
+                    for url in ms_post_urls:
+                        try:
+                            r = requests.post(url, headers=ms_headers_dict, json=[connote], timeout=10)
+                            if r.status_code == 200:
+                                data = r.json()
+                                obj_list = data.get("object")
+                                if obj_list and isinstance(obj_list, list) and len(obj_list) > 0:
+                                    obj = obj_list[0]
+                                    tracking_info = json.dumps(obj)
+                                    ms_consign_id = obj.get("id")
+                                    has_pod = obj.get("attachmentCount", 0) > 0
+                                    carrier_source = "Machship"
+                                    break
+                        except Exception as e:
+                            action_log.append(f"MS POST Fetch Error: {sanitize_error_log(str(e))}")
+
+                if not tracking_info:
+                    tv_token = st.secrets.get("transvirtual", {}).get("TRANSVIRTUAL_API_KEY")
+                    if tv_token:
+                        tv_headers = {
+                            "Authorization": tv_token,
+                            "Content-Type": "application/json",
+                            "Accept": "application/json"
+                        }
+                        tv_status_url = get_secure_endpoint("tv_status", "aHR0cHM6Ly9hcGkudHJhbnN2aXJ0dWFsLmNvbS5hdS9hcGkvQ29uc2lnbm1lbnRTdGF0dXM=")
+                        try:
+                            tv_payload = {"Number": connote}
+                            tv_resp = requests.post(tv_status_url, headers=tv_headers, json=tv_payload, timeout=10)
+                            if tv_resp.status_code == 200 and "Missing" not in tv_resp.text:
+                                tv_data = tv_resp.json().get("Data", tv_resp.json())
+                                if tv_data:
+                                    tracking_info = json.dumps(tv_data)
+                                    has_pod = False
+                                    carrier_source = "Transvirtual"
+                        except Exception as e:
+                            action_log.append(f"Thread {thread_id}: Transvirtual Fallback API Error: {sanitize_error_log(str(e))}")
+                            
+                if not tracking_info:
+                    if not dry_run:
+                        note_payload = build_payload("COMMENT", f"BOOF WISMO Alert: Could not locate Machship or Transvirtual data for reference {connote}. Reassigning to human broker.")
+                        req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
+                        if req.status_code not in [200, 201]:
+                            err = f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text}"
+                            print(f"CRITICAL DIAGNOSTIC (HS POST): {err}")
+                            action_log.append(err)
+                            actioned_count += 1
+                            continue
+                            
+                    action_log.append(f"Thread {thread_id}: Reference {connote} not found across API pipelines. Left internal note.")
+                    actioned_count += 1
+                    continue
+                    
+                eval_prompt = f"""
+                You are the BOOF Freight Concierge. Analyze this JSON freight tracking data retrieved via {carrier_source}: {tracking_info}
+                
+                Task:
+                1. Evaluate status. POSITIVE = (Delivered, Booked, On board for delivery, Manifested, In Transit). NEGATIVE = (Delayed, Exception, Damaged, Lost, Missed Pickup).
+                2. If POSITIVE, draft a highly professional, concise, non-chatty message for the customer. E.g., 'Consignment [ID] is currently in transit. Expected ETA is [Date].'
+                3. If NEGATIVE, draft an internal note for the FCA broker. E.g., 'ACTION REQUIRED: [ID] is delayed. Exception flagged.'
+                
+                Return ONLY a valid JSON object with keys: 'sentiment' (strictly "POSITIVE" or "NEGATIVE") and 'message' (the drafted text).
+                """
+                
+                eval_str = call_gemini_api(eval_prompt, json_mode=True)
+                try:
+                    eval_res = json.loads(eval_str)
+                except:
+                    eval_res = {"sentiment": "NEGATIVE", "message": "Failed to parse AI evaluation."}
+                    
+                sentiment = eval_res.get("sentiment", "NEGATIVE")
+                base_message = eval_res.get("message", "Status unavailable.")
+                
+                if sentiment == "POSITIVE":
+                    if carrier_source == "Machship" and has_pod and ms_consign_id:
+                        pod_link = f"[https://live.machship.com/tracking?id=](https://live.machship.com/tracking?id=){ms_consign_id}"
+                        base_message += f"\n\nProof of Delivery and live tracking are securely accessible via the carrier portal: {pod_link}"
                         
-            if not tracking_info:
-                if not dry_run:
-                    note_payload = build_payload("COMMENT", f"BOOF WISMO Alert: Could not locate Machship or Transvirtual data for reference {connote}. Reassigning to human broker.")
-                    req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
-                    if req.status_code not in [200, 201]:
-                        action_log.append(f"Thread {thread_id} POST Failed (HTTP {req.status_code}). Payload: {req.text}")
-                        actioned_count += 1
-                        continue
-                        
-                action_log.append(f"Thread {thread_id}: Reference {connote} not found across API pipelines. Left internal note.")
+                    if not dry_run:
+                        reply_payload = build_payload("MESSAGE", base_message)
+                        req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=reply_payload, timeout=15)
+                        if req.status_code not in [200, 201]:
+                            err = f"Thread {thread_id} POST Reply Failed (HTTP {req.status_code}). Payload: {req.text}"
+                            print(f"CRITICAL DIAGNOSTIC (HS POST): {err}")
+                            action_log.append(err)
+                            actioned_count += 1
+                            continue
+                            
+                    action_log.append(f"Thread {thread_id}: POSITIVE status for {connote} via {carrier_source}. Replied to customer (POD Attached: {has_pod}).")
+                    
+                else:
+                    if not dry_run:
+                        note_payload = build_payload("COMMENT", f"BOOF WISMO Alert: {base_message}")
+                        req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
+                        if req.status_code not in [200, 201]:
+                            err = f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text}"
+                            print(f"CRITICAL DIAGNOSTIC (HS POST): {err}")
+                            action_log.append(err)
+                            actioned_count += 1
+                            continue
+                            
+                    action_log.append(f"Thread {thread_id}: NEGATIVE status for {connote} via {carrier_source}. Left internal broker note.")
+                    
+                actioned_count += 1
+            except Exception as loop_e:
+                print(f"CRITICAL DIAGNOSTIC (THREAD LOOP CRASH): {str(loop_e)}")
+                action_log.append(f"Thread {thread_id} Crash: {str(loop_e)}")
                 actioned_count += 1
                 continue
-                
-            eval_prompt = f"""
-            You are the BOOF Freight Concierge. Analyze this JSON freight tracking data retrieved via {carrier_source}: {tracking_info}
-            
-            Task:
-            1. Evaluate status. POSITIVE = (Delivered, Booked, On board for delivery, Manifested, In Transit). NEGATIVE = (Delayed, Exception, Damaged, Lost, Missed Pickup).
-            2. If POSITIVE, draft a highly professional, concise, non-chatty message for the customer. E.g., 'Consignment [ID] is currently in transit. Expected ETA is [Date].'
-            3. If NEGATIVE, draft an internal note for the FCA broker. E.g., 'ACTION REQUIRED: [ID] is delayed. Exception flagged.'
-            
-            Return ONLY a valid JSON object with keys: 'sentiment' (strictly "POSITIVE" or "NEGATIVE") and 'message' (the drafted text).
-            """
-            
-            eval_str = call_gemini_api(eval_prompt, json_mode=True)
-            try:
-                eval_res = json.loads(eval_str)
-            except:
-                eval_res = {"sentiment": "NEGATIVE", "message": "Failed to parse AI evaluation."}
-                
-            sentiment = eval_res.get("sentiment", "NEGATIVE")
-            base_message = eval_res.get("message", "Status unavailable.")
-            
-            if sentiment == "POSITIVE":
-                if carrier_source == "Machship" and has_pod and ms_consign_id:
-                    pod_link = f"[https://live.machship.com/tracking?id=](https://live.machship.com/tracking?id=){ms_consign_id}"
-                    base_message += f"\n\nProof of Delivery and live tracking are securely accessible via the carrier portal: {pod_link}"
-                    
-                if not dry_run:
-                    reply_payload = build_payload("MESSAGE", base_message)
-                    req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=reply_payload, timeout=15)
-                    if req.status_code not in [200, 201]:
-                        action_log.append(f"Thread {thread_id} POST Reply Failed (HTTP {req.status_code}). Payload: {req.text}")
-                        actioned_count += 1
-                        continue
-                        
-                action_log.append(f"Thread {thread_id}: POSITIVE status for {connote} via {carrier_source}. Replied to customer (POD Attached: {has_pod}).")
-                
-            else:
-                if not dry_run:
-                    note_payload = build_payload("COMMENT", f"BOOF WISMO Alert: {base_message}")
-                    req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
-                    if req.status_code not in [200, 201]:
-                        action_log.append(f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text}")
-                        actioned_count += 1
-                        continue
-                        
-                action_log.append(f"Thread {thread_id}: NEGATIVE status for {connote} via {carrier_source}. Left internal broker note.")
-                
-            actioned_count += 1
                 
         return "WISMO Sweep Complete.\n" + "\n".join(action_log) if action_log else "WISMO Sweep Complete. No new actionable threads."
             
