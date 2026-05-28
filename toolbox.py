@@ -1650,6 +1650,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     Uses a dynamic limit to process up to 20 actionable threads to prevent timeout. 
     Anti-Loop: Forensically compares timestamps to ensure threads can re-open.
     Expanded Pipeline: Audits Machship first, executes fallback sequence to Transvirtual if required.
+    Channel Injection: Harvests and applies channelId/channelAccountId to outbound POST requests.
     Safe Mode: Drafts all customer replies as internal COMMENTs to bypass HubSpot senderActorId strictness.
     """
     import datetime
@@ -1708,6 +1709,42 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 messages = messages_resp.json().get("results", [])
                 if not messages: continue
                 
+                # HARVEST CHANNEL ROUTING IDS & SENDER ACTOR ID
+                channel_id = None
+                channel_account_id = None
+                sender_actor_id = None
+                
+                for m in messages:
+                    if not channel_id and m.get("channelId") and m.get("channelAccountId"):
+                        channel_id = m.get("channelId")
+                        channel_account_id = m.get("channelAccountId")
+                    
+                    actor = str(m.get("senderActorId", ""))
+                    if not sender_actor_id and (actor.startswith("A-") or actor.startswith("B-")):
+                        sender_actor_id = actor
+                        
+                # FALLBACK FOR SENDER ACTOR ID (Harvest primary CRM Owner)
+                if not sender_actor_id:
+                    try:
+                        owner_req = requests.get("[https://api.hubapi.com/crm/v3/owners?limit=1](https://api.hubapi.com/crm/v3/owners?limit=1)", headers=hs_headers, timeout=10)
+                        if owner_req.status_code == 200:
+                            owners = owner_req.json().get('results', [])
+                            if owners:
+                                sender_actor_id = f"A-{owners[0]['id']}"
+                    except Exception:
+                        pass
+                        
+                if not sender_actor_id:
+                    # Absolute fallback to prevent null crashes
+                    sender_actor_id = "A-1" 
+
+                def build_payload(msg_type, text):
+                    p = { "type": msg_type, "text": text, "senderActorId": sender_actor_id }
+                    if channel_id and channel_account_id:
+                        p["channelId"] = str(channel_id)
+                        p["channelAccountId"] = str(channel_account_id)
+                    return p
+                
                 # TIME-AWARE ANTI-LOOP
                 latest_customer_time = ""
                 latest_boof_time = ""
@@ -1750,10 +1787,11 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     
                 if not refs or len(refs) == 0:
                     if not dry_run:
-                        note_payload = { "type": "COMMENT", "text": "BOOF WISMO Alert: No valid tracking reference detected in this thread. Skipping." }
+                        note_payload = build_payload("COMMENT", "BOOF WISMO Alert: No valid tracking reference detected in this thread. Skipping.")
                         req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
                         if req.status_code not in [200, 201]:
-                            action_log.append(f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text}")
+                            err = f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text}"
+                            action_log.append(err)
                             actioned_count += 1
                             continue
                             
@@ -1832,10 +1870,11 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                             
                 if not tracking_info:
                     if not dry_run:
-                        note_payload = { "type": "COMMENT", "text": f"BOOF WISMO Alert: Could not locate Machship or Transvirtual data for reference {connote}. Reassigning to human broker." }
+                        note_payload = build_payload("COMMENT", f"BOOF WISMO Alert: Could not locate Machship or Transvirtual data for reference {connote}. Reassigning to human broker.")
                         req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
                         if req.status_code not in [200, 201]:
-                            action_log.append(f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text}")
+                            err = f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text}"
+                            action_log.append(err)
                             actioned_count += 1
                             continue
                             
@@ -1871,10 +1910,11 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         base_message += f"\n\nProof of Delivery and live tracking are securely accessible via the carrier portal: {pod_link}"
                         
                     if not dry_run:
-                        reply_payload = { "type": "COMMENT", "text": f"BOOF WISMO Draft Reply (Ready for Broker to Send):\n\n{base_message}" }
+                        reply_payload = build_payload("COMMENT", f"BOOF WISMO Draft Reply (Ready for Broker to Send):\n\n{base_message}")
                         req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=reply_payload, timeout=15)
                         if req.status_code not in [200, 201]:
-                            action_log.append(f"Thread {thread_id} POST Draft Failed (HTTP {req.status_code}). Payload: {req.text}")
+                            err = f"Thread {thread_id} POST Draft Failed (HTTP {req.status_code}). Payload: {req.text}"
+                            action_log.append(err)
                             actioned_count += 1
                             continue
                             
@@ -1882,10 +1922,11 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     
                 else:
                     if not dry_run:
-                        note_payload = { "type": "COMMENT", "text": f"BOOF WISMO Alert: {base_message}" }
+                        note_payload = build_payload("COMMENT", f"BOOF WISMO Alert: {base_message}")
                         req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
                         if req.status_code not in [200, 201]:
-                            action_log.append(f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text}")
+                            err = f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text}"
+                            action_log.append(err)
                             actioned_count += 1
                             continue
                             
