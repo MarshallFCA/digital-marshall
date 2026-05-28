@@ -1669,23 +1669,38 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     hs_threads_url = get_secure_endpoint("hs_threads", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jb252ZXJzYXRpb25zL3YzL2NvbnZlcnNhdGlvbnMvdGhyZWFkcw==")
     
     try:
-        # CHRONOLOGICAL FIREWALL STRICTLY RECALIBRATED TO 2 DAYS (Epoch MS)
-        cutoff_dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=2)
+        # CHRONOLOGICAL FIREWALL STRICTLY RECALIBRATED TO 24 HOURS (Epoch MS)
+        cutoff_dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
         cutoff_ms = int(cutoff_dt.timestamp() * 1000)
         
-        target_url = f"{hs_threads_url}?limit=100&sort=latestMessageTimestamp&latestMessageTimestampAfter={cutoff_ms}"
-        threads_resp = requests.get(target_url, headers=hs_headers, timeout=15)
+        all_threads = []
+        base_url = f"{hs_threads_url}?limit=100&sort=latestMessageTimestamp&latestMessageTimestampAfter={cutoff_ms}"
+        target_url = base_url
         
-        if threads_resp.status_code != 200:
-            return f"🚨 CRITICAL CRASH: HubSpot API Request Failed (HTTP {threads_resp.status_code}). Raw Payload: {threads_resp.text}"
+        # AUTOMATED PAGINATION LOOP TO COMPILE MASTER ARRAY (Capped at 2 pages / 200 threads)
+        for _ in range(2): 
+            threads_resp = requests.get(target_url, headers=hs_headers, timeout=15)
+            if threads_resp.status_code != 200:
+                if not all_threads:
+                    return f"🚨 CRITICAL CRASH: HubSpot API Request Failed (HTTP {threads_resp.status_code}). Raw Payload: {threads_resp.text}"
+                break
+                
+            data = threads_resp.json()
+            all_threads.extend(data.get("results", []))
             
-        all_threads = threads_resp.json().get("results", [])
+            paging_after = data.get("paging", {}).get("next", {}).get("after")
+            if paging_after:
+                target_url = f"{base_url}&after={paging_after}"
+            else:
+                break
+
         if not all_threads:
             return "WISMO Sweep Complete. No conversational threads found in the API response."
 
         open_threads = [t for t in all_threads if str(t.get("status", "")).upper() == "OPEN"]
         
         try:
+            # PYTHON INVERSION SORT: Oldest -> Newest 
             open_threads = sorted(open_threads, key=lambda x: str(x.get("latestMessageTimestamp", "")), reverse=True)
         except Exception:
             pass
@@ -1834,7 +1849,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 combined_text = "\n".join(msg_texts)
                 
                 # UPGRADED EXTRACTION FIREWALL
-                extract_prompt = f"Extract all freight tracking/consignment numbers (e.g., MS123456, FGY000000990, etc.) from this text. CRITICAL INSTRUCTION 1: Ignore phone numbers and ABNs. CRITICAL INSTRUCTION 2: If no freight reference is explicitly found, you MUST return an empty array []. DO NOT hallucinate, invent, or guess tracking numbers based on the examples. Output ONLY a raw JSON array of strings. Example: [\"MS123456\"] or []. Text: {combined_text}"
+                extract_prompt = f"Extract all freight tracking/consignment numbers (e.g., MS123456, FGY000000990, 87654321, etc.) from this text. CRITICAL INSTRUCTION 1: Ignore phone numbers and ABNs. CRITICAL INSTRUCTION 2: If no freight reference is explicitly found, you MUST return an empty array []. DO NOT hallucinate, invent, or guess tracking numbers based on the examples. Output ONLY a raw JSON array of strings. Example: [\"MS123456\"] or []. Text: {combined_text}"
                 
                 try:
                     extracted_refs_str = call_gemini_api(extract_prompt, json_mode=True)
