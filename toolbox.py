@@ -1816,18 +1816,17 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         p["channelAccountId"] = str(channel_account_id)
                         
                     # MANDATORY HUB-SPOT EMAIL REQUIREMENT
-                    if msg_type == "MESSAGE" and customer_actor_id and customer_delivery_identifier:
+                    if msg_type == "MESSAGE" and customer_delivery_identifier:
                         recipient_node = {
-                            "actorId": customer_actor_id,
                             "deliveryType": "TO",
                             "deliveryIdentifiers": [customer_delivery_identifier]
                         }
                         p["recipients"] = [recipient_node]
                         
                     # Fail-safe: Downgrade outbound external messages to internal comments if routing IDs are missing
-                    if msg_type == "MESSAGE" and not (channel_id and channel_account_id and customer_actor_id and customer_delivery_identifier):
+                    if msg_type == "MESSAGE" and not (channel_id and channel_account_id and customer_delivery_identifier):
                         p["type"] = "COMMENT"
-                        p["text"] = f"BOOF WISMO Alert [DRAFT: Missing recipient/agent data, cannot send external email natively]:\n\n{text}"
+                        p["text"] = f"BOOF WISMO Alert [DRAFT: Missing recipient data, cannot send external email natively]:\n\n{text}"
                         p.pop("recipients", None)
                         p.pop("channelId", None)
                         p.pop("channelAccountId", None)
