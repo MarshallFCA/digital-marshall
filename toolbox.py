@@ -1669,16 +1669,16 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     hs_threads_url = get_secure_endpoint("hs_threads", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jb252ZXJzYXRpb25zL3YzL2NvbnZlcnNhdGlvbnMvdGhyZWFkcw==")
     
     try:
-        # CHRONOLOGICAL FIREWALL STRICTLY RECALIBRATED TO 24 HOURS (Epoch MS)
-        cutoff_dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=24)
+        # CHRONOLOGICAL FIREWALL STRICTLY RECALIBRATED TO 12 HOURS (Epoch MS)
+        cutoff_dt = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=12)
         cutoff_ms = int(cutoff_dt.timestamp() * 1000)
         
         all_threads = []
         base_url = f"{hs_threads_url}?limit=100&sort=latestMessageTimestamp&latestMessageTimestampAfter={cutoff_ms}"
         target_url = base_url
         
-        # AUTOMATED PAGINATION LOOP TO COMPILE MASTER ARRAY (Exhausts cursor to reach newest threads)
-        for _ in range(50): # Cap at 50 pages / 5,000 threads to prevent infinite loops
+        # AUTOMATED PAGINATION LOOP TO COMPILE MASTER ARRAY (Capped at 2 pages / 200 threads)
+        for _ in range(2): 
             threads_resp = requests.get(target_url, headers=hs_headers, timeout=15)
             if threads_resp.status_code != 200:
                 if not all_threads:
@@ -1730,6 +1730,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 channel_account_id = None
                 sender_actor_id = None
                 customer_actor_id = None
+                customer_delivery_identifier = None
                 
                 for m in messages:
                     if not channel_id and m.get("channelId"):
@@ -1747,16 +1748,18 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                             if actor.startswith("A-") or actor.startswith("B-"):
                                 if not sender_actor_id:
                                     sender_actor_id = actor
-                            else:
+                            elif not actor.startswith("S-"): # Hard block S-hubspot System Actors
                                 if not customer_actor_id:
                                     customer_actor_id = actor
+                                if s.get("deliveryIdentifier") and not customer_delivery_identifier:
+                                    customer_delivery_identifier = s.get("deliveryIdentifier")
                                     
                     # Fallback check on root senderActorId property
                     root_actor = str(m.get("senderActorId", ""))
                     if root_actor:
                         if root_actor.startswith("A-") or root_actor.startswith("B-"):
                             if not sender_actor_id: sender_actor_id = root_actor
-                        else:
+                        elif not root_actor.startswith("S-"):
                             if not customer_actor_id: customer_actor_id = root_actor
                             
                 # FALLBACK FOR SENDER ACTOR ID (Harvest primary CRM Owner)
@@ -1782,10 +1785,13 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         
                     # MANDATORY HUB-SPOT EMAIL REQUIREMENT
                     if msg_type == "MESSAGE" and customer_actor_id:
-                        p["recipients"] = [{
+                        recipient_node = {
                             "actorId": customer_actor_id,
                             "deliveryType": "TO"
-                        }]
+                        }
+                        if customer_delivery_identifier:
+                            recipient_node["deliveryIdentifiers"] = [customer_delivery_identifier]
+                        p["recipients"] = [recipient_node]
                         
                     # Fail-safe: Downgrade outbound external messages to internal comments if routing IDs are missing
                     if msg_type == "MESSAGE" and not (channel_id and channel_account_id and customer_actor_id):
