@@ -2039,9 +2039,9 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 Today's Date is: {current_date}
                 
                 Task:
-                1. Evaluate status. POSITIVE = (Delivered, Booked, On board for delivery, Manifested, In Transit) AND the ETA is NOT breached.
-                2. CRITICAL ETA CHECK: If Today's Date ({current_date}) is strictly greater than the Expected Delivery Date or ETA found in the data (and the freight is not yet delivered), you MUST classify sentiment as NEGATIVE.
-                3. NEGATIVE = (Delayed, Exception, Damaged, Lost, Missed Pickup, OR ETA Breached).
+                1. PRIMARY DIRECTIVE: If the freight is 'Delivered', 'Complete', or 'Completed', the sentiment is ALWAYS 'POSITIVE', regardless of any historical delays or ETA breaches.
+                2. SECONDARY DIRECTIVE: If the freight is NOT delivered, evaluate the ETA. If Today's Date ({current_date}) is strictly greater than the Expected Delivery Date or ETA, classify sentiment as 'NEGATIVE'.
+                3. TERTIARY DIRECTIVE: For freight that is NOT delivered and NOT past its ETA: POSITIVE = (Booked, On board for delivery, Manifested, In Transit); NEGATIVE = (Delayed, Exception, Damaged, Lost, Missed Pickup).
                 4. Extract the following properties EXACTLY from the JSON. If a property is not found, output "Unknown".
                 - sender_company_name
                 - sender_suburb
