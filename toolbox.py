@@ -1784,11 +1784,11 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                                 
                                 deliv_id = s.get("deliveryIdentifier")
                                 if deliv_id and not customer_delivery_identifier:
-                                    # STRICT RECIPIENT ARRAY VALIDATION
+                                    # STRICT RECIPIENT ARRAY VALIDATION (FORCE SMTP)
                                     if isinstance(deliv_id, str):
                                         customer_delivery_identifier = {"type": "SMTP", "value": deliv_id}
                                     elif isinstance(deliv_id, dict) and "value" in deliv_id:
-                                        customer_delivery_identifier = {"type": deliv_id.get("type", "SMTP"), "value": deliv_id.get("value")}
+                                        customer_delivery_identifier = {"type": "SMTP", "value": deliv_id.get("value")}
                                     
                     # Fallback check on root senderActorId property
                     root_actor = str(m.get("senderActorId", ""))
@@ -1821,10 +1821,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                             "deliveryType": "TO",
                             "deliveryIdentifiers": [customer_delivery_identifier]
                         }
-                        # RE-BIND DIAGNOSTIC ACTOR ID
-                        if customer_actor_id:
-                            recipient_node["actorId"] = customer_actor_id
-                            
+                        # Actor ID permanently severed to prevent INVALID_ACTOR crashes.
                         p["recipients"] = [recipient_node]
                         
                     # Fail-safe: Downgrade outbound external messages to internal comments if routing IDs are missing
@@ -2044,7 +2041,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         reply_payload = build_payload("MESSAGE", base_message)
                         req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=reply_payload, timeout=15)
                         if req.status_code not in [200, 201]:
-                            err = f"Thread {thread_id} POST Reply Failed (HTTP {req.status_code}). Payload: {req.text} | DIAGNOSTIC DUMP: customer_actor_id={customer_actor_id}, channelId={channel_id}, deliveryIdentifier={customer_delivery_identifier}, Outbound JSON={json.dumps(reply_payload)}"
+                            err = f"Thread {thread_id} POST Reply Failed (HTTP {req.status_code}). Payload: {req.text}"
                             action_log.append(err)
                             actioned_count += 1
                             continue
@@ -2056,7 +2053,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         note_payload = build_payload("COMMENT", f"BOOF WISMO Alert: {base_message}")
                         req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
                         if req.status_code not in [200, 201]:
-                            err = f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text} | DIAGNOSTIC DUMP: customer_actor_id={customer_actor_id}, channelId={channel_id}, deliveryIdentifier={customer_delivery_identifier}, Outbound JSON={json.dumps(note_payload)}"
+                            err = f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text}"
                             action_log.append(err)
                             actioned_count += 1
                             continue
