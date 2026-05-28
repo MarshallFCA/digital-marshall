@@ -1696,6 +1696,42 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
 
         if not all_threads:
             return "WISMO Sweep Complete. No conversational threads found in the API response."
+            
+        # ==========================================
+        # ZERO-API-CALL MASTER AGENT FALLBACK MINING
+        # ==========================================
+        master_agent_id = None
+        
+        # First pass: check root assignees of any active thread
+        for t in all_threads:
+            assigned = str(t.get("assignedTo") or t.get("assigneeId") or "")
+            if assigned.startswith("A-") or assigned.startswith("B-"):
+                master_agent_id = assigned
+                break
+                
+        # Second pass: if no active assignees exist, query recent closed threads for historical human replies
+        if not master_agent_id:
+            closed_threads = [t for t in all_threads if str(t.get("status", "")).upper() != "OPEN"]
+            for t in closed_threads[:3]: # Efficient cap
+                try:
+                    m_resp = requests.get(f"{hs_threads_url}/{t.get('id')}/messages", headers=hs_headers, timeout=5)
+                    if m_resp.status_code == 200:
+                        for m in m_resp.json().get("results", []):
+                            actor = str(m.get("senderActorId", ""))
+                            if actor.startswith("A-") or actor.startswith("B-"):
+                                master_agent_id = actor
+                                break
+                            senders = m.get("senders", [])
+                            if isinstance(senders, list):
+                                for s in senders:
+                                    s_actor = str(s.get("actorId", ""))
+                                    if s_actor.startswith("A-") or s_actor.startswith("B-"):
+                                        master_agent_id = s_actor
+                                        break
+                            if master_agent_id: break
+                except:
+                    pass
+                if master_agent_id: break
 
         open_threads = [t for t in all_threads if str(t.get("status", "")).upper() == "OPEN"]
         
@@ -1755,8 +1791,14 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                             elif not actor.startswith("S-"): # Hard block S-hubspot System Actors
                                 if not customer_actor_id:
                                     customer_actor_id = actor
-                                if s.get("deliveryIdentifier") and not customer_delivery_identifier:
-                                    customer_delivery_identifier = s.get("deliveryIdentifier")
+                                
+                                deliv_id = s.get("deliveryIdentifier")
+                                if deliv_id and not customer_delivery_identifier:
+                                    # JSON Matrix Wrapper (prevents array-to-string payload conflicts)
+                                    if isinstance(deliv_id, str):
+                                        customer_delivery_identifier = {"type": "SMTP", "value": deliv_id}
+                                    else:
+                                        customer_delivery_identifier = deliv_id
                                     
                     # Fallback check on root senderActorId property
                     root_actor = str(m.get("senderActorId", ""))
@@ -1766,22 +1808,11 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         elif not root_actor.startswith("S-"):
                             if not customer_actor_id: customer_actor_id = root_actor
                             
-                # FALLBACK FOR SENDER ACTOR ID (Harvest primary CRM Owner User ID)
+                # APPLY ZERO-API MASTER FALLBACK
                 if not sender_actor_id:
-                    try:
-                        owner_url = get_secure_endpoint("hs_owners", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb3duZXJzP2xpbWl0PTEw")
-                        owner_req = requests.get(owner_url, headers=hs_headers, timeout=10)
-                        if owner_req.status_code == 200:
-                            owners = owner_req.json().get('results', [])
-                            for o in owners:
-                                uid = o.get("userId")
-                                if uid:
-                                    sender_actor_id = f"A-{uid}"
-                                    break
-                    except Exception:
-                        pass
+                    sender_actor_id = master_agent_id
                         
-                # FINAL FAILSAFE: If no sender actor ID can be found, skip the thread rather than crashing with A-1
+                # FINAL FAILSAFE: Skip to prevent HTTP 400 validation crash
                 if not sender_actor_id:
                     action_log.append(f"Thread {thread_id}: CRITICAL ERROR - Cannot deduce a valid Agent ID (A-{{userId}}) to send the reply from. Thread skipped.")
                     actioned_count += 1
