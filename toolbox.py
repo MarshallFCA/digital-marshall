@@ -1821,9 +1821,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                             "recipientField": "TO",
                             "deliveryIdentifiers": [customer_delivery_identifier]
                         }
-                        if customer_actor_id:
-                            recipient_node["actorId"] = customer_actor_id
-                            
+                        # The actorId is strictly omitted to prevent INVALID_ACTOR crashes.
                         p["recipients"] = [recipient_node]
                         
                     # Fail-safe: Downgrade outbound external messages to internal comments if routing IDs are missing
@@ -2012,13 +2010,18 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     actioned_count += 1
                     continue
                     
+                current_date = datetime.datetime.now().strftime("%Y-%m-%d")
                 eval_prompt = f"""
                 You are the BOOF Freight Concierge. Analyze this JSON freight tracking data retrieved via {carrier_source}: {tracking_info}
                 
+                Today's Date is: {current_date}
+                
                 Task:
-                1. Evaluate status. POSITIVE = (Delivered, Booked, On board for delivery, Manifested, In Transit). NEGATIVE = (Delayed, Exception, Damaged, Lost, Missed Pickup).
-                2. If POSITIVE, draft a highly professional, concise, non-chatty message for the customer. E.g., 'Consignment [ID] is currently in transit. Expected ETA is [Date].'
-                3. If NEGATIVE, draft an internal note for the FCA broker. E.g., 'ACTION REQUIRED: [ID] is delayed. Exception flagged.'
+                1. Evaluate status. POSITIVE = (Delivered, Booked, On board for delivery, Manifested, In Transit) AND the ETA is NOT breached.
+                2. CRITICAL ETA CHECK: If Today's Date ({current_date}) is strictly greater than the Expected Delivery Date or ETA found in the data (and the freight is not yet delivered), you MUST classify sentiment as NEGATIVE, even if the scan says 'In Transit' or 'Scanned into Depot'.
+                3. NEGATIVE = (Delayed, Exception, Damaged, Lost, Missed Pickup, OR ETA Breached).
+                4. If POSITIVE, draft a highly professional, concise, non-chatty message for the customer. E.g., 'Consignment [ID] is currently in transit. Expected ETA is [Date].'
+                5. If NEGATIVE, draft an internal note for the FCA broker. E.g., 'ACTION REQUIRED: [ID] is delayed/ETA breached. Current status is [Status].'
                 
                 Return ONLY a valid JSON object with keys: 'sentiment' (strictly "POSITIVE" or "NEGATIVE") and 'message' (the drafted text).
                 """
