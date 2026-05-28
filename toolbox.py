@@ -1769,7 +1769,8 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 # FALLBACK FOR SENDER ACTOR ID (Harvest primary CRM Owner User ID)
                 if not sender_actor_id:
                     try:
-                        owner_req = requests.get("[https://api.hubapi.com/crm/v3/owners?limit=10](https://api.hubapi.com/crm/v3/owners?limit=10)", headers=hs_headers, timeout=10)
+                        owner_url = get_secure_endpoint("hs_owners", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb3duZXJzP2xpbWl0PTEw")
+                        owner_req = requests.get(owner_url, headers=hs_headers, timeout=10)
                         if owner_req.status_code == 200:
                             owners = owner_req.json().get('results', [])
                             for o in owners:
@@ -1780,7 +1781,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     except Exception:
                         pass
                         
-                # FINAL FAILSAFE: If no sender actor ID can be found, skip the thread to prevent HTTP 400 validation crash
+                # FINAL FAILSAFE: If no sender actor ID can be found, skip the thread rather than crashing with A-1
                 if not sender_actor_id:
                     action_log.append(f"Thread {thread_id}: CRITICAL ERROR - Cannot deduce a valid Agent ID (A-{{userId}}) to send the reply from. Thread skipped.")
                     actioned_count += 1
