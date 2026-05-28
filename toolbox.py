@@ -1814,7 +1814,22 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 if latest_agent_time and latest_customer_time and latest_agent_time >= latest_customer_time:
                     continue
                 
-                msg_texts = [m.get("text", "") for m in messages if m.get("type") != "COMMENT" and m.get("text")]
+                # ==========================================
+                # EXPANDED TEXT PARSER
+                # ==========================================
+                msg_texts = []
+                for m in messages:
+                    if m.get("type") == "COMMENT": continue
+                    
+                    # Extract all possible text nodes where a customer might place a connote
+                    m_text = str(m.get("text") or "")
+                    m_rich = str(m.get("richText") or "")
+                    m_subject = str(m.get("subject") or "")
+                    
+                    combined_node = f"{m_subject} {m_text} {m_rich}".strip()
+                    if combined_node:
+                        msg_texts.append(combined_node)
+                        
                 if not msg_texts: continue
                 combined_text = "\n".join(msg_texts)
                 
