@@ -1818,10 +1818,12 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     # MANDATORY HUB-SPOT EMAIL REQUIREMENT
                     if msg_type == "MESSAGE" and customer_delivery_identifier:
                         recipient_node = {
-                            "deliveryType": "TO",
+                            "recipientField": "TO",
                             "deliveryIdentifiers": [customer_delivery_identifier]
                         }
-                        # The actorId is strictly omitted to prevent INVALID_ACTOR crashes.
+                        if customer_actor_id:
+                            recipient_node["actorId"] = customer_actor_id
+                            
                         p["recipients"] = [recipient_node]
                         
                     # Fail-safe: Downgrade outbound external messages to internal comments if routing IDs are missing
