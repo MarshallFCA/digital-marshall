@@ -1677,8 +1677,8 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
         base_url = f"{hs_threads_url}?limit=100&sort=latestMessageTimestamp&latestMessageTimestampAfter={cutoff_ms}"
         target_url = base_url
         
-        # AUTOMATED PAGINATION LOOP TO COMPILE MASTER ARRAY (Capped at 2 pages / 200 threads)
-        for _ in range(2): 
+        # AUTOMATED PAGINATION LOOP TO COMPILE MASTER ARRAY (Exhausts cursor to reach newest threads)
+        for _ in range(50): # Cap at 50 pages / 5,000 threads to prevent infinite loops
             threads_resp = requests.get(target_url, headers=hs_headers, timeout=15)
             if threads_resp.status_code != 200:
                 if not all_threads:
