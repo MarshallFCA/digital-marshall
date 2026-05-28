@@ -2094,8 +2094,14 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                             action_log.append(err)
                             actioned_count += 1
                             continue
-                            
-                    action_log.append(f"Thread {thread_id}: POSITIVE status for {connote} via {carrier_source}. Replied to customer (POD Attached: {has_pod}).")
+                        
+                        close_req = requests.patch(f"{hs_threads_url}/{thread_id}", headers=hs_headers, json={"status": "CLOSED"}, timeout=15)
+                        if close_req.status_code in [200, 201]:
+                            action_log.append(f"Thread {thread_id}: POSITIVE status for {connote} via {carrier_source}. Replied to customer and closed thread.")
+                        else:
+                            action_log.append(f"Thread {thread_id}: Replied to customer, but automated thread closure failed (HTTP {close_req.status_code}).")
+                    else:
+                        action_log.append(f"[DRY RUN] Thread {thread_id}: POSITIVE status for {connote} via {carrier_source}. Would reply to customer and close thread.")
                     
                 else:
                     base_message = f"ACTION REQUIRED: {connote} is delayed/ETA breached. Current status is {status_str}."
