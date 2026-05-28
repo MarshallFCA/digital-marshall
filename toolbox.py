@@ -1651,6 +1651,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     Anti-Loop: Forensically compares timestamps to ensure threads can re-open.
     Expanded Pipeline: Audits Machship first, executes fallback sequence to Transvirtual if required.
     Channel Injection: Harvests and applies channelId/channelAccountId to outbound POST requests.
+    Safe Mode: Drafts all customer replies as internal COMMENTs to bypass HubSpot senderActorId strictness.
     """
     import datetime
     
