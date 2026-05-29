@@ -1766,6 +1766,31 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 
                 messages = messages_resp.json().get("results", [])
                 if not messages: continue
+
+                # ==========================================
+                # PRE-FLIGHT CHECK: NEW INBOUND ONLY
+                # ==========================================
+                external_messages = [m for m in messages if m.get("type") == "MESSAGE"]
+                
+                if len(external_messages) > 1:
+                    continue
+                    
+                if len(external_messages) == 1:
+                    is_internal_sender = False
+                    for s in external_messages[0].get("senders", []):
+                        deliv_id = s.get("deliveryIdentifier")
+                        email_val = ""
+                        if isinstance(deliv_id, dict):
+                            email_val = str(deliv_id.get("value", "")).lower()
+                        elif isinstance(deliv_id, str):
+                            email_val = str(deliv_id).lower()
+                            
+                        if "@freightcompaniesaustralia.com.au" in email_val:
+                            is_internal_sender = True
+                            break
+                            
+                    if is_internal_sender:
+                        continue
                 
                 # HARVEST CHANNEL ROUTING IDS & ACTOR IDS
                 channel_id = None
