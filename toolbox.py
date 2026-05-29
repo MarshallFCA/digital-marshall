@@ -1669,7 +1669,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     Channel Injection: Harvests and applies channelId/channelAccountId to outbound POST requests.
     Safe Mode: Drafts all customer replies as internal COMMENTs to bypass HubSpot senderActorId strictness.
     Iterative Search: Sweeps every LLM extracted reference until a hit occurs.
-    Token Harvest: Enforces aggressive returnConsignments POST for Machship hash retrieval.
+    Token Harvest: Enforces aggressive getConsignment GET for Machship hash retrieval.
     """
     import datetime
     
@@ -2075,13 +2075,13 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 # AGGRESSIVE TOKEN HARVEST OVERRIDE
                 # ==========================================
                 if carrier_source == "Machship" and ms_consign_id and not public_token:
-                    token_url = get_secure_endpoint("machship_return_ids", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRz")
+                    get_url = get_secure_endpoint("machship_get", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0Q29uc2lnbm1lbnQ/aWQ9")
                     try:
-                        r_token = requests.post(token_url, headers=ms_headers_dict, json=[ms_consign_id], timeout=15)
+                        r_token = requests.get(f"{get_url}{ms_consign_id}", headers=ms_headers_dict, timeout=15)
                         if r_token.status_code == 200:
-                            t_obj = r_token.json().get("object", [])
-                            if t_obj and len(t_obj) > 0:
-                                public_token = find_tracking_token(t_obj[0])
+                            t_obj = r_token.json().get("object")
+                            if t_obj:
+                                public_token = find_tracking_token(t_obj)
                     except Exception as e:
                         ms_diagnostics.append(f"Token Harvest Crash: {sanitize_error_log(str(e))}")
                         
