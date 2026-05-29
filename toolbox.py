@@ -1973,27 +1973,45 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         action_log.append(f"MS GET Fetch Error: {sanitize_error_log(str(e))}")
 
                 # ISOLATED POST MATRIX PIPELINE
-
                 if not tracking_info:
-                    tv_token = st.secrets.get("transvirtual", {}).get("TRANSVIRTUAL_API_KEY")
-                    if tv_token:
-                        tv_headers = {
-                            "Authorization": tv_token,
-                            "Content-Type": "application/json",
-                            "Accept": "application/json"
-                        }
-                        tv_status_url = get_secure_endpoint("tv_status", "aHR0cHM6Ly9hcGkudHJhbnN2aXJ0dWFsLmNvbS5hdS9hcGkvQ29uc2lnbm1lbnRTdGF0dXM=")
+                    ms_post_urls = [
+                        get_secure_endpoint("machship_carrier_id", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlDYXJyaWVyQ29uc2lnbm1lbnRJZD9pbmNsdWRlQ2hpbGRDb21wYW5pZXM9dHJ1ZQ=="),
+                        get_secure_endpoint("machship_ref1", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl"),
+                        get_secure_endpoint("machship_ref2", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl")
+                    ]
+                    for url in ms_post_urls:
                         try:
-                            tv_payload = {"Number": connote}
-                            tv_resp = requests.post(tv_status_url, headers=tv_headers, json=tv_payload, timeout=10)
-                            if tv_resp.status_code == 200 and "Missing" not in tv_resp.text:
-                                tv_data = tv_resp.json().get("Data", tv_resp.json())
-                                if tv_data:
-                                    tracking_info = json.dumps(tv_data)
-                                    has_pod = False
-                                    carrier_source = "Transvirtual"
+                            r = requests.post(url, headers=ms_headers_dict, json=[connote], timeout=10)
+                            if r.status_code == 200:
+                                data = r.json()
+                                obj_list = data.get("object")
+                                if obj_list and isinstance(obj_list, list) and len(obj_list) > 0:
+                                    obj = obj_list[0]
+                                    tracking_info = json.dumps(obj)
+                                    ms_consign_id = obj.get("id")
+                                    has_pod = obj.get("attachmentCount", 0) > 0
+                                    carrier_source = "Machship"
+                                    public_token = find_tracking_token(obj)
+                                    
+                                    # ==========================================
+                                    # TOKEN HARVESTING OVERRIDE (SECONDARY GET)
+                                    # ==========================================
+                                    if ms_consign_id and not public_token:
+                                        get_url = get_secure_endpoint("machship_get", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0Q29uc2lnbm1lbnQ/aWQ9")
+                                        try:
+                                            r_get = requests.get(f"{get_url}{ms_consign_id}", headers=ms_headers_dict, timeout=10)
+                                            if r_get.status_code == 200:
+                                                full_obj = r_get.json().get("object")
+                                                if full_obj:
+                                                    tracking_info = json.dumps(full_obj)
+                                                    has_pod = full_obj.get("attachmentCount", 0) > 0
+                                                    public_token = find_tracking_token(full_obj)
+                                        except Exception as e:
+                                            action_log.append(f"Secondary Token Harvest Error: {sanitize_error_log(str(e))}")
+                                            
+                                    break
                         except Exception as e:
-                            action_log.append(f"Thread {thread_id}: Transvirtual Fallback API Error: {sanitize_error_log(str(e))}")
+                            action_log.append(f"MS POST Fetch Error: {sanitize_error_log(str(e))}")
                             
                 if not tracking_info:
                     if not dry_run:
