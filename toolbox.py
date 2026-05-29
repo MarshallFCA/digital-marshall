@@ -1972,20 +1972,25 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     
                 connote = str(refs[0]).upper().strip()
                 
-                ms_headers_dict = { "token": ms_token, "Content-Type": "application/json" }
+                ms_headers_dict = { 
+                    "token": ms_token, 
+                    "Content-Type": "application/json",
+                    "Accept": "application/json" 
+                }
                 
                 tracking_info = None
                 ms_consign_id = None
                 public_token = ""
                 has_pod = False
                 carrier_source = "None"
+                ms_diagnostics = []
                 
                 # ISOLATED GET PIPELINE
                 if connote.startswith("MS"):
                     ms_id = re.sub(r"\D", "", connote)
                     get_url = get_secure_endpoint("machship_get", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0Q29uc2lnbm1lbnQ/aWQ9")
                     try:
-                        r = requests.get(f"{get_url}{ms_id}", headers=ms_headers_dict, timeout=10)
+                        r = requests.get(f"{get_url}{ms_id}", headers=ms_headers_dict, timeout=15)
                         if r.status_code == 200:
                             obj = r.json().get("object")
                             if obj:
@@ -1994,8 +1999,10 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                                 has_pod = obj.get("attachmentCount", 0) > 0
                                 carrier_source = "Machship"
                                 public_token = find_tracking_token(obj)
+                        else:
+                            ms_diagnostics.append(f"GET HTTP {r.status_code}")
                     except Exception as e:
-                        action_log.append(f"MS GET Fetch Error: {sanitize_error_log(str(e))}")
+                        ms_diagnostics.append(f"GET Crash: {sanitize_error_log(str(e))}")
 
                 # ISOLATED POST MATRIX PIPELINE
                 if not tracking_info:
@@ -2005,38 +2012,51 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         get_secure_endpoint("machship_ref2", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl")
                     ]
                     for url in ms_post_urls:
+                        endpoint_name = url.split('?')[0].split('/')[-1]
                         try:
-                            r = requests.post(url, headers=ms_headers_dict, json=[connote], timeout=10)
+                            r = requests.post(url, headers=ms_headers_dict, json=[connote], timeout=15)
                             if r.status_code == 200:
                                 data = r.json()
                                 obj_list = data.get("object")
-                                if obj_list and isinstance(obj_list, list) and len(obj_list) > 0:
-                                    obj = obj_list[0]
+                                
+                                if obj_list:
+                                    # Re-engineered type casting to catch flattened dictionaries
+                                    if isinstance(obj_list, list) and len(obj_list) > 0:
+                                        obj = obj_list[0]
+                                    elif isinstance(obj_list, dict):
+                                        obj = obj_list
+                                    else:
+                                        ms_diagnostics.append(f"{endpoint_name}: Empty Array")
+                                        continue
+                                        
                                     tracking_info = json.dumps(obj)
                                     ms_consign_id = obj.get("id")
                                     has_pod = obj.get("attachmentCount", 0) > 0
                                     carrier_source = "Machship"
                                     public_token = find_tracking_token(obj)
                                     
-                                    # ==========================================
-                                    # TOKEN HARVESTING OVERRIDE (SECONDARY GET)
-                                    # ==========================================
+                                    # Token Harvesting Override
                                     if ms_consign_id and not public_token:
                                         get_url = get_secure_endpoint("machship_get", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0Q29uc2lnbm1lbnQ/aWQ9")
                                         try:
-                                            r_get = requests.get(f"{get_url}{ms_consign_id}", headers=ms_headers_dict, timeout=10)
+                                            r_get = requests.get(f"{get_url}{ms_consign_id}", headers=ms_headers_dict, timeout=15)
                                             if r_get.status_code == 200:
                                                 full_obj = r_get.json().get("object")
                                                 if full_obj:
                                                     tracking_info = json.dumps(full_obj)
                                                     has_pod = full_obj.get("attachmentCount", 0) > 0
                                                     public_token = find_tracking_token(full_obj)
-                                        except Exception as e:
-                                            action_log.append(f"Secondary Token Harvest Error: {sanitize_error_log(str(e))}")
+                                        except Exception:
+                                            pass
                                             
                                     break
+                                else:
+                                    err_msg = data.get("errors", "No object")
+                                    ms_diagnostics.append(f"{endpoint_name}: {err_msg}")
+                            else:
+                                ms_diagnostics.append(f"{endpoint_name}: HTTP {r.status_code}")
                         except Exception as e:
-                            action_log.append(f"MS POST Fetch Error: {sanitize_error_log(str(e))}")
+                            ms_diagnostics.append(f"{endpoint_name} Crash")
                             
                 if not tracking_info:
                     if not dry_run:
