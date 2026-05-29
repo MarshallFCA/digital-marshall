@@ -2059,8 +2059,11 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                             ms_diagnostics.append(f"{endpoint_name} Crash")
                             
                 if not tracking_info:
+                    diag_str = " | ".join(ms_diagnostics) if ms_diagnostics else "Unknown Failure"
+                    fallback_msg = f"BOOF WISMO Alert: Could not locate Machship or Transvirtual data for reference {connote}. Reassigning to human broker.\nDiagnostics: {diag_str}"
+                    
                     if not dry_run:
-                        note_payload = build_payload("COMMENT", f"BOOF WISMO Alert: Could not locate Machship or Transvirtual data for reference {connote}. Reassigning to human broker.")
+                        note_payload = build_payload("COMMENT", fallback_msg)
                         req = requests.post(f"{hs_threads_url}/{thread_id}/messages", headers=hs_headers, json=note_payload, timeout=15)
                         if req.status_code not in [200, 201]:
                             err = f"Thread {thread_id} POST Note Failed (HTTP {req.status_code}). Payload: {req.text}"
@@ -2068,7 +2071,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                             actioned_count += 1
                             continue
                             
-                    action_log.append(f"Thread {thread_id}: Reference {connote} not found across API pipelines. Left internal note.")
+                    action_log.append(f"Thread {thread_id}: Reference {connote} not found across API pipelines. Left internal note. {diag_str}")
                     actioned_count += 1
                     continue
                     
