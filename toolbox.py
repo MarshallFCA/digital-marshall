@@ -1668,6 +1668,8 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     Expanded Pipeline: Audits Machship first, executes fallback sequence to Transvirtual if required.
     Channel Injection: Harvests and applies channelId/channelAccountId to outbound POST requests.
     Safe Mode: Drafts all customer replies as internal COMMENTs to bypass HubSpot senderActorId strictness.
+    Iterative Search: Sweeps every LLM extracted reference until a hit occurs.
+    Token Harvest: Enforces aggressive returnConsignments POST for Machship hash retrieval.
     """
     import datetime
     
@@ -1969,8 +1971,6 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     action_log.append(f"Thread {thread_id}: No connote found. Left skip note.")
                     actioned_count += 1
                     continue
-                    
-                connote = str(refs[0]).upper().strip()
                 
                 ms_headers_dict = { 
                     "token": ms_token, 
@@ -1984,103 +1984,111 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 has_pod = False
                 carrier_source = "None"
                 ms_diagnostics = []
+                final_connote = ""
                 
-                # ISOLATED GET PIPELINE
-                if connote.startswith("MS"):
-                    ms_id = re.sub(r"\D", "", connote)
-                    get_url = get_secure_endpoint("machship_get", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0Q29uc2lnbm1lbnQ/aWQ9")
-                    try:
-                        r = requests.get(f"{get_url}{ms_id}", headers=ms_headers_dict, timeout=15)
-                        if r.status_code == 200:
-                            obj = r.json().get("object")
-                            if obj:
-                                tracking_info = json.dumps(obj)
-                                ms_consign_id = obj.get("id")
-                                has_pod = obj.get("attachmentCount", 0) > 0
-                                carrier_source = "Machship"
-                                public_token = find_tracking_token(obj)
-                        else:
-                            ms_diagnostics.append(f"GET HTTP {r.status_code}")
-                    except Exception as e:
-                        ms_diagnostics.append(f"GET Crash: {sanitize_error_log(str(e))}")
-
-                # ISOLATED POST MATRIX PIPELINE
-                if not tracking_info:
-                    ms_post_urls = [
-                        ("Carrier_ID", get_secure_endpoint("machship_carrier_id", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlDYXJyaWVyQ29uc2lnbm1lbnRJZD9pbmNsdWRlQ2hpbGRDb21wYW5pZXM9dHJ1ZQ==")),
-                        ("Ref_1", get_secure_endpoint("machship_ref1", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl")),
-                        ("Ref_2", get_secure_endpoint("machship_ref2", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl"))
-                    ]
-                    for search_type, url in ms_post_urls:
+                # ==========================================
+                # MULTI-REFERENCE EVALUATION MATRIX
+                # ==========================================
+                for extracted_ref in refs:
+                    connote = str(extracted_ref).upper().strip()
+                    ms_diagnostics.append(f"Evaluating: {connote}")
+                    
+                    # ISOLATED GET PIPELINE
+                    if connote.startswith("MS"):
+                        ms_id = re.sub(r"\D", "", connote)
+                        get_url = get_secure_endpoint("machship_get", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0Q29uc2lnbm1lbnQ/aWQ9")
                         try:
-                            r = requests.post(url, headers=ms_headers_dict, json=[connote], timeout=15)
+                            r = requests.get(f"{get_url}{ms_id}", headers=ms_headers_dict, timeout=15)
                             if r.status_code == 200:
-                                data = r.json()
-                                obj_list = data.get("object")
-                                
-                                if obj_list:
-                                    if isinstance(obj_list, list) and len(obj_list) > 0:
-                                        obj = obj_list[0]
-                                    elif isinstance(obj_list, dict):
-                                        obj = obj_list
-                                    else:
-                                        ms_diagnostics.append(f"{search_type}: Empty Array")
-                                        continue
-                                        
+                                obj = r.json().get("object")
+                                if obj:
                                     tracking_info = json.dumps(obj)
                                     ms_consign_id = obj.get("id")
                                     has_pod = obj.get("attachmentCount", 0) > 0
                                     carrier_source = "Machship"
                                     public_token = find_tracking_token(obj)
-                                    
-                                    # Token Harvesting Override
-                                    if ms_consign_id and not public_token:
-                                        get_url = get_secure_endpoint("machship_get", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0Q29uc2lnbm1lbnQ/aWQ9")
-                                        try:
-                                            r_get = requests.get(f"{get_url}{ms_consign_id}", headers=ms_headers_dict, timeout=15)
-                                            if r_get.status_code == 200:
-                                                full_obj = r_get.json().get("object")
-                                                if full_obj:
-                                                    tracking_info = json.dumps(full_obj)
-                                                    has_pod = full_obj.get("attachmentCount", 0) > 0
-                                                    public_token = find_tracking_token(full_obj)
-                                        except Exception:
-                                            pass
-                                            
-                                    break
-                                else:
-                                    err_msg = data.get("errors", "No object")
-                                    ms_diagnostics.append(f"{search_type}: {err_msg}")
                             else:
-                                ms_diagnostics.append(f"{search_type}: HTTP {r.status_code}")
+                                ms_diagnostics.append(f"GET HTTP {r.status_code}")
                         except Exception as e:
-                            ms_diagnostics.append(f"{search_type} Crash")
+                            ms_diagnostics.append(f"GET Crash: {sanitize_error_log(str(e))}")
 
-                # RESTORED TRANSVIRTUAL FALLBACK
-                if not tracking_info:
-                    tv_token = st.secrets.get("transvirtual", {}).get("TRANSVIRTUAL_API_KEY")
-                    if tv_token:
-                        tv_headers = {
-                            "Authorization": tv_token,
-                            "Content-Type": "application/json",
-                            "Accept": "application/json"
-                        }
-                        tv_status_url = get_secure_endpoint("tv_status", "aHR0cHM6Ly9hcGkudHJhbnN2aXJ0dWFsLmNvbS5hdS9hcGkvQ29uc2lnbm1lbnRTdGF0dXM=")
-                        try:
-                            tv_payload = {"Number": connote}
-                            tv_resp = requests.post(tv_status_url, headers=tv_headers, json=tv_payload, timeout=10)
-                            if tv_resp.status_code == 200 and "Missing" not in tv_resp.text:
-                                tv_data = tv_resp.json().get("Data", tv_resp.json())
-                                if tv_data:
-                                    tracking_info = json.dumps(tv_data)
-                                    has_pod = False
-                                    carrier_source = "Transvirtual"
-                        except Exception as e:
-                            ms_diagnostics.append(f"TV Crash: {sanitize_error_log(str(e))}")
-                            
+                    # ISOLATED POST MATRIX PIPELINE
+                    if not tracking_info:
+                        ms_post_urls = [
+                            ("Carrier_ID", get_secure_endpoint("machship_carrier_id", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlDYXJyaWVyQ29uc2lnbm1lbnRJZD9pbmNsdWRlQ2hpbGRDb21wYW5pZXM9dHJ1ZQ==")),
+                            ("Ref_1", get_secure_endpoint("machship_ref1", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl")),
+                            ("Ref_2", get_secure_endpoint("machship_ref2", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl"))
+                        ]
+                        for search_type, url in ms_post_urls:
+                            try:
+                                r = requests.post(url, headers=ms_headers_dict, json=[connote], timeout=15)
+                                if r.status_code == 200:
+                                    data = r.json()
+                                    obj_list = data.get("object")
+                                    
+                                    if obj_list:
+                                        if isinstance(obj_list, list) and len(obj_list) > 0:
+                                            obj = obj_list[0]
+                                        elif isinstance(obj_list, dict):
+                                            obj = obj_list
+                                        else:
+                                            continue
+                                            
+                                        tracking_info = json.dumps(obj)
+                                        ms_consign_id = obj.get("id")
+                                        has_pod = obj.get("attachmentCount", 0) > 0
+                                        carrier_source = "Machship"
+                                        public_token = find_tracking_token(obj)
+                                        break
+                                else:
+                                    ms_diagnostics.append(f"{search_type}: HTTP {r.status_code}")
+                            except Exception as e:
+                                ms_diagnostics.append(f"{search_type} Crash")
+
+                    # TRANSVIRTUAL FALLBACK
+                    if not tracking_info:
+                        tv_token = st.secrets.get("transvirtual", {}).get("TRANSVIRTUAL_API_KEY")
+                        if tv_token:
+                            tv_headers = {
+                                "Authorization": tv_token,
+                                "Content-Type": "application/json",
+                                "Accept": "application/json"
+                            }
+                            tv_status_url = get_secure_endpoint("tv_status", "aHR0cHM6Ly9hcGkudHJhbnN2aXJ0dWFsLmNvbS5hdS9hcGkvQ29uc2lnbm1lbnRTdGF0dXM=")
+                            try:
+                                tv_payload = {"Number": connote}
+                                tv_resp = requests.post(tv_status_url, headers=tv_headers, json=tv_payload, timeout=10)
+                                if tv_resp.status_code == 200 and "Missing" not in tv_resp.text:
+                                    tv_data = tv_resp.json().get("Data", tv_resp.json())
+                                    if tv_data:
+                                        tracking_info = json.dumps(tv_data)
+                                        has_pod = False
+                                        carrier_source = "Transvirtual"
+                            except Exception as e:
+                                ms_diagnostics.append(f"TV Crash: {sanitize_error_log(str(e))}")
+                                
+                    if tracking_info:
+                        final_connote = connote
+                        break
+                        
+                # ==========================================
+                # AGGRESSIVE TOKEN HARVEST OVERRIDE
+                # ==========================================
+                if carrier_source == "Machship" and ms_consign_id and not public_token:
+                    token_url = get_secure_endpoint("machship_return_ids", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRz")
+                    try:
+                        r_token = requests.post(token_url, headers=ms_headers_dict, json=[ms_consign_id], timeout=15)
+                        if r_token.status_code == 200:
+                            t_obj = r_token.json().get("object", [])
+                            if t_obj and len(t_obj) > 0:
+                                public_token = find_tracking_token(t_obj[0])
+                    except Exception as e:
+                        ms_diagnostics.append(f"Token Harvest Crash: {sanitize_error_log(str(e))}")
+                        
                 if not tracking_info:
                     diag_str = " | ".join(ms_diagnostics) if ms_diagnostics else "Unknown Failure"
-                    fallback_msg = f"BOOF WISMO Alert: Could not locate Machship or Transvirtual data for reference {connote}. Reassigning to human broker.\nDiagnostics: {diag_str}"
+                    all_refs_str = ", ".join(refs)
+                    fallback_msg = f"BOOF WISMO Alert: Could not locate Machship or Transvirtual data for references: {all_refs_str}. Reassigning to human broker.\nDiagnostics: {diag_str}"
                     
                     if not dry_run:
                         note_payload = build_payload("COMMENT", fallback_msg)
@@ -2091,10 +2099,11 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                             actioned_count += 1
                             continue
                             
-                    action_log.append(f"Thread {thread_id}: Reference {connote} not found across API pipelines. Left internal note. {diag_str}")
+                    action_log.append(f"Thread {thread_id}: References not found across API pipelines. Left internal note. {diag_str}")
                     actioned_count += 1
                     continue
                     
+                connote = final_connote
                 current_date = datetime.datetime.now().strftime("%Y-%m-%d")
                 
                 eval_prompt = f"""
