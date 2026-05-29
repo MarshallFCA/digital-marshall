@@ -2157,16 +2157,14 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     else:
                         status_line = f"Consignment {connote} is currently {status_str}. Expected delivery is by {eta_date}."
                         
-                    pod_line = ""
-                    if carrier_source == "Machship":
-                        pod_msg = "A Proof of Delivery (POD) has been uploaded. " if has_pod else ""
-                        if public_token:
-                            tracking_url = f"https://live.machship.com/trackingv2/#/consignments/{public_token}"
-                        else:
-                            tracking_url = f"https://live.machship.com/trackingv2 (Enter Consignment: {connote})"
-                        pod_line = f"\n\n{pod_msg}Live tracking and documentation are securely accessible via the following carrier link:\n{tracking_url}"
-                    elif carrier_source == "Transvirtual":
-                        pod_line = f"\n\nLive tracking and documentation are accessible via the carrier's direct tracking portal using your consignment number: {connote}"
+                    # UNCONDITIONAL URL GENERATION: Decoupled from API source to guarantee link rendering.
+                    pod_msg = "A Proof of Delivery (POD) has been uploaded. " if has_pod else ""
+                    if public_token:
+                        tracking_url = f"https://live.machship.com/trackingv2/#/consignments/{public_token}"
+                    else:
+                        tracking_url = f"https://live.machship.com/trackingv2 (Enter Consignment: {connote})"
+                        
+                    pod_line = f"\n\n{pod_msg}Live tracking and documentation are securely accessible via the following carrier link:\n{tracking_url}"
                         
                     base_message = f"Thank you for your enquiry about connote {connote}\n\nPicked up from {sender_comp}, {sender_sub}\nFor delivery to {receiver_comp}, {receiver_sub}\n\n{status_line}{pod_line}\n\nAs this is a good news email, it has been responded to automatically by FCA's AI assistant (BOOF). If the email response isn't accurate or appropriate, that's Marshall's fault. Please forward this email directly to marshall@fca.net.au and he will investigate."
                     
@@ -2186,7 +2184,6 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                             action_log.append(f"Thread {thread_id}: Reply sent, but automated thread closure failed (HTTP {close_req.status_code}). Reason: {close_req.text}")
                     else:
                         action_log.append(f"[DRY RUN] Thread {thread_id}: POSITIVE status for {connote} via {carrier_source}. Would reply to customer and close thread.")
-                    
                 else:
                     base_message = f"ACTION REQUIRED: {connote} is delayed/ETA breached. Current status is {status_str}."
                     if not dry_run:
