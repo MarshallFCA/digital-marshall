@@ -2007,12 +2007,11 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 # ISOLATED POST MATRIX PIPELINE
                 if not tracking_info:
                     ms_post_urls = [
-                        get_secure_endpoint("machship_carrier_id", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlDYXJyaWVyQ29uc2lnbm1lbnRJZD9pbmNsdWRlQ2hpbGRDb21wYW5pZXM9dHJ1ZQ=="),
-                        get_secure_endpoint("machship_ref1", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl"),
-                        get_secure_endpoint("machship_ref2", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl")
+                        ("Carrier_ID", get_secure_endpoint("machship_carrier_id", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlDYXJyaWVyQ29uc2lnbm1lbnRJZD9pbmNsdWRlQ2hpbGRDb21wYW5pZXM9dHJ1ZQ==")),
+                        ("Ref_1", get_secure_endpoint("machship_ref1", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl")),
+                        ("Ref_2", get_secure_endpoint("machship_ref2", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl"))
                     ]
-                    for url in ms_post_urls:
-                        endpoint_name = url.split('?')[0].split('/')[-1]
+                    for search_type, url in ms_post_urls:
                         try:
                             r = requests.post(url, headers=ms_headers_dict, json=[connote], timeout=15)
                             if r.status_code == 200:
@@ -2020,13 +2019,12 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                                 obj_list = data.get("object")
                                 
                                 if obj_list:
-                                    # Re-engineered type casting to catch flattened dictionaries
                                     if isinstance(obj_list, list) and len(obj_list) > 0:
                                         obj = obj_list[0]
                                     elif isinstance(obj_list, dict):
                                         obj = obj_list
                                     else:
-                                        ms_diagnostics.append(f"{endpoint_name}: Empty Array")
+                                        ms_diagnostics.append(f"{search_type}: Empty Array")
                                         continue
                                         
                                     tracking_info = json.dumps(obj)
@@ -2052,11 +2050,33 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                                     break
                                 else:
                                     err_msg = data.get("errors", "No object")
-                                    ms_diagnostics.append(f"{endpoint_name}: {err_msg}")
+                                    ms_diagnostics.append(f"{search_type}: {err_msg}")
                             else:
-                                ms_diagnostics.append(f"{endpoint_name}: HTTP {r.status_code}")
+                                ms_diagnostics.append(f"{search_type}: HTTP {r.status_code}")
                         except Exception as e:
-                            ms_diagnostics.append(f"{endpoint_name} Crash")
+                            ms_diagnostics.append(f"{search_type} Crash")
+
+                # RESTORED TRANSVIRTUAL FALLBACK
+                if not tracking_info:
+                    tv_token = st.secrets.get("transvirtual", {}).get("TRANSVIRTUAL_API_KEY")
+                    if tv_token:
+                        tv_headers = {
+                            "Authorization": tv_token,
+                            "Content-Type": "application/json",
+                            "Accept": "application/json"
+                        }
+                        tv_status_url = get_secure_endpoint("tv_status", "aHR0cHM6Ly9hcGkudHJhbnN2aXJ0dWFsLmNvbS5hdS9hcGkvQ29uc2lnbm1lbnRTdGF0dXM=")
+                        try:
+                            tv_payload = {"Number": connote}
+                            tv_resp = requests.post(tv_status_url, headers=tv_headers, json=tv_payload, timeout=10)
+                            if tv_resp.status_code == 200 and "Missing" not in tv_resp.text:
+                                tv_data = tv_resp.json().get("Data", tv_resp.json())
+                                if tv_data:
+                                    tracking_info = json.dumps(tv_data)
+                                    has_pod = False
+                                    carrier_source = "Transvirtual"
+                        except Exception as e:
+                            ms_diagnostics.append(f"TV Crash: {sanitize_error_log(str(e))}")
                             
                 if not tracking_info:
                     diag_str = " | ".join(ms_diagnostics) if ms_diagnostics else "Unknown Failure"
@@ -2131,7 +2151,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     pod_line = ""
                     if carrier_source == "Machship" and public_token:
                         pod_msg = "A Proof of Delivery (POD) has been uploaded. " if has_pod else ""
-                        pod_line = f"\n\n{pod_msg}Live tracking and documentation are securely accessible via the following carrier link:\nhttps://live.machship.com/trackingv2/#/consignments/{public_token}"
+                        pod_line = f"\n\n{pod_msg}Live tracking and documentation are securely accessible via the following carrier link:\n[https://live.machship.com/trackingv2/#/consignments/](https://live.machship.com/trackingv2/#/consignments/){public_token}"
                         
                     base_message = f"Thank you for your enquiry about connote {connote}\n\nPicked up from {sender_comp}, {sender_sub}\nFor delivery to {receiver_comp}, {receiver_sub}\n\n{status_line}{pod_line}\n\nAs this is a good news email, it has been responded to automatically by FCA's AI assistant (BOOF). If the email response isn't accurate or appropriate, that's Marshall's fault. Please forward this email directly to marshall@fca.net.au and he will investigate."
                     if not dry_run:
