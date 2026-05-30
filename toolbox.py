@@ -1743,9 +1743,13 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
         if not master_agent_id:
             for t in all_threads:
                 assigned = str(t.get("assignedTo") or t.get("assigneeId") or "")
-                if assigned.startswith("A-") or assigned.startswith("B-"):
-                    master_agent_id = assigned
-                    break
+                if assigned and assigned.lower() != "none":
+                    if assigned.isdigit():
+                        master_agent_id = f"A-{assigned}"
+                        break
+                    elif assigned.startswith(("A-", "B-", "V-")):
+                        master_agent_id = assigned
+                        break
 
         open_threads = [t for t in all_threads if str(t.get("status", "")).upper() == "OPEN"]
         
@@ -1807,10 +1811,14 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 customer_actor_id = None
                 customer_delivery_identifier = None
                 
-                # 1. Check thread-level assignee first (Checking rigorously against missing strings)
+                # 1. Check thread-level assignee first
                 assignee_id = thread.get("assigneeId") or thread.get("assignedTo")
                 if assignee_id and str(assignee_id).lower() != "none":
-                    sender_actor_id = str(assignee_id)
+                    val = str(assignee_id)
+                    if val.isdigit():
+                        sender_actor_id = f"A-{val}"
+                    else:
+                        sender_actor_id = val
                 
                 for m in messages:
                     if not channel_id and m.get("channelId"):
@@ -1825,12 +1833,12 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     for s in senders:
                         actor = str(s.get("actorId", ""))
                         if actor and actor.lower() != "none":
-                            if actor.startswith("A-") or actor.startswith("B-"):
-                                if not sender_actor_id:
-                                    sender_actor_id = actor
+                            if actor.isdigit():
+                                if not sender_actor_id: sender_actor_id = f"A-{actor}"
+                            elif actor.startswith(("A-", "B-", "V-")):
+                                if not sender_actor_id: sender_actor_id = actor
                             elif not actor.startswith("S-"): # Hard block S-hubspot System Actors
-                                if not customer_actor_id:
-                                    customer_actor_id = actor
+                                if not customer_actor_id: customer_actor_id = actor
                                 
                                 deliv_id = s.get("deliveryIdentifier")
                                 if deliv_id and not customer_delivery_identifier:
@@ -1843,7 +1851,9 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     # Fallback check on root senderActorId property
                     root_actor = str(m.get("senderActorId", ""))
                     if root_actor and root_actor.lower() != "none":
-                        if root_actor.startswith("A-") or root_actor.startswith("B-"):
+                        if root_actor.isdigit():
+                            if not sender_actor_id: sender_actor_id = f"A-{root_actor}"
+                        elif root_actor.startswith(("A-", "B-", "V-")):
                             if not sender_actor_id: sender_actor_id = root_actor
                         elif not root_actor.startswith("S-"):
                             if not customer_actor_id: customer_actor_id = root_actor
