@@ -1,5 +1,4 @@
 import streamlit as st
-import streamlit.components.v1 as components
 from openai import OpenAI
 from pinecone import Pinecone
 import pypdf
@@ -141,8 +140,8 @@ with col_head2:
         st.query_params.clear()
         st.rerun()
 
-# --- AGGRESSIVE HEARTBEAT ---
-components.html(
+# --- AGGRESSIVE HEARTBEAT (Refactored to native st.html) ---
+st.html(
     """
     <script>
     setInterval(function() {
@@ -151,8 +150,7 @@ components.html(
         });
     }, 30000); 
     </script>
-    """,
-    height=0, width=0,
+    """
 )
 
 # --- LONG-TERM MEMORY PROTOCOL ---
@@ -242,7 +240,8 @@ with st.sidebar:
     st.divider()
     st.markdown("<div class='telemetry-header'>📂 ORACLE DATA INGESTION</div>", unsafe_allow_html=True)
     st.markdown("Upload documents here to give BOOF contextual memory for the chat.")
-    uploaded_files = st.file_uploader("", type=['pdf', 'csv', 'txt', 'xlsx', 'xls'], key="chat_uploader", accept_multiple_files=True)
+    # Fix: Added descriptive label and suppressed it via label_visibility to resolve accessibility warning
+    uploaded_files = st.file_uploader("Upload Payload", type=['pdf', 'csv', 'txt', 'xlsx', 'xls'], key="chat_uploader", accept_multiple_files=True, label_visibility="collapsed")
     if uploaded_files:
         st.info(f"Payload acquired: {len(uploaded_files)} file(s) loaded.")
         
@@ -554,7 +553,7 @@ with tab_matrix:
         
     with col2:
         st.markdown("**2. Upload Payload (CSV format)**")
-        matrix_file = st.file_uploader("Upload spreadsheet with delivery suburbs and item dimensions.", type=['csv'], key="matrix_uploader")
+        matrix_file = st.file_uploader("Upload Matrix CSV", type=['csv'], key="matrix_uploader", label_visibility="collapsed")
         
     if matrix_file is not None:
         st.success(f"File loaded: {matrix_file.name}. Ready for execution.")
@@ -586,4 +585,3 @@ with tab_matrix:
         )
     else:
         st.markdown("*(Matrix projection grid will appear here once executed)*")
-
