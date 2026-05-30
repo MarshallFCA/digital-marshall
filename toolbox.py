@@ -55,7 +55,10 @@ def call_gemini_api(prompt: str, json_mode: bool = False) -> str:
             contents=prompt,
             config=types.GenerateContentConfig(**config_kwargs) if config_kwargs else None
         )
-        return response.text.strip()
+        try:
+            return response.text.strip()
+        except ValueError:
+            return "[]" if json_mode else ""
         
     except ImportError:
         import google.generativeai as genai_legacy
@@ -71,7 +74,10 @@ def call_gemini_api(prompt: str, json_mode: bool = False) -> str:
         
         generation_config = genai_legacy.GenerationConfig(response_mime_type="application/json") if json_mode else None
         response = model.generate_content(prompt, generation_config=generation_config)
-        return response.text.strip()
+        try:
+            return response.text.strip()
+        except ValueError:
+            return "[]" if json_mode else ""
 
 # ==========================================
 # VISION BRIDGE PROTOCOL (Multimodal PDF to CSV)
@@ -1801,9 +1807,10 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 customer_actor_id = None
                 customer_delivery_identifier = None
                 
-                # 1. Check thread-level assignee first
-                if thread.get("assigneeId"):
-                    sender_actor_id = str(thread.get("assigneeId"))
+                # 1. Check thread-level assignee first (Checking rigorously against missing strings)
+                assignee_id = thread.get("assigneeId") or thread.get("assignedTo")
+                if assignee_id and str(assignee_id).lower() != "none":
+                    sender_actor_id = str(assignee_id)
                 
                 for m in messages:
                     if not channel_id and m.get("channelId"):
@@ -1817,7 +1824,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         
                     for s in senders:
                         actor = str(s.get("actorId", ""))
-                        if actor:
+                        if actor and actor.lower() != "none":
                             if actor.startswith("A-") or actor.startswith("B-"):
                                 if not sender_actor_id:
                                     sender_actor_id = actor
@@ -1827,7 +1834,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                                 
                                 deliv_id = s.get("deliveryIdentifier")
                                 if deliv_id and not customer_delivery_identifier:
-                                    # DYNAMIC RECIPIENT ARRAY VALIDATION (MIRROR INBOUND TYPE)
+                                    # DYNAMIC RECIPIENT ARRAY VALIDATION
                                     if isinstance(deliv_id, str):
                                         customer_delivery_identifier = {"type": "HS_EMAIL_ADDRESS", "value": deliv_id}
                                     elif isinstance(deliv_id, dict) and "value" in deliv_id:
@@ -1835,19 +1842,19 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                                     
                     # Fallback check on root senderActorId property
                     root_actor = str(m.get("senderActorId", ""))
-                    if root_actor:
+                    if root_actor and root_actor.lower() != "none":
                         if root_actor.startswith("A-") or root_actor.startswith("B-"):
                             if not sender_actor_id: sender_actor_id = root_actor
                         elif not root_actor.startswith("S-"):
                             if not customer_actor_id: customer_actor_id = root_actor
                             
                 # APPLY SENDER HARDCODE OVERRIDE
-                if not sender_actor_id:
+                if not sender_actor_id or str(sender_actor_id).lower() == "none":
                     sender_actor_id = master_agent_id
                         
                 # FINAL FAILSAFE: Skip to prevent HTTP 400 validation crash
-                if not sender_actor_id:
-                    action_log.append(f"Thread {thread_id}: CRITICAL ERROR - Cannot deduce a valid Agent ID (A-{{userId}}) to send the reply from. Thread skipped.")
+                if not sender_actor_id or not str(sender_actor_id).startswith(("A-", "B-", "V-")):
+                    action_log.append(f"Thread {thread_id}: CRITICAL ERROR - Cannot deduce a valid Agent ID. Thread skipped.")
                     actioned_count += 1
                     continue
 
@@ -2082,6 +2089,19 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                             t_obj = r_token.json().get("object")
                             if t_obj:
                                 public_token = find_tracking_token(t_obj)
+                                # Deep JSON regex fallback if recursive search missed a new API key format
+                                if not public_token:
+                                    import re
+                                    dumped_obj = json.dumps(t_obj)
+                                    # Fallback 1: Extract directly from any URL containing /consignments/
+                                    url_match = re.search(r'consignments/([A-Za-z0-9]{20,})', dumped_obj)
+                                    if url_match:
+                                        public_token = url_match.group(1)
+                                    else:
+                                        # Fallback 2: Look for any 20+ char string assigned to a token-like key
+                                        key_match = re.search(r'"[^"]*[Tt]oken"\s*:\s*"([A-Za-z0-9]{20,})"', dumped_obj)
+                                        if key_match:
+                                            public_token = key_match.group(1)
                     except Exception as e:
                         ms_diagnostics.append(f"Token Harvest Crash: {sanitize_error_log(str(e))}")
                         
@@ -2157,14 +2177,13 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     else:
                         status_line = f"Consignment {connote} is currently {status_str}. Expected delivery is by {eta_date}."
                         
-                    # UNCONDITIONAL URL GENERATION: Decoupled from API source to guarantee link rendering.
-                    pod_msg = "A Proof of Delivery (POD) has been uploaded. " if has_pod else ""
-                    if public_token:
-                        tracking_url = f"https://live.machship.com/trackingv2/#/consignments/{public_token}"
-                    else:
-                        tracking_url = f"https://live.machship.com/trackingv2 (Enter Consignment: {connote})"
-                        
-                    pod_line = f"\n\n{pod_msg}Live tracking and documentation are securely accessible via the following carrier link:\n{tracking_url}"
+                    pod_line = ""
+                    # Strict Token Dependency: Only generate URL if token exists, preventing hallucinated links
+                    if carrier_source == "Machship" and public_token:
+                        pod_msg = "A Proof of Delivery (POD) has been uploaded. " if has_pod else ""
+                        pod_line = f"\n\n{pod_msg}Live tracking and documentation are securely accessible via the following carrier link:\n[https://live.machship.com/trackingv2/#/consignments/](https://live.machship.com/trackingv2/#/consignments/){public_token}"
+                    elif carrier_source == "Transvirtual":
+                        pod_line = f"\n\nLive tracking and documentation are accessible via the carrier's direct tracking portal using your consignment number: {connote}"
                         
                     base_message = f"Thank you for your enquiry about connote {connote}\n\nPicked up from {sender_comp}, {sender_sub}\nFor delivery to {receiver_comp}, {receiver_sub}\n\n{status_line}{pod_line}\n\nAs this is a good news email, it has been responded to automatically by FCA's AI assistant (BOOF). If the email response isn't accurate or appropriate, that's Marshall's fault. Please forward this email directly to marshall@fca.net.au and he will investigate."
                     
@@ -2184,6 +2203,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                             action_log.append(f"Thread {thread_id}: Reply sent, but automated thread closure failed (HTTP {close_req.status_code}). Reason: {close_req.text}")
                     else:
                         action_log.append(f"[DRY RUN] Thread {thread_id}: POSITIVE status for {connote} via {carrier_source}. Would reply to customer and close thread.")
+                    
                 else:
                     base_message = f"ACTION REQUIRED: {connote} is delayed/ETA breached. Current status is {status_str}."
                     if not dry_run:
@@ -2208,6 +2228,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
             
     except Exception as e:
         return f"🚨 CRITICAL CRASH: {sanitize_error_log(str(e))}"
+
 # ==========================================
 # BACKWARD COMPATIBILITY ALIASES 
 # ==========================================
