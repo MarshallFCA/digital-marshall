@@ -1226,7 +1226,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 "Billed Amount": billed_amount,
                 "Expected Amount": expected_amount,
                 "Variance": variance,
-                "Sell Price to Customer": sell_price_to_customer,
+                "Sell Price to Customer": Sell Price to Customer,
                 "Expected Surcharges": surcharge_str,
                 "AI Variance Analysis": "Pending Analysis",
                 "Diagnostics": diag_string
@@ -1808,21 +1808,27 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     if not channel_account_id and m.get("channelAccountId"):
                         channel_account_id = str(m.get("channelAccountId"))
                     
-                    if not customer_delivery_identifier and m.get("type") == "MESSAGE":
-                        for s in m.get("senders", []):
-                            actor = str(s.get("actorId", ""))
-                            deliv_id = s.get("deliveryIdentifier")
-                            
-                            email_val = ""
-                            if isinstance(deliv_id, str): email_val = deliv_id
-                            elif isinstance(deliv_id, dict): email_val = deliv_id.get("value", "")
-                            
-                            if email_val and "@freightcompaniesaustralia.com.au" not in email_val.lower():
-                                customer_delivery_identifier = {"type": "HS_EMAIL_ADDRESS", "value": email_val}
-                                if actor and not actor.startswith("S-") and not actor.startswith(("A-", "B-", "V-")):
-                                    customer_actor_id = actor
-                                break
+                    senders = m.get("senders", [])
+                    if not isinstance(senders, list):
+                        senders = []
+                        
+                    for s in senders:
+                        actor = str(s.get("actorId", ""))
+                        if actor and actor.lower() != "none":
+                            if actor.isdigit():
+                                if not sender_actor_id: sender_actor_id = f"A-{actor}"
+                            elif actor.startswith(("A-", "B-", "V-")):
+                                if not sender_actor_id: sender_actor_id = actor
+                            elif not actor.startswith("S-"): 
+                                if not customer_actor_id: customer_actor_id = actor
                                 
+                                deliv_id = s.get("deliveryIdentifier")
+                                if deliv_id and not customer_delivery_identifier:
+                                    if isinstance(deliv_id, str):
+                                        customer_delivery_identifier = {"type": "HS_EMAIL_ADDRESS", "value": deliv_id}
+                                    elif isinstance(deliv_id, dict) and "value" in deliv_id:
+                                        customer_delivery_identifier = {"type": deliv_id.get("type", "HS_EMAIL_ADDRESS"), "value": deliv_id.get("value")}
+                                    
                     # Fallback check on root senderActorId property
                     root_actor = str(m.get("senderActorId", ""))
                     if root_actor and root_actor.lower() != "none" and not sender_actor_id:
@@ -2132,8 +2138,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         
                     pod_line = ""
                     if carrier_source == "Machship":
-                        pod_msg = "A Proof of Delivery (POD) has been uploaded. " if has_pod else ""
-                        pod_line = f"\n\n{pod_msg}More tracking information is available on Machship. Please log in, search for {connote}."
+                        pod_line = f"\n\nMore tracking information is available on Machship. Please log in, search for {connote}."
                     elif carrier_source == "Transvirtual":
                         pod_line = f"\n\nLive tracking and documentation are accessible via the carrier's direct tracking portal using your consignment number: {connote}."
                         
