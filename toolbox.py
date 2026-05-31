@@ -1647,22 +1647,6 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
         return f"🚨 CRITICAL CRASH: {sanitize_error_log(str(e))}"
 
 # ==========================================
-# RECURSIVE HASH EXTRACTION
-# ==========================================
-def find_tracking_token(data):
-    if isinstance(data, dict):
-        for k, v in data.items():
-            if k in ['publicTrackingToken', 'trackingToken'] and v:
-                return str(v)
-            res = find_tracking_token(v)
-            if res: return res
-    elif isinstance(data, list):
-        for item in data:
-            res = find_tracking_token(item)
-            if res: return res
-    return ""
-
-# ==========================================
 # TOOL 16: WISMO CLIENT CONCIERGE (CONVERSATIONS API - SMART SWEEP)
 # ==========================================
 def tool_16_wismo_client_concierge(dry_run: bool = False):
@@ -1675,7 +1659,6 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     Channel Injection: Harvests and applies channelId/channelAccountId to outbound POST requests.
     Safe Mode: Drafts all customer replies as internal COMMENTs to bypass HubSpot senderActorId strictness.
     Iterative Search: Sweeps every LLM extracted reference until a hit occurs.
-    Token Harvest: Enforces aggressive getConsignment GET for Machship hash retrieval.
     """
     import datetime
     
@@ -1811,7 +1794,6 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 customer_actor_id = None
                 customer_delivery_identifier = None
                 
-                # 1. Check thread-level assignee first
                 assignee_id = thread.get("assigneeId") or thread.get("assignedTo")
                 if assignee_id and str(assignee_id).lower() != "none":
                     val = str(assignee_id)
@@ -1826,37 +1808,28 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     if not channel_account_id and m.get("channelAccountId"):
                         channel_account_id = str(m.get("channelAccountId"))
                     
-                    senders = m.get("senders", [])
-                    if not isinstance(senders, list):
-                        senders = []
-                        
-                    for s in senders:
-                        actor = str(s.get("actorId", ""))
-                        if actor and actor.lower() != "none":
-                            if actor.isdigit():
-                                if not sender_actor_id: sender_actor_id = f"A-{actor}"
-                            elif actor.startswith(("A-", "B-", "V-")):
-                                if not sender_actor_id: sender_actor_id = actor
-                            elif not actor.startswith("S-"): # Hard block S-hubspot System Actors
-                                if not customer_actor_id: customer_actor_id = actor
+                    if not customer_delivery_identifier and m.get("type") == "MESSAGE":
+                        for s in m.get("senders", []):
+                            actor = str(s.get("actorId", ""))
+                            deliv_id = s.get("deliveryIdentifier")
+                            
+                            email_val = ""
+                            if isinstance(deliv_id, str): email_val = deliv_id
+                            elif isinstance(deliv_id, dict): email_val = deliv_id.get("value", "")
+                            
+                            if email_val and "@freightcompaniesaustralia.com.au" not in email_val.lower():
+                                customer_delivery_identifier = {"type": "HS_EMAIL_ADDRESS", "value": email_val}
+                                if actor and not actor.startswith("S-") and not actor.startswith(("A-", "B-", "V-")):
+                                    customer_actor_id = actor
+                                break
                                 
-                                deliv_id = s.get("deliveryIdentifier")
-                                if deliv_id and not customer_delivery_identifier:
-                                    # DYNAMIC RECIPIENT ARRAY VALIDATION
-                                    if isinstance(deliv_id, str):
-                                        customer_delivery_identifier = {"type": "HS_EMAIL_ADDRESS", "value": deliv_id}
-                                    elif isinstance(deliv_id, dict) and "value" in deliv_id:
-                                        customer_delivery_identifier = {"type": deliv_id.get("type", "HS_EMAIL_ADDRESS"), "value": deliv_id.get("value")}
-                                    
                     # Fallback check on root senderActorId property
                     root_actor = str(m.get("senderActorId", ""))
-                    if root_actor and root_actor.lower() != "none":
+                    if root_actor and root_actor.lower() != "none" and not sender_actor_id:
                         if root_actor.isdigit():
-                            if not sender_actor_id: sender_actor_id = f"A-{root_actor}"
+                            sender_actor_id = f"A-{root_actor}"
                         elif root_actor.startswith(("A-", "B-", "V-")):
-                            if not sender_actor_id: sender_actor_id = root_actor
-                        elif not root_actor.startswith("S-"):
-                            if not customer_actor_id: customer_actor_id = root_actor
+                            sender_actor_id = root_actor
                             
                 # APPLY SENDER HARDCODE OVERRIDE
                 if not sender_actor_id or str(sender_actor_id).lower() == "none":
@@ -1997,7 +1970,6 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                 
                 tracking_info = None
                 ms_consign_id = None
-                public_token = ""
                 has_pod = False
                 carrier_source = "None"
                 ms_diagnostics = []
@@ -2023,7 +1995,6 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                                     ms_consign_id = obj.get("id")
                                     has_pod = obj.get("attachmentCount", 0) > 0
                                     carrier_source = "Machship"
-                                    public_token = find_tracking_token(obj)
                             else:
                                 ms_diagnostics.append(f"GET HTTP {r.status_code}")
                         except Exception as e:
@@ -2055,7 +2026,6 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                                         ms_consign_id = obj.get("id")
                                         has_pod = obj.get("attachmentCount", 0) > 0
                                         carrier_source = "Machship"
-                                        public_token = find_tracking_token(obj)
                                         break
                                 else:
                                     ms_diagnostics.append(f"{search_type}: HTTP {r.status_code}")
@@ -2087,33 +2057,6 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     if tracking_info:
                         final_connote = connote
                         break
-                        
-                # ==========================================
-                # AGGRESSIVE TOKEN HARVEST OVERRIDE
-                # ==========================================
-                if carrier_source == "Machship" and ms_consign_id and not public_token:
-                    get_url = get_secure_endpoint("machship_get", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0Q29uc2lnbm1lbnQ/aWQ9")
-                    try:
-                        r_token = requests.get(f"{get_url}{ms_consign_id}", headers=ms_headers_dict, timeout=15)
-                        if r_token.status_code == 200:
-                            t_obj = r_token.json().get("object")
-                            if t_obj:
-                                public_token = find_tracking_token(t_obj)
-                                # Deep JSON regex fallback if recursive search missed a new API key format
-                                if not public_token:
-                                    import re
-                                    dumped_obj = json.dumps(t_obj)
-                                    # Fallback 1: Extract directly from any URL containing /consignments/
-                                    url_match = re.search(r'consignments/([A-Za-z0-9]{20,})', dumped_obj)
-                                    if url_match:
-                                        public_token = url_match.group(1)
-                                    else:
-                                        # Fallback 2: Look for any 20+ char string assigned to a token-like key
-                                        key_match = re.search(r'"[^"]*[Tt]oken"\s*:\s*"([A-Za-z0-9]{20,})"', dumped_obj)
-                                        if key_match:
-                                            public_token = key_match.group(1)
-                    except Exception as e:
-                        ms_diagnostics.append(f"Token Harvest Crash: {sanitize_error_log(str(e))}")
                         
                 if not tracking_info:
                     diag_str = " | ".join(ms_diagnostics) if ms_diagnostics else "Unknown Failure"
@@ -2188,12 +2131,11 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         status_line = f"Consignment {connote} is currently {status_str}. Expected delivery is by {eta_date}."
                         
                     pod_line = ""
-                    # Strict Token Dependency: Only generate URL if token exists, preventing hallucinated links
-                    if carrier_source == "Machship" and public_token:
+                    if carrier_source == "Machship":
                         pod_msg = "A Proof of Delivery (POD) has been uploaded. " if has_pod else ""
-                        pod_line = f"\n\n{pod_msg}Live tracking and documentation are securely accessible via the following carrier link:\n[https://live.machship.com/trackingv2/#/consignments/](https://live.machship.com/trackingv2/#/consignments/){public_token}"
+                        pod_line = f"\n\n{pod_msg}More tracking information is available on Machship. Please log in, search for {connote}."
                     elif carrier_source == "Transvirtual":
-                        pod_line = f"\n\nLive tracking and documentation are accessible via the carrier's direct tracking portal using your consignment number: {connote}"
+                        pod_line = f"\n\nLive tracking and documentation are accessible via the carrier's direct tracking portal using your consignment number: {connote}."
                         
                     base_message = f"Thank you for your enquiry about connote {connote}\n\nPicked up from {sender_comp}, {sender_sub}\nFor delivery to {receiver_comp}, {receiver_sub}\n\n{status_line}{pod_line}\n\nAs this is a good news email, it has been responded to automatically by FCA's AI assistant (BOOF). If the email response isn't accurate or appropriate, that's Marshall's fault. Please forward this email directly to marshall@fca.net.au and he will investigate."
                     
