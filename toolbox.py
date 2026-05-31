@@ -1226,7 +1226,7 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
                 "Billed Amount": billed_amount,
                 "Expected Amount": expected_amount,
                 "Variance": variance,
-                "Sell Price to Customer": Sell Price to Customer,
+                "Sell Price to Customer": sell_price_to_customer,
                 "Expected Surcharges": surcharge_str,
                 "AI Variance Analysis": "Pending Analysis",
                 "Diagnostics": diag_string
