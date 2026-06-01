@@ -2320,22 +2320,27 @@ def tool_13_proactive_customer_notification(dry_run: bool = False) -> str:
                 # Step 5: Gemini Translation
                 translation_prompt = f"""
                 You are a professional freight customer service manager. 
-                Translate the following carrier error into a polite, proactive, and professional update for the client.
+                Translate the following carrier error into a polite and professional update for the client.
                 Carrier: {anomaly['carrier']}
                 Destination: {anomaly['destination']}
                 Raw Error: {anomaly['status']}
                 Trigger Reason: {anomaly['reason']}
                 
-                CRITICAL INSTRUCTION: Return ONLY a valid JSON object with a single key 'client_message' containing the email body. Do not include sign-offs or greetings.
+                CRITICAL INSTRUCTION 1: You must strictly avoid using the words "proactive" or "proactively" in your response.
+                CRITICAL INSTRUCTION 2: Return ONLY a valid JSON object with a single key 'client_message' containing the email body. Do not include sign-offs or greetings.
                 """
                 
                 try:
                     translation_response = call_gemini_api(translation_prompt, json_mode=True)
                     translation_data = json.loads(translation_response)
-                    client_message = translation_data.get("client_message", "We are currently investigating a tracking anomaly with your freight.")
+                    base_message = translation_data.get("client_message", "We are currently investigating a tracking anomaly with your freight.")
+                    
+                    disclaimer = "\n\nPlease be aware that carrier track and trace sometimes produces false negatives. All may be well with this consignment, but we like to be sure."
+                    client_message = f"{base_message}{disclaimer}"
+                    
                 except Exception as e:
                     action_log.append(f"-> {anomaly['connote']}: Gemini Translation Crash: {sanitize_error_log(str(e))}")
-                    client_message = f"Automated Alert: An anomaly ({anomaly['status']}) has been detected. We are investigating."
+                    client_message = f"Automated Alert: An anomaly ({anomaly['status']}) has been detected. We are investigating.\n\nPlease be aware that carrier track and trace sometimes produces false negatives. All may be well with this consignment, but we like to be sure."
                 
                 # Step 6: HubSpot Injection
                 if dry_run:
