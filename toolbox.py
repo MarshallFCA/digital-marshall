@@ -2195,36 +2195,42 @@ def tool_13_proactive_customer_notification(dry_run: bool = False) -> str:
         ms_token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
         hs_key = st.secrets.get("hubspot", {}).get("service_key")
         
-        # 2. Temporal Bounds (168 hours)
+        # 2 & 3. Temporal Chunking & Data Ingestion
         import datetime
-        chunk_to = datetime.datetime.now(datetime.timezone.utc)
-        chunk_from = chunk_to - datetime.timedelta(days=7)
         
-        date_to_str = chunk_to.strftime('%Y-%m-%dT%H:%M:%S')
-        date_from_str = chunk_from.strftime('%Y-%m-%dT%H:%M:%S')
-        
-        action_log.append(f"Temporal bounds established: {date_from_str} to {date_to_str} (UTC).")
-        
-        # 3. Data Ingestion (Machship Only)
         base_url = get_secure_endpoint("machship_recent", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0UmVjZW50bHlDcmVhdGVkT3JVcGRhdGVkQ29uc2lnbm1lbnRz")
         ms_headers = { "token": ms_token, "Content-Type": "application/json" }
-        params = {
-            "fromDateUtc": date_from_str,
-            "toDateUtc": date_to_str
-        }
         
-        resp = requests.get(base_url, headers=ms_headers, params=params, timeout=15)
-        active_data = []
+        raw_consignments = []
+        action_log.append("Executing 24-hour temporal chunking (7 slices) to bypass Machship record limits...")
         
-        if resp.status_code == 200:
-            page_data = resp.json().get('object', [])
-            if page_data:
-                active_data.extend(page_data)
-            action_log.append(f"Data ingestion complete. {len(active_data)} raw consignments retrieved.")
-        else:
-            action_log.append(f"CRITICAL ERROR: Machship API rejected payload (HTTP {resp.status_code}).")
-            summary_string = "\n".join(action_log)
-            return f"SYSTEM INSTRUCTION TO AI: You MUST output the following log EXACTLY as written inside a markdown code block. Do not summarize, paraphrase, or alter it. \n\n{summary_string}"
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        
+        for i in range(7):
+            chunk_to = now_utc - datetime.timedelta(days=i)
+            chunk_from = now_utc - datetime.timedelta(days=i+1)
+            
+            params = {
+                "fromDateUtc": chunk_from.strftime('%Y-%m-%dT%H:%M:%S'),
+                "toDateUtc": chunk_to.strftime('%Y-%m-%dT%H:%M:%S')
+            }
+            
+            try:
+                resp = requests.get(base_url, headers=ms_headers, params=params, timeout=15)
+                if resp.status_code == 200:
+                    page_data = resp.json().get('object', [])
+                    if page_data:
+                        raw_consignments.extend(page_data)
+                else:
+                    action_log.append(f"CRITICAL ERROR: Machship API rejected chunk {i+1} (HTTP {resp.status_code}).")
+            except Exception as e:
+                action_log.append(f"Chunk {i+1} timeout/crash: {sanitize_error_log(str(e))}")
+                
+        # Deduplicate the aggregated matrix using the internal Machship ID
+        unique_data = {item.get('id'): item for item in raw_consignments if item.get('id')}
+        active_data = list(unique_data.values())
+        
+        action_log.append(f"Data ingestion complete. {len(active_data)} unique consignments retrieved across 168 hours.")
         
        # 4. Anomaly Detection & The Big 5 Logic
         error_statuses = ['exception', 'delayed', 'held', 'damaged', 'missed pickup', 'partial']
