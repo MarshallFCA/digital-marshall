@@ -1473,8 +1473,8 @@ def tool_10_freight_alert_automator(dry_run: bool = False):
             return "Sweep Complete. No active freight found in the designated date range."
             
         pre_pickup_statuses = ['despatched', 'unmanifested', 'printed', 'booked', 'manifested']
-        success_statuses = ['delivered', 'on board for delivery', 'partially delivered', 'awaiting collection', 'completed']
-        error_statuses = ['exception', 'delayed', 'held', 'damaged', 'missed pickup']
+        success_statuses = ['delivered', 'on board for delivery', 'partially delivered', 'awaiting collection', 'completed', 'complete']
+        error_statuses = ['exception', 'delayed', 'held', 'damaged', 'missed pickup', 'partial']
         
         exceptions = []
         
@@ -2226,9 +2226,9 @@ def tool_13_proactive_customer_notification(dry_run: bool = False) -> str:
             summary_string = "\n".join(action_log)
             return f"SYSTEM INSTRUCTION TO AI: You MUST output the following log EXACTLY as written inside a markdown code block. Do not summarize, paraphrase, or alter it. \n\n{summary_string}"
         
-        # 4. Anomaly Detection & The Big 5 Logic
-        error_statuses = ['exception', 'delayed', 'held', 'damaged', 'missed pickup']
-        success_statuses = ['delivered', 'on board for delivery', 'partially delivered', 'awaiting collection', 'completed']
+       # 4. Anomaly Detection & The Big 5 Logic
+        error_statuses = ['exception', 'delayed', 'held', 'damaged', 'missed pickup', 'partial']
+        success_statuses = ['delivered', 'on board for delivery', 'partially delivered', 'awaiting collection', 'completed', 'complete']
         
         anomalies_detected = []
         current_date = datetime.datetime.now().date()
