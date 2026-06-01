@@ -463,6 +463,19 @@ with tab_terminal:
                                 }
                             }
                         }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "tool_13_proactive_customer_notification",
+                            "description": "Autonomously sweeps Machship for freight exceptions and delayed ETAs, translates the errors via Gemini, and dispatches proactive notifications to clients via HubSpot.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "dry_run": { "type": "boolean", "description": "If true, logs intended actions without sending external emails." }
+                                }
+                            }
+                        }
                     }
                 ]
                 
@@ -585,6 +598,3 @@ with tab_matrix:
         )
     else:
         st.markdown("*(Matrix projection grid will appear here once executed)*")
-
-
-
