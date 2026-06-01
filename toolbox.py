@@ -2196,10 +2196,35 @@ def tool_13_proactive_customer_notification(dry_run: bool = False) -> str:
         hs_key = st.secrets.get("hubspot", {}).get("service_key")
         
         # 2. Temporal Bounds (168 hours)
-        # [Date logic for Machship getRecentlyCreatedOrUpdatedConsignments]
+        import datetime
+        chunk_to = datetime.datetime.now(datetime.timezone.utc)
+        chunk_from = chunk_to - datetime.timedelta(days=7)
+        
+        date_to_str = chunk_to.strftime('%Y-%m-%dT%H:%M:%S')
+        date_from_str = chunk_from.strftime('%Y-%m-%dT%H:%M:%S')
+        
+        action_log.append(f"Temporal bounds established: {date_from_str} to {date_to_str} (UTC).")
         
         # 3. Data Ingestion (Machship Only)
-        # [GET request to Machship API]
+        base_url = get_secure_endpoint("machship_recent", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvZ2V0UmVjZW50bHlDcmVhdGVkT3JVcGRhdGVkQ29uc2lnbm1lbnRz")
+        ms_headers = { "token": ms_token, "Content-Type": "application/json" }
+        params = {
+            "fromDateUtc": date_from_str,
+            "toDateUtc": date_to_str
+        }
+        
+        resp = requests.get(base_url, headers=ms_headers, params=params, timeout=15)
+        active_data = []
+        
+        if resp.status_code == 200:
+            page_data = resp.json().get('object', [])
+            if page_data:
+                active_data.extend(page_data)
+            action_log.append(f"Data ingestion complete. {len(active_data)} raw consignments retrieved.")
+        else:
+            action_log.append(f"CRITICAL ERROR: Machship API rejected payload (HTTP {resp.status_code}).")
+            summary_string = "\n".join(action_log)
+            return f"SYSTEM INSTRUCTION TO AI: You MUST output the following log EXACTLY as written inside a markdown code block. Do not summarize, paraphrase, or alter it. \n\n{summary_string}"
         
         # 4. Anomaly Detection & The Big 5 Logic
         # [Filter for ETA breaches and error statuses]
