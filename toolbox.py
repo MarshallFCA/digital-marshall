@@ -2300,12 +2300,61 @@ def tool_13_proactive_customer_notification(dry_run: bool = False) -> str:
             for anomaly in anomalies_detected[:5]:
                 action_log.append(f"-> {anomaly['connote']} ({anomaly['carrier']}): {anomaly['reason']} | Client: {anomaly['client_category']} | Note: {anomaly['routing_note']}")
         
-        # 5. Gemini Translation
-        # [Pass raw data to call_gemini_api with json_mode=True]
-        
-        # 6. HubSpot Injection
-        # [Check check_hubspot_duplicate]
-        # [Format and POST payload to Conversations API]
+        # 5. Gemini Translation & 6. HubSpot Orchestration
+        if anomalies_detected:
+            action_log.append("Initiating Gemini Translation Engine and HubSpot Orchestration...")
+            ticket_url = get_secure_endpoint("hubspot_tickets", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRz")
+            hs_headers = { "Authorization": f"Bearer {hs_key}", "Content-Type": "application/json" }
+
+            for anomaly in anomalies_detected:
+                if anomaly["client_category"] == "ACRRM":
+                    action_log.append(f"-> {anomaly['connote']}: Bypassed automated client translation (Tier 1 Medical).")
+                    continue
+                
+                # Step 5: Gemini Translation
+                translation_prompt = f"""
+                You are a professional freight customer service manager. 
+                Translate the following carrier error into a polite, proactive, and professional update for the client.
+                Carrier: {anomaly['carrier']}
+                Destination: {anomaly['destination']}
+                Raw Error: {anomaly['status']}
+                Trigger Reason: {anomaly['reason']}
+                
+                CRITICAL INSTRUCTION: Return ONLY a valid JSON object with a single key 'client_message' containing the email body. Do not include sign-offs or greetings.
+                """
+                
+                try:
+                    translation_response = call_gemini_api(translation_prompt, json_mode=True)
+                    translation_data = json.loads(translation_response)
+                    client_message = translation_data.get("client_message", "We are currently investigating a tracking anomaly with your freight.")
+                except Exception as e:
+                    action_log.append(f"-> {anomaly['connote']}: Gemini Translation Crash: {sanitize_error_log(str(e))}")
+                    client_message = f"Automated Alert: An anomaly ({anomaly['status']}) has been detected. We are investigating."
+                
+                # Step 6: HubSpot Injection
+                if dry_run:
+                    action_log.append(f"[DRY RUN] {anomaly['connote']} | Target: {anomaly['client_category']}\nProposed Draft:\n{client_message}")
+                else:
+                    if check_hubspot_duplicate(anomaly['connote'], hs_key):
+                        action_log.append(f"-> {anomaly['connote']}: Skipped. HubSpot ticket already exists.")
+                    else:
+                        ticket_props = {
+                            "subject": f"Proactive Alert: {anomaly['connote']} ({anomaly['carrier']})",
+                            "content": f"PROACTIVE ALERT ({anomaly['client_category']}):\n\nConnote: {anomaly['connote']}\nDestination: {anomaly['destination']}\nRaw Status: {anomaly['status']}\n\n=== SUGGESTED CLIENT MESSAGE ===\n{client_message}",
+                            "hs_pipeline": "0",
+                            "hs_pipeline_stage": "1"
+                        }
+                        
+                        clean_props = sanitize_hubspot_payload(ticket_props)
+                        
+                        try:
+                            resp = requests.post(ticket_url, headers=hs_headers, json={"properties": clean_props}, timeout=15)
+                            if resp.status_code in [200, 201]:
+                                action_log.append(f"-> {anomaly['connote']}: HubSpot ticket generated successfully.")
+                            else:
+                                action_log.append(f"-> {anomaly['connote']}: HubSpot POST failed (HTTP {resp.status_code}).")
+                        except Exception as e:
+                            action_log.append(f"-> {anomaly['connote']}: HubSpot Injection Crash: {sanitize_error_log(str(e))}")
         
         if dry_run:
             action_log.append("[DRY RUN ACTIVE] Freight exceptions processed in isolated memory. HubSpot API transmission bypassed.")
