@@ -2227,8 +2227,78 @@ def tool_13_proactive_customer_notification(dry_run: bool = False) -> str:
             return f"SYSTEM INSTRUCTION TO AI: You MUST output the following log EXACTLY as written inside a markdown code block. Do not summarize, paraphrase, or alter it. \n\n{summary_string}"
         
         # 4. Anomaly Detection & The Big 5 Logic
-        # [Filter for ETA breaches and error statuses]
-        # [Apply ACRRM, CALM, BOA, AC Solar, Regroup logic]
+        error_statuses = ['exception', 'delayed', 'held', 'damaged', 'missed pickup']
+        success_statuses = ['delivered', 'on board for delivery', 'partially delivered', 'awaiting collection', 'completed']
+        
+        anomalies_detected = []
+        current_date = datetime.datetime.now().date()
+        
+        def safe_extract_date(date_str):
+            if not date_str: return None
+            try:
+                return datetime.datetime.strptime(str(date_str)[:10], "%Y-%m-%d").date()
+            except:
+                return None
+
+        for item in active_data:
+            c_id = item.get('consignmentNumber')
+            carrier = item.get('carrier', {}).get('name', 'Unknown Carrier')
+            
+            track_status = item.get('consignmentTrackingStatus', {}).get('name', '').lower()
+            gen_status = item.get('status', {}).get('name', '').lower()
+            status_set = {track_status, gen_status}
+            
+            raw_eta = item.get('etaLocal') or item.get('eta') or item.get('expectedDeliveryDate')
+            eta_date = safe_extract_date(raw_eta)
+            
+            acc_node = item.get('companyCarrierAccount') or {}
+            acc_name = str(acc_node.get('name') or acc_node.get('accountCode') or '').upper()
+            
+            to_node = item.get('despatch', {}).get('toLocation', {}) or item.get('toLocation', {})
+            destination = f"{to_node.get('suburb', 'Unknown')}, {to_node.get('state', 'Unknown')}"
+            
+            is_error = any(s in error_statuses for s in status_set)
+            is_breached = False
+            
+            if eta_date and eta_date < current_date:
+                if not any(s in success_statuses for s in status_set):
+                    is_breached = True
+                    
+            if is_error or is_breached:
+                reason = "Carrier Error Status" if is_error else "ETA Breach"
+                client_category = "Standard"
+                routing_note = "Standard automated client notification."
+                
+                # The Big 5 Logic Application
+                if "CALM" in acc_name:
+                    client_category = "CALM"
+                    routing_note = "Requires Scenario A/B evaluation before routing."
+                elif "ACRRM" in acc_name:
+                    client_category = "ACRRM"
+                    routing_note = "Tier 1 Medical. Route to human broker natively. No client auto-email."
+                elif "BOA" in acc_name:
+                    client_category = "BOA"
+                    routing_note = "Cross-reference GSOT (Gmail) history for unmapped lanes."
+                elif "AC SOLAR" in acc_name or "REGROUP" in acc_name:
+                    client_category = acc_name
+                    routing_note = "Check tailgate/manual handling. Request photo proof if required."
+                    
+                anomalies_detected.append({
+                    "connote": c_id,
+                    "carrier": carrier,
+                    "destination": destination,
+                    "status": (track_status or gen_status).title(),
+                    "reason": reason,
+                    "client_category": client_category,
+                    "routing_note": routing_note
+                })
+                
+        action_log.append(f"Anomaly detection complete. Identified {len(anomalies_detected)} freight exceptions.")
+        
+        # Telemetry sample extraction
+        if anomalies_detected:
+            for anomaly in anomalies_detected[:5]:
+                action_log.append(f"-> {anomaly['connote']} ({anomaly['carrier']}): {anomaly['reason']} | Client: {anomaly['client_category']} | Note: {anomaly['routing_note']}")
         
         # 5. Gemini Translation
         # [Pass raw data to call_gemini_api with json_mode=True]
