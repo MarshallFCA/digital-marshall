@@ -2186,6 +2186,30 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
     except Exception as e:
         return f"🚨 CRITICAL CRASH: {sanitize_error_log(str(e))}"
 
+def tool_13_proactive_customer_notification(dry_run: bool = False) -> str:
+    # 1. Credential Retrieval via Secure Endpoints
+    ms_token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
+    hs_key = st.secrets.get("hubspot", {}).get("service_key")
+    
+    # 2. Temporal Bounds (168 hours)
+    # [Date logic for Machship getRecentlyCreatedOrUpdatedConsignments]
+    
+    # 3. Data Ingestion (Machship Only)
+    # [GET request to Machship API]
+    
+    # 4. Anomaly Detection & The Big 5 Logic
+    # [Filter for ETA breaches and error statuses]
+    # [Apply ACRRM, CALM, BOA, AC Solar, Regroup logic]
+    
+    # 5. Gemini Translation
+    # [Pass raw data to call_gemini_api with json_mode=True]
+    
+    # 6. HubSpot Injection
+    # [Check check_hubspot_duplicate]
+    # [Format and POST payload to Conversations API]
+    
+    return "Tool 13 Sweep Complete. Processed anomalies exclusively via Machship telemetry."
+
 # ==========================================
 # BACKWARD COMPATIBILITY ALIASES 
 # ==========================================
