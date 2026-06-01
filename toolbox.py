@@ -2251,15 +2251,20 @@ def tool_13_proactive_customer_notification(dry_run: bool = False) -> str:
             c_id = item.get('consignmentNumber')
             carrier = item.get('carrier', {}).get('name', 'Unknown Carrier')
             
-            track_status = item.get('consignmentTrackingStatus', {}).get('name', '').lower()
-            gen_status = item.get('status', {}).get('name', '').lower()
+            # Hardened extraction to prevent NoneType crashes
+            track_node = item.get('consignmentTrackingStatus') or {}
+            track_status = str(track_node.get('name') or '').lower()
+            
+            gen_node = item.get('status') or {}
+            gen_status = str(gen_node.get('name') or '').lower()
+            
             status_set = {track_status, gen_status}
             
-            # --- NEW INJECTION: Ignore Protocol ---
+            # --- THE IGNORE PROTOCOL ---
             ignore_keywords = ['quote', 'quoted', 'unmanifested']
             if any(kw in s for kw in ignore_keywords for s in status_set):
                 continue
-            # ------------------------------------
+            # ---------------------------
             
             raw_eta = item.get('etaLocal') or item.get('eta') or item.get('expectedDeliveryDate')
             eta_date = safe_extract_date(raw_eta)
