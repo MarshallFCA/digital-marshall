@@ -2255,6 +2255,12 @@ def tool_13_proactive_customer_notification(dry_run: bool = False) -> str:
             gen_status = item.get('status', {}).get('name', '').lower()
             status_set = {track_status, gen_status}
             
+            # --- NEW INJECTION: Ignore Protocol ---
+            ignore_keywords = ['quote', 'quoted', 'unmanifested']
+            if any(kw in s for kw in ignore_keywords for s in status_set):
+                continue
+            # ------------------------------------
+            
             raw_eta = item.get('etaLocal') or item.get('eta') or item.get('expectedDeliveryDate')
             eta_date = safe_extract_date(raw_eta)
             
