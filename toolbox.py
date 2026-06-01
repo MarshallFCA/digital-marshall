@@ -1817,7 +1817,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                         if actor and actor.lower() != "none":
                             if actor.isdigit():
                                 if not sender_actor_id: sender_actor_id = f"A-{actor}"
-                            elif actor.startswith(("A-", "B-", "V-")):
+                            elif actor.startswith(("A-", "B-")):
                                 if not sender_actor_id: sender_actor_id = actor
                             elif not actor.startswith("S-"): 
                                 if not customer_actor_id: customer_actor_id = actor
@@ -1834,7 +1834,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     if root_actor and root_actor.lower() != "none" and not sender_actor_id:
                         if root_actor.isdigit():
                             sender_actor_id = f"A-{root_actor}"
-                        elif root_actor.startswith(("A-", "B-", "V-")):
+                        elif root_actor.startswith(("A-", "B-")):
                             sender_actor_id = root_actor
                             
                 # APPLY SENDER HARDCODE OVERRIDE
@@ -1842,7 +1842,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     sender_actor_id = master_agent_id
                         
                 # FINAL FAILSAFE: Skip to prevent HTTP 400 validation crash
-                if not sender_actor_id or not str(sender_actor_id).startswith(("A-", "B-", "V-")):
+                if not sender_actor_id or not str(sender_actor_id).startswith(("A-", "B-")):
                     action_log.append(f"Thread {thread_id}: CRITICAL ERROR - Cannot deduce a valid Agent ID. Thread skipped.")
                     actioned_count += 1
                     continue
@@ -1868,7 +1868,7 @@ def tool_16_wismo_client_concierge(dry_run: bool = False):
                     # Fail-safe: Downgrade outbound external messages to internal comments if routing IDs are missing
                     if msg_type == "MESSAGE" and not (channel_id and channel_account_id and customer_delivery_identifier):
                         p["type"] = "COMMENT"
-                        p["text"] = f"BOOF WISMO Alert [DRAFT: Missing recipient data, cannot send external email natively]:\n\n{text}"
+                        p["text"] = f"BOOF WISMO Alert [DRAFT: Missing routing data (channelId: {bool(channel_id)}, channelAccountId: {bool(channel_account_id)}, customer_email: {bool(customer_delivery_identifier)}). Cannot send natively]:\n\n{text}"
                         p.pop("recipients", None)
                         p.pop("channelId", None)
                         p.pop("channelAccountId", None)
