@@ -2232,11 +2232,12 @@ def tool_13_proactive_customer_notification(dry_run: bool = False) -> str:
         
         action_log.append(f"Data ingestion complete. {len(active_data)} unique consignments retrieved across 168 hours.")
         
-       # 4. Anomaly Detection & The Big 5 Logic
+      # 4. Anomaly and Resolution Detection
         error_statuses = ['exception', 'delayed', 'held', 'damaged', 'missed pickup', 'partial']
         success_statuses = ['delivered', 'on board for delivery', 'partially delivered', 'awaiting collection', 'completed', 'complete']
         
         anomalies_detected = []
+        resolutions_detected = []
         current_date = datetime.datetime.now().date()
         
         def safe_extract_date(date_str):
@@ -2264,120 +2265,148 @@ def tool_13_proactive_customer_notification(dry_run: bool = False) -> str:
             destination = f"{to_node.get('suburb', 'Unknown')}, {to_node.get('state', 'Unknown')}"
             
             is_error = any(s in error_statuses for s in status_set)
+            is_success = any(s in success_statuses for s in status_set)
             is_breached = False
             
-            if eta_date and eta_date < current_date:
-                if not any(s in success_statuses for s in status_set):
-                    is_breached = True
-                    
-            if is_error or is_breached:
-                reason = "Carrier Error Status" if is_error else "ETA Breach"
-                client_category = "Standard"
-                routing_note = "Standard automated client notification."
+            if eta_date and eta_date < current_date and not is_success:
+                is_breached = True
                 
-                # The Big 5 Logic Application
-                if "CALM" in acc_name:
-                    client_category = "CALM"
-                    routing_note = "Requires Scenario A/B evaluation before routing."
-                elif "ACRRM" in acc_name:
-                    client_category = "ACRRM"
-                    routing_note = "Tier 1 Medical. Route to human broker natively. No client auto-email."
-                elif "BOA" in acc_name:
-                    client_category = "BOA"
-                    routing_note = "Cross-reference GSOT (Gmail) history for unmapped lanes."
-                elif "AC SOLAR" in acc_name or "REGROUP" in acc_name:
-                    client_category = acc_name
-                    routing_note = "Check tailgate/manual handling. Request photo proof if required."
-                    
+            client_category = "Standard"
+            if "CALM" in acc_name: client_category = "CALM"
+            elif "ACRRM" in acc_name: client_category = "ACRRM"
+            elif "BOA" in acc_name: client_category = "BOA"
+            elif "AC SOLAR" in acc_name or "REGROUP" in acc_name: client_category = acc_name
+                
+            if is_error or is_breached:
                 anomalies_detected.append({
                     "connote": c_id,
                     "carrier": carrier,
                     "destination": destination,
                     "status": (track_status or gen_status).title(),
-                    "reason": reason,
-                    "client_category": client_category,
-                    "routing_note": routing_note
+                    "reason": "Carrier Error Status" if is_error else "ETA Breach",
+                    "client_category": client_category
+                })
+            elif is_success:
+                resolutions_detected.append({
+                    "connote": c_id,
+                    "carrier": carrier,
+                    "destination": destination,
+                    "status": (track_status or gen_status).title(),
+                    "client_category": client_category
                 })
                 
-        action_log.append(f"Anomaly detection complete. Identified {len(anomalies_detected)} freight exceptions.")
+        action_log.append(f"Analysis complete. {len(anomalies_detected)} anomalies and {len(resolutions_detected)} successes identified.")
         
-        # Telemetry sample extraction
-        if anomalies_detected:
-            for anomaly in anomalies_detected[:5]:
-                action_log.append(f"-> {anomaly['connote']} ({anomaly['carrier']}): {anomaly['reason']} | Client: {anomaly['client_category']} | Note: {anomaly['routing_note']}")
-        
-        # 5. Gemini Translation & 6. HubSpot Orchestration
-        if anomalies_detected:
-            action_log.append("Initiating Gemini Translation Engine and HubSpot Orchestration...")
-            ticket_url = get_secure_endpoint("hubspot_tickets", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRz")
-            hs_headers = { "Authorization": f"Bearer {hs_key}", "Content-Type": "application/json" }
+        # 5 & 6. Translation Engine and HubSpot Orchestration
+        ticket_url = get_secure_endpoint("hubspot_tickets", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRz")
+        search_url = get_secure_endpoint("hubspot_search", "aHR0cHM6Ly9hcGkuaHViYXBpLmNvbS9jcm0vdjMvb2JqZWN0cy90aWNrZXRzL3NlYXJjaA==")
+        hs_headers = { "Authorization": f"Bearer {hs_key}", "Content-Type": "application/json" }
 
-            for anomaly in anomalies_detected:
-                if anomaly["client_category"] == "ACRRM":
-                    action_log.append(f"-> {anomaly['connote']}: Bypassed automated client translation (Tier 1 Medical).")
-                    continue
+        def get_existing_ticket_id(connote_num):
+            payload = {
+                "filterGroups": [{"filters": [{"propertyName": "subject", "operator": "CONTAINS_TOKEN", "value": connote_num}]}]
+            }
+            try:
+                resp = requests.post(search_url, headers=hs_headers, json=payload, timeout=10)
+                if resp.status_code == 200 and resp.json().get('total', 0) > 0:
+                    return resp.json()['results'][0]['id']
+            except:
+                pass
+            return None
+
+        # 6a. Process Resolutions (State Memory Protocol)
+        for res in resolutions_detected:
+            ticket_id = get_existing_ticket_id(res['connote'])
+            if ticket_id:
+                action_log.append(f"-> {res['connote']}: Prior anomaly resolved. Generating success draft.")
                 
-                # Step 5: Gemini Translation
-                translation_prompt = f"""
+                success_prompt = f"""
                 You are a professional freight customer service manager. 
-                Translate the following carrier error into a polite and professional update for the client.
-                Carrier: {anomaly['carrier']}
-                Destination: {anomaly['destination']}
-                Raw Error: {anomaly['status']}
-                Trigger Reason: {anomaly['reason']}
-                
-                CRITICAL INSTRUCTION 1: You must strictly avoid using the words "proactive" or "proactively" in your response.
+                Translate the following successful carrier status into a polite update for the client, advising them that their previously delayed freight has now progressed.
+                Carrier: {res['carrier']}
+                Destination: {res['destination']}
+                Raw Status: {res['status']}
+                CRITICAL INSTRUCTION 1: You must strictly avoid using the words "proactive" or "proactively".
                 CRITICAL INSTRUCTION 2: Return ONLY a valid JSON object with a single key 'client_message' containing the email body. Do not include sign-offs or greetings.
                 """
                 
                 try:
-                    translation_response = call_gemini_api(translation_prompt, json_mode=True)
-                    translation_data = json.loads(translation_response)
-                    base_message = translation_data.get("client_message", "We are currently investigating a tracking anomaly with your freight.")
-                    
-                    disclaimer = "\n\nPlease be aware that carrier track and trace sometimes produces false negatives. All may be well with this consignment, but we like to be sure."
-                    client_message = f"{base_message}{disclaimer}"
-                    
-                except Exception as e:
-                    action_log.append(f"-> {anomaly['connote']}: Gemini Translation Crash: {sanitize_error_log(str(e))}")
-                    client_message = f"Automated Alert: An anomaly ({anomaly['status']}) has been detected. We are investigating.\n\nPlease be aware that carrier track and trace sometimes produces false negatives. All may be well with this consignment, but we like to be sure."
-                
-                # Step 6: HubSpot Injection
-                if dry_run:
-                    action_log.append(f"[DRY RUN] {anomaly['connote']} | Target: {anomaly['client_category']}\nProposed Draft:\n{client_message}")
-                else:
-                    if check_hubspot_duplicate(anomaly['connote'], hs_key):
-                        action_log.append(f"-> {anomaly['connote']}: Skipped. HubSpot ticket already exists.")
-                    else:
-                        ticket_props = {
-                            "subject": f"Proactive Alert: {anomaly['connote']} ({anomaly['carrier']})",
-                            "content": f"PROACTIVE ALERT ({anomaly['client_category']}):\n\nConnote: {anomaly['connote']}\nDestination: {anomaly['destination']}\nRaw Status: {anomaly['status']}\n\n=== SUGGESTED CLIENT MESSAGE ===\n{client_message}",
-                            "hs_pipeline": "0",
-                            "hs_pipeline_stage": "1"
-                        }
-                        
-                        clean_props = sanitize_hubspot_payload(ticket_props)
-                        
-                        try:
-                            resp = requests.post(ticket_url, headers=hs_headers, json={"properties": clean_props}, timeout=15)
-                            if resp.status_code in [200, 201]:
-                                action_log.append(f"-> {anomaly['connote']}: HubSpot ticket generated successfully.")
-                            else:
-                                action_log.append(f"-> {anomaly['connote']}: HubSpot POST failed (HTTP {resp.status_code}).")
-                        except Exception as e:
-                            action_log.append(f"-> {anomaly['connote']}: HubSpot Injection Crash: {sanitize_error_log(str(e))}")
-        
-        if dry_run:
-            action_log.append("[DRY RUN ACTIVE] Freight exceptions processed in isolated memory. HubSpot API transmission bypassed.")
-        else:
-            action_log.append("[LIVE PROTOCOL] HubSpot tickets generated and client emails dispatched.")
+                    translation_response = call_gemini_api(success_prompt, json_mode=True)
+                    client_message = json.loads(translation_response).get("client_message", "Your freight has successfully progressed.")
+                except:
+                    client_message = f"Good news: Your consignment ({res['status']}) has successfully progressed."
+
+                if not dry_run:
+                    note_url = f"https://api.hubapi.com/crm/v3/objects/notes"
+                    note_props = {
+                        "hs_note_body": f"=== RESOLUTION DETECTED ===\nDraft Update for Client:\n\n{client_message}",
+                        "hs_timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+                    }
+                    try:
+                        note_resp = requests.post(note_url, headers=hs_headers, json={"properties": note_props}, timeout=10)
+                        if note_resp.status_code in [200, 201]:
+                            note_id = note_resp.json()['id']
+                            assoc_url = f"https://api.hubapi.com/crm/v3/associations/notes/tickets/batch/create"
+                            requests.post(assoc_url, headers=hs_headers, json={"inputs": [{"from": {"id": note_id}, "to": {"id": ticket_id}, "type": "note_to_ticket"}]}, timeout=10)
+                    except Exception as e:
+                        action_log.append(f"-> {res['connote']}: Resolution Note Sync Failed: {sanitize_error_log(str(e))}")
+
+        # 6b. Process Anomalies
+        for anomaly in anomalies_detected:
+            if anomaly["client_category"] == "ACRRM":
+                action_log.append(f"-> {anomaly['connote']}: Bypassed automated client translation (Tier 1 Medical).")
+                continue
             
+            ticket_id = get_existing_ticket_id(anomaly['connote'])
+            if ticket_id:
+                action_log.append(f"-> {anomaly['connote']}: Skipped. HubSpot ticket already exists.")
+                continue
+
+            translation_prompt = f"""
+            You are a professional freight customer service manager. 
+            Translate the following carrier error into a polite and professional update for the client.
+            Carrier: {anomaly['carrier']}
+            Destination: {anomaly['destination']}
+            Raw Error: {anomaly['status']}
+            Trigger Reason: {anomaly['reason']}
+            
+            CRITICAL INSTRUCTION 1: You must strictly avoid using the words "proactive" or "proactively".
+            CRITICAL INSTRUCTION 2: Return ONLY a valid JSON object with a single key 'client_message' containing the email body. Do not include sign-offs or greetings.
+            """
+            
+            try:
+                translation_response = call_gemini_api(translation_prompt, json_mode=True)
+                base_message = json.loads(translation_response).get("client_message", "We are currently investigating a tracking anomaly with your freight.")
+                disclaimer = "\n\nPlease be aware that carrier track and trace sometimes produces false negatives. All may be well with this consignment, but we like to be sure."
+                client_message = f"{base_message}{disclaimer}"
+            except Exception as e:
+                action_log.append(f"-> {anomaly['connote']}: Gemini Translation Crash: {sanitize_error_log(str(e))}")
+                client_message = f"Automated Alert: An anomaly ({anomaly['status']}) has been detected. We are investigating.\n\nPlease be aware that carrier track and trace sometimes produces false negatives. All may be well with this consignment, but we like to be sure."
+            
+            if dry_run:
+                action_log.append(f"[DRY RUN] {anomaly['connote']} | Target: {anomaly['client_category']}\nProposed Draft:\n{client_message}")
+            else:
+                ticket_props = {
+                    "subject": f"Proactive Alert: {anomaly['connote']} ({anomaly['carrier']})",
+                    "content": f"ANOMALY DETECTED ({anomaly['client_category']}):\n\nConnote: {anomaly['connote']}\nDestination: {anomaly['destination']}\nRaw Status: {anomaly['status']}\n\n=== SUGGESTED CLIENT MESSAGE ===\n{client_message}",
+                    "hs_pipeline": "0",
+                    "hs_pipeline_stage": "1"
+                }
+                
+                clean_props = sanitize_hubspot_payload(ticket_props)
+                try:
+                    resp = requests.post(ticket_url, headers=hs_headers, json={"properties": clean_props}, timeout=15)
+                    if resp.status_code in [200, 201]:
+                        action_log.append(f"-> {anomaly['connote']}: HubSpot anomaly ticket generated successfully.")
+                    else:
+                        action_log.append(f"-> {anomaly['connote']}: HubSpot POST failed (HTTP {resp.status_code}).")
+                except Exception as e:
+                    action_log.append(f"-> {anomaly['connote']}: HubSpot Injection Crash: {sanitize_error_log(str(e))}")
+
     except Exception as e:
         action_log.append(f"🚨 TOOL 13 CRASH: {sanitize_error_log(str(e))}")
         
     summary_string = "\n".join(action_log)
-    
-    # CRITICAL: This exact string forces the LLM to output the raw logs.
     return f"SYSTEM INSTRUCTION TO AI: You MUST output the following log EXACTLY as written inside a markdown code block. Do not summarize, paraphrase, or alter it. \n\n{summary_string}"
 
 # ==========================================
