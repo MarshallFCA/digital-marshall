@@ -2518,6 +2518,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             "CartonCloud Status": order.get("status", "UNKNOWN"),
             "Warehouse Cost": float(cc_cost) if cc_cost else 0.0,
             "Machship Cost": 0.0,
+            "Machship Sell": 0.0,
             "Machship Status": "Not Found",
             "Machship Carrier": "N/A"
         })
@@ -2549,8 +2550,10 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                         c_total = consignment.get("consignmentTotal", {})
                         
                         cost = c_total.get("totalCostPrice") or c_total.get("totalCostBeforeTax") or c_total.get("totalCost") or 0.0
+                        sell = c_total.get("totalSellPrice") or c_total.get("totalSellBeforeTax") or c_total.get("totalSell") or 0.0
                         
                         row["Machship Cost"] = float(cost)
+                        row["Machship Sell"] = float(sell)
                         row["Machship Status"] = consignment.get("status", {}).get("name", "Unknown")
                         row["Machship Carrier"] = consignment.get("carrier", {}).get("name", "Unknown")
                         found = True
@@ -2559,8 +2562,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
 
     # 3. DataFrame Computation and GCP Export
     df = pd.DataFrame(matrix_data)
-    df["Total FCA Cost"] = df["Warehouse Cost"] + df["Machship Cost"]
-    df["19% Target Sell"] = round(df["Total FCA Cost"] / 0.81, 2)
+    df["Total FCA Sell"] = df["Warehouse Cost"] + df["Machship Sell"]
     
     try:
         drive_scope = get_secure_endpoint("drive_scope", "aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==")
