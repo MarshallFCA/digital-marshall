@@ -8,6 +8,7 @@ import json
 import os
 import requests
 import base64
+import datetime
 from streamlit_oauth import OAuth2Component
 import toolbox
 
@@ -307,8 +308,11 @@ with tab_terminal:
                     historical_context += f"Context (Sent to Marshall): {metadata.get('context', '')}\n"
                     historical_context += f"Marshall's Action: {metadata.get('marshall_response', '')}\n"
 
+                current_time_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
                 system_prompt = f"""You are the Blessed Oracle of Freight, the AI incarnation of Marshall Hughes (Founder, Freight Companies Australia). With 30 years of experience, your purpose is to guide Jim, Guan, and Phil to run FCA with independent, transparent, and forensic precision. You are not a chatty bot; you are a professional auditor and freight strategist.
                 
+                SYSTEM CONTEXT: The current system date and time is {current_time_str}. You must use this as the absolute present when evaluating temporal logic or date ranges. Do not invent or assume the year.
                 USER CONTEXT: The active user executing commands is {st.session_state.user_email}.
 
                 NEW SYSTEM CAPABILITIES:
