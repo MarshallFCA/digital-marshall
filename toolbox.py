@@ -2348,7 +2348,7 @@ def tool_13_proactive_customer_notification(dry_run: bool = False) -> str:
                     client_message = f"Good news: Your consignment ({res['status']}) has successfully progressed."
 
                 if not dry_run:
-                    note_url = f"https://api.hubapi.com/crm/v3/objects/notes"
+                    note_url = f"[https://api.hubapi.com/crm/v3/objects/notes](https://api.hubapi.com/crm/v3/objects/notes)"
                     note_props = {
                         "hs_note_body": f"=== RESOLUTION DETECTED ===\nDraft Update for Client:\n\n{client_message}",
                         "hs_timestamp": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
@@ -2357,7 +2357,7 @@ def tool_13_proactive_customer_notification(dry_run: bool = False) -> str:
                         note_resp = requests.post(note_url, headers=hs_headers, json={"properties": note_props}, timeout=10)
                         if note_resp.status_code in [200, 201]:
                             note_id = note_resp.json()['id']
-                            assoc_url = f"https://api.hubapi.com/crm/v3/associations/notes/tickets/batch/create"
+                            assoc_url = f"[https://api.hubapi.com/crm/v3/associations/notes/tickets/batch/create](https://api.hubapi.com/crm/v3/associations/notes/tickets/batch/create)"
                             requests.post(assoc_url, headers=hs_headers, json={"inputs": [{"from": {"id": note_id}, "to": {"id": ticket_id}, "type": "note_to_ticket"}]}, timeout=10)
                     except Exception as e:
                         action_log.append(f"-> {res['connote']}: Resolution Note Sync Failed: {sanitize_error_log(str(e))}")
@@ -2419,6 +2419,228 @@ def tool_13_proactive_customer_notification(dry_run: bool = False) -> str:
         
     summary_string = "\n".join(action_log)
     return f"SYSTEM INSTRUCTION TO AI: You MUST output the following log EXACTLY as written inside a markdown code block. Do not summarize, paraphrase, or alter it. \n\n{summary_string}"
+
+
+# ==========================================
+# TOOL 17: KERMIT (CartonCloud Machship Invoice Reconciliation Tool)
+# ==========================================
+def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, customer_name: str = "Rhino") -> str:
+    import datetime
+    import pandas as pd
+    import json
+    import requests
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+
+    try:
+        start_dt = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
+        end_dt = datetime.datetime.strptime(end_date, "%Y-%m-%d").date()
+    except Exception as e:
+        return f"CRASH: Invalid date format. Parameters must be YYYY-MM-DD. {sanitize_error_log(str(e))}"
+        
+    diagnostic_logs = []
+    
+    # 1. CartonCloud Data Extraction Protocol
+    cc_tenant_id = st.secrets["cartoncloud"]["tenant_id"].strip()
+    cc_base_url = get_secure_endpoint("cartoncloud_base", "aHR0cHM6Ly9hcGkuY2FydG9uY2xvdWQuY29t")
+    cc_token = get_cartoncloud_token()
+    
+    if "Error" in cc_token:
+        return f"CRITICAL CRASH: CartonCloud Authentication Failure. {cc_token}"
+        
+    cc_headers = {
+        "Accept-Version": "1",
+        "Authorization": f"Bearer {cc_token}",
+        "Content-Type": "application/json"
+    }
+    
+    cc_search_url = f"{cc_base_url}/tenants/{cc_tenant_id}/outbound-orders/search"
+    
+    search_payload = {
+        "condition": {
+            "type": "TextComparisonCondition",
+            "field": { "type": "JsonField", "pointer": "/customer/name" },
+            "value": { "type": "ValueField", "value": customer_name },
+            "method": "CONTAINS"
+        },
+        "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}],
+        "page": 1,
+        "size": 100
+    }
+
+    raw_orders = []
+    for page in range(1, 10): 
+        search_payload["page"] = page
+        try:
+            resp = requests.post(cc_search_url, headers=cc_headers, json=search_payload, timeout=15)
+            if resp.status_code == 200:
+                page_data = resp.json()
+                if not page_data: break
+                raw_orders.extend(page_data)
+            else:
+                diagnostic_logs.append(f"CartonCloud Pagination HTTP Error: {resp.status_code}")
+                break
+        except Exception as e:
+            diagnostic_logs.append(f"CartonCloud Sweep Crash: {sanitize_error_log(str(e))}")
+            break
+
+    matrix_data = []
+    
+    for order in raw_orders:
+        o_customer = order.get("customer", {}).get("name", "")
+        if customer_name.lower() not in o_customer.lower():
+            continue
+            
+        timestamps = order.get("timestamps", {})
+        o_date_str = timestamps.get("dispatched", {}).get("time") or timestamps.get("created", {}).get("time")
+        
+        if not o_date_str: continue
+        
+        try:
+            o_date = datetime.datetime.strptime(o_date_str[:10], "%Y-%m-%d").date()
+        except Exception:
+            continue
+            
+        if not (start_dt <= o_date <= end_dt):
+            continue
+            
+        cust_ref = order.get("references", {}).get("customer", "")
+        if not cust_ref:
+            continue
+            
+        financials = order.get("financials", {})
+        cc_cost = financials.get("totalCost") or financials.get("invoiceAmount") or order.get("totalCost") or order.get("calculatedCharges", 0.0)
+        
+        matrix_data.append({
+            "CartonCloud ID": order.get("id"),
+            "Date": o_date_str[:10],
+            "Customer Reference": cust_ref,
+            "CartonCloud Status": order.get("status", "UNKNOWN"),
+            "Warehouse Cost": float(cc_cost) if cc_cost else 0.0,
+            "Machship Cost": 0.0,
+            "Machship Status": "Not Found",
+            "Machship Carrier": "N/A"
+        })
+
+    if not matrix_data:
+        return f"KERMIT Sweep Complete. No valid orders found for {customer_name} between {start_date} and {end_date}."
+
+    # 2. Machship Bridge Protocol
+    ms_token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
+    ms_headers = { "token": ms_token, "Content-Type": "application/json" }
+    
+    ms_urls = [
+        get_secure_endpoint("machship_ref1", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl"),
+        get_secure_endpoint("machship_ref2", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl")
+    ]
+    
+    for row in matrix_data:
+        ref = row["Customer Reference"]
+        found = False
+        for url in ms_urls:
+            if found: break
+            try:
+                resp = requests.post(url, headers=ms_headers, json=[ref], timeout=15)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    obj_list = data.get("object")
+                    if obj_list and len(obj_list) > 0:
+                        consignment = obj_list[0]
+                        c_total = consignment.get("consignmentTotal", {})
+                        
+                        cost = c_total.get("totalCostPrice") or c_total.get("totalCostBeforeTax") or c_total.get("totalCost") or 0.0
+                        
+                        row["Machship Cost"] = float(cost)
+                        row["Machship Status"] = consignment.get("status", {}).get("name", "Unknown")
+                        row["Machship Carrier"] = consignment.get("carrier", {}).get("name", "Unknown")
+                        found = True
+            except Exception:
+                pass
+
+    # 3. DataFrame Computation and GCP Export
+    df = pd.DataFrame(matrix_data)
+    df["Total FCA Cost"] = df["Warehouse Cost"] + df["Machship Cost"]
+    df["19% Target Sell"] = round(df["Total FCA Cost"] / 0.81, 2)
+    
+    try:
+        drive_scope = get_secure_endpoint("drive_scope", "aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==")
+        sheets_scope = get_secure_endpoint("sheets_scope", "aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9zcHJlYWRzaGVldHM=")
+        
+        credentials_dict = dict(st.secrets["gcp_service_account"])
+        creds = service_account.Credentials.from_service_account_info(
+            credentials_dict, scopes=[drive_scope, sheets_scope]
+        )
+
+        sheets_service = build("sheets", "v4", credentials=creds)
+        drive_service = build("drive", "v3", credentials=creds)
+
+        parent_folder_id = "1U8PYxUZMfJql0AYnhc0izJpI0FqveeFR"
+        timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+        sheet_title = f"KERMIT Analysis - {customer_name} ({start_date} to {end_date}) - {timestamp_str}"
+
+        file_metadata = {
+            'name': sheet_title,
+            'mimeType': 'application/vnd.google-apps.spreadsheet',
+            'parents': [parent_folder_id]
+        }
+        
+        sheet_file = drive_service.files().create(body=file_metadata, fields='id', supportsAllDrives=True).execute()
+        spreadsheet_id = sheet_file.get('id')
+
+        headers_list = df.columns.tolist()
+        raw_values = df.values.tolist()
+        
+        scrubbed_values = [headers_list]
+        for row in raw_values:
+            clean_row = ["" if pd.isna(item) else str(item) for item in row]
+            scrubbed_values.append(clean_row)
+
+        try:
+            sheet_metadata = sheets_service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+            sheet_id = sheet_metadata['sheets'][0]['properties']['sheetId']
+            
+            requests_body = {
+                "requests": [{
+                    "updateSheetProperties": {
+                        "properties": {
+                            "sheetId": sheet_id,
+                            "gridProperties": {
+                                "rowCount": max(1000, len(scrubbed_values) + 100),
+                                "columnCount": max(26, len(headers_list) + 5)
+                            }
+                        },
+                        "fields": "gridProperties(rowCount,columnCount)"
+                    }
+                }]
+            }
+            sheets_service.spreadsheets().batchUpdate(spreadsheetId=spreadsheet_id, body=requests_body).execute()
+        except Exception:
+            pass
+
+        body = { "values": scrubbed_values }
+        sheets_service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id, range="Sheet1!A1", valueInputOption="USER_ENTERED", body=body
+        ).execute()
+
+        human_email = st.session_state.get("user_email", "")
+        if human_email:
+            try:
+                permission = {"type": "user", "role": "writer", "emailAddress": human_email}
+                drive_service.permissions().create(fileId=spreadsheet_id, body=permission, fields="id", supportsAllDrives=True).execute()
+            except Exception:
+                pass 
+
+        sheet_url = f"[https://docs.google.com/spreadsheets/d/](https://docs.google.com/spreadsheets/d/){spreadsheet_id}"
+        log_str = " | ".join(diagnostic_logs)
+        return f"SUCCESS: KERMIT module executed. Processed {len(matrix_data)} records for {customer_name}. \nDiagnostics: {log_str if log_str else 'Clean'}\n\nView Financial Matrix: {sheet_url}"
+
+    except Exception as e:
+        return f"CRITICAL CRASH (KERMIT): {sanitize_error_log(str(e))}"
+    finally:
+        try:
+            del creds, sheets_service, drive_service
+        except NameError:
+            pass
 
 # ==========================================
 # BACKWARD COMPATIBILITY ALIASES 
