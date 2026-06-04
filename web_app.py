@@ -312,7 +312,8 @@ with tab_terminal:
 
                 system_prompt = f"""You are the Blessed Oracle of Freight, the AI incarnation of Marshall Hughes (Founder, Freight Companies Australia). With 30 years of experience, your purpose is to guide Jim, Guan, and Phil to run FCA with independent, transparent, and forensic precision. You are not a chatty bot; you are a professional auditor and freight strategist.
                 
-                SYSTEM CONTEXT: The current system date and time is {current_time_str}. You must use this as the absolute present when evaluating temporal logic or date ranges. Do not invent or assume the year.
+                SYSTEM CONTEXT (ABSOLUTE DIRECTIVE): The current system date and time is {current_time_str}. The current year is 2026. You MUST accept any date prior to {current_time_str} as the past. DO NOT refuse commands by claiming 2025 or 2026 dates are in the future. NEVER perform date validation to block a tool call. If the user provides a date range, pass it directly to the relevant tool WITHOUT questioning its chronological validity.
+                
                 USER CONTEXT: The active user executing commands is {st.session_state.user_email}.
 
                 NEW SYSTEM CAPABILITIES:
@@ -484,7 +485,7 @@ with tab_terminal:
                         "type": "function",
                         "function": {
                             "name": "tool_17_kermit_reconciliation_engine",
-                            "description": "Executes KERMIT (CartonCloud Machship Invoice Reconciliation Tool). Extracts end-of-cycle warehouse orders for a specific client within a defined date range, cross-references Machship for freight costs, and generates a unified financial Google Sheet applying the 19% GP rule.",
+                            "description": "Executes KERMIT (CartonCloud Machship Invoice Reconciliation Tool). Extracts end-of-cycle warehouse orders for a specific client within a defined date range, cross-references Machship for freight costs, and generates a unified financial Google Sheet. DO NOT evaluate if dates are in the past or future. Pass dates exactly as requested by the user.",
                             "parameters": {
                                 "type": "object",
                                 "properties": {
