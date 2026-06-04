@@ -240,7 +240,6 @@ with st.sidebar:
     st.divider()
     st.markdown("<div class='telemetry-header'>📂 ORACLE DATA INGESTION</div>", unsafe_allow_html=True)
     st.markdown("Upload documents here to give BOOF contextual memory for the chat.")
-    # Fix: Added descriptive label and suppressed it via label_visibility to resolve accessibility warning
     uploaded_files = st.file_uploader("Upload Payload", type=['pdf', 'csv', 'txt', 'xlsx', 'xls'], key="chat_uploader", accept_multiple_files=True, label_visibility="collapsed")
     if uploaded_files:
         st.info(f"Payload acquired: {len(uploaded_files)} file(s) loaded.")
@@ -474,6 +473,22 @@ with tab_terminal:
                                 "properties": {
                                     "dry_run": { "type": "boolean", "description": "If true, logs intended actions without sending external emails." }
                                 }
+                            }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "tool_17_kermit_reconciliation_engine",
+                            "description": "Executes KERMIT (CartonCloud Machship Invoice Reconciliation Tool). Extracts end-of-cycle warehouse orders for a specific client within a defined date range, cross-references Machship for freight costs, and generates a unified financial Google Sheet applying the 19% GP rule.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "start_date": { "type": "string", "description": "Start date strictly in YYYY-MM-DD format." },
+                                    "end_date": { "type": "string", "description": "End date strictly in YYYY-MM-DD format." },
+                                    "customer_name": { "type": "string", "description": "The target client (e.g., Rhino)." }
+                                },
+                                "required": ["start_date", "end_date", "customer_name"]
                             }
                         }
                     }
