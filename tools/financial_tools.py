@@ -43,8 +43,18 @@ def search_xero_contact(contact_name: str) -> str:
                 contacts = fetch_contacts(first_word)
         
         if contacts:
+            active_contacts = [c for c in contacts if c.get("ContactStatus") != "ARCHIVED"]
+            
+            def get_outstanding(c):
+                try:
+                    return float(c.get("Balances", {}).get("AccountsReceivable", {}).get("Outstanding", 0.0))
+                except (ValueError, TypeError):
+                    return 0.0
+                    
+            active_contacts.sort(key=get_outstanding, reverse=True)
+            
             results_summary = []
-            for contact in contacts[:3]:
+            for contact in active_contacts[:5]:
                 name = contact.get("Name", "Unknown")
                 status = contact.get("ContactStatus", "Unknown")
                 balances = contact.get("Balances", {}).get("AccountsReceivable", {})
@@ -52,9 +62,10 @@ def search_xero_contact(contact_name: str) -> str:
                 overdue = balances.get("Overdue", 0.00)
                 results_summary.append(f"✅ Xero Record: {name} | Status: {status} | Outstanding: ${outstanding} | Overdue: ${overdue}")
             
-            raw_data = json.dumps(contacts[:3], indent=2)
+            raw_data = json.dumps(active_contacts[:5], indent=2)
             summary_string = "\n".join(results_summary)
-            return f"{summary_string}\n\n**Raw Data Available to AI:**\n```json\n{raw_data}\n```"
+            return f"{summary_string}\n\n**Raw Data Available to AI:**\n```json\n{raw_data}\n
+```"
         else:
             return f"No contact found in Xero matching '{contact_name}' or its primary keyword."
             
