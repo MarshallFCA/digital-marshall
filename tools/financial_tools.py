@@ -64,8 +64,7 @@ def search_xero_contact(contact_name: str) -> str:
             
             raw_data = json.dumps(active_contacts[:5], indent=2)
             summary_string = "\n".join(results_summary)
-            return f"{summary_string}\n\n**Raw Data Available to AI:**\n```json\n{raw_data}\n
-```"
+            return f"{summary_string}\n\n**Raw Data Available to AI:**\n```json\n{raw_data}\n```"
         else:
             return f"No contact found in Xero matching '{contact_name}' or its primary keyword."
             
