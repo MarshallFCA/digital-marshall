@@ -118,16 +118,19 @@ def search_cartoncloud_order(reference_number: str) -> str:
                 "page": 1,
                 "size": 100
             }
-            for page in range(1, 3): 
+            # Sweep expanded to 1000 records (10 pages) for historical data capture
+            for page in range(1, 11): 
                 brute_payload["page"] = page
                 try:
                     sweep_resp = requests.post(search_url, headers=headers, json=brute_payload, timeout=15)
                     if sweep_resp.status_code == 200:
                         for o in sweep_resp.json():
-                            cust_ref = str(o.get("references", {}).get("customer", ""))
-                            order_id = str(o.get("id", ""))
                             target = str(reference_number).strip()
-                            if target in cust_ref or target == order_id:
+                            order_id = str(o.get("id", ""))
+                            cust_ref = str(o.get("references", {}).get("customer", ""))
+                            
+                            # Global JSON serialisation match to bypass brittle field logic
+                            if target == order_id or target in cust_ref or target in json.dumps(o):
                                 orders = [o]
                                 break
                     if orders: break
