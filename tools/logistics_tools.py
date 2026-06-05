@@ -91,37 +91,6 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
         }
         
         clean_ref = str(reference_number).strip()
-
-        # SCENARIO A: Retrieve Recent Orders
-        if not clean_ref or clean_ref.lower() in ["none", "null", "recent", "latest"]:
-            paged_url = f"{orders_url}?page=1&size={limit if limit else 5}"
-            
-            try:
-                resp = requests.get(paged_url, headers=headers, timeout=15)
-                if resp.status_code == 200:
-                    recent_orders = resp.json()
-                    if not recent_orders:
-                        return "No recent sales orders found in Carton Cloud."
-                    
-                    summary = f"✅ CARTON CLOUD: MOST RECENT {len(recent_orders)} SALES ORDERS\n"
-                    for o in recent_orders:
-                        o_id = o.get("id", "Unknown")
-                        c_name = o.get("customer", {}).get("name", "Unknown") if isinstance(o.get("customer"), dict) else o.get("customer", "Unknown")
-                        status = o.get("status", {}).get("name", "UNKNOWN") if isinstance(o.get("status"), dict) else o.get("status", "UNKNOWN")
-                        summary += f"\n- Order ID: {o_id} | Customer: {c_name} | Status: {status}"
-                        
-                    return (
-                        f"{summary}\n\n"
-                        f"**Raw Data Available to AI:**\n"
-                        f"```json\n{json.dumps(recent_orders, indent=2)}\n```"
-                    )
-                else:
-                    return f"🚨 Carton Cloud API Error: HTTP {resp.status_code} - {resp.text}"
-            except Exception as e:
-                return f"🚨 Carton Cloud API Error: {sanitize_error_log(str(e))}"
-
-        # SCENARIO B: Specific Reference Search
-        orders = []
         target_id = None
 
         if clean_ref == "000751":
@@ -130,6 +99,7 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
             target_id = clean_ref
 
         # Pipeline 1: Native REST ID Match via GET
+        orders = []
         if target_id:
             outbound_url = f"{orders_url}/{target_id}"
             try:
@@ -138,40 +108,15 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
                     data = resp_id.json()
                     if isinstance(data, dict):
                         orders = [data]
-                    elif isinstance(data, list) and len(data) > 0:
-                        orders = data
             except Exception:
                 pass
-
-        # Pipeline 2: Deep Python Sweep for Customer Reference via GET Pagination
-        if not orders:
-            stripped_ref = clean_ref.lstrip('0')
-            
-            for page in range(1, 51): 
-                if orders: break
-                paged_url = f"{orders_url}?page={page}&size=100"
-                try:
-                    sweep_resp = requests.get(paged_url, headers=headers, timeout=15)
-                    if sweep_resp.status_code == 200:
-                        page_data = sweep_resp.json()
-                        if not page_data: break 
-                        
-                        for o in page_data:
-                            raw_o_str = json.dumps(o)
-                            if clean_ref in raw_o_str or (stripped_ref and stripped_ref in raw_o_str):
-                                orders = [o]
-                                break
-                    else:
-                        break 
-                except Exception:
-                    break
 
         if not orders:
             return f"No order found containing '{reference_number}'."
 
         order = orders[0]
         
-        # EXTRACT ORDER VARIABLES
+        # EXTRACT BASE ORDER VARIABLES
         status = order.get("status", "UNKNOWN")
         customer_name = order.get("customer", {}).get("name", "Unknown Customer")
         details = order.get("details", {})
@@ -189,13 +134,11 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
             product_name = product.get("name") or product.get("references", {}).get("code") or product.get("references", {}).get("name") or "Unknown Product"
             item_list += f"- {quantity}x {product_name}\n"
 
-        # ASYNCHRONOUS FINANCIAL REPORT PIPELINE
-        warehouse_cost = 0.0
-        matching_report_items = []
+        # ASYNCHRONOUS FINANCIAL REPORT DIAGNOSTIC
+        diagnostic_log = ""
         customer_uuid = order.get("customer", {}).get("id")
-        order_id_str = str(order.get("id", ""))
 
-        if customer_uuid and order_id_str:
+        if customer_uuid:
             try:
                 time_str = order.get("timestamps", {}).get("dispatched", {}).get("time") or order.get("timestamps", {}).get("created", {}).get("time")
                 if time_str:
@@ -218,19 +161,22 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
                     }
                 }
                 
-                # Initiate Report
                 report_headers = {
                     "Accept-Version": "1",
                     "Authorization": f"Bearer {access_token}",
                     "Content-Type": "application/json"
                 }
                 
+                diagnostic_log += f"**Triggering Report for Customer:** {customer_uuid} (Dates: {from_date} to {to_date})\n"
+                
                 run_resp = requests.post(f"{base_url}/tenants/{tenant_id}/report-runs", headers=report_headers, json=report_payload, timeout=15)
+                
                 if run_resp.status_code == 200:
                     run_id = run_resp.json().get("id")
+                    diagnostic_log += f"✅ Report Task Created. Task ID: {run_id}\nPolling server...\n"
+                    
                     if run_id:
-                        # Polling Loop
-                        for _ in range(15):
+                        for attempt in range(1, 16):
                             time.sleep(2)
                             poll_resp = requests.get(f"{base_url}/tenants/{tenant_id}/report-runs/{run_id}", headers=headers, timeout=15)
                             if poll_resp.status_code == 200:
@@ -238,42 +184,26 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
                                 status_flag = poll_data.get("status")
                                 
                                 if status_flag == "SUCCESS":
-                                    items_array = poll_data.get("items", [])
-                                    for item in items_array:
-                                        item_json = json.dumps(item)
-                                        # Isolate charges linked to this specific order ID
-                                        if f'"{order_id_str}"' in item_json or f': {order_id_str}' in item_json:
-                                            matching_report_items.append(item)
-                                            # Attempt naive cost extraction
-                                            c = item.get("income") or item.get("chargeAmount") or item.get("total") or item.get("amount") or 0.0
-                                            try:
-                                                warehouse_cost += float(c)
-                                            except:
-                                                pass
+                                    diagnostic_log += f"✅ Report SUCCESS on attempt {attempt}.\n\n**RAW REPORT DATA:**\n```json\n{json.dumps(poll_data.get('items', []), indent=2)}\n```\n"
                                     break
                                 elif status_flag == "FAILED":
+                                    diagnostic_log += f"❌ Report FAILED internally by CartonCloud: {json.dumps(poll_data.get('failureDetails', []))}\n"
                                     break
-            except Exception as e:
-                pass # Fail gracefully and rely on raw JSON outputs
+                            else:
+                                diagnostic_log += f"❌ Polling HTTP Error: {poll_resp.status_code}\n"
+                                break
+                else:
+                    diagnostic_log += f"❌ Server Rejected Task Creation. HTTP {run_resp.status_code}\nResponse: {run_resp.text}\n"
 
-        # FORMAT DIAGNOSTIC OUTPUT
-        diagnostic_block = ""
-        if matching_report_items:
-            diagnostic_block = f"\n\n**FINANCIAL REPORT DIAGNOSTIC (Matched Charge Items):**\n```json\n{json.dumps(matching_report_items, indent=2)}\n```"
+            except Exception as e:
+                diagnostic_log += f"❌ Python Exception during report execution: {str(e)}\n"
         else:
-            diagnostic_block = f"\n\n**RAW ORDER JSON (Financial Run Failed or Missing):**\n```json\n{json.dumps(order, indent=2)}\n```"
+            diagnostic_log += "❌ No Customer UUID found. Cannot run report.\n"
 
         return (
-            f"✅ CARTON CLOUD ORDER FOUND\n"
-            f"- Reference/ID: {reference_number}\n"
-            f"- Status: {status}\n"
-            f"- Customer: {customer_name}\n"
-            f"- Receiver: {receiver_name}\n"
-            f"- Dispatch Date: {dispatch_date}\n"
-            f"- Extracted Warehouse Cost: ${float(warehouse_cost):.2f}\n\n"
-            f"Items in this order:\n"
-            f"{item_list if item_list else 'No items listed.'}"
-            f"{diagnostic_block}"
+            f"✅ CARTON CLOUD ORDER: {reference_number}\n\n"
+            f"**FINANCIAL DIAGNOSTIC TRACE:**\n"
+            f"{diagnostic_log}"
         )
 
     except requests.exceptions.Timeout:
