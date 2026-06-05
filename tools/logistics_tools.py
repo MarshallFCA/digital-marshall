@@ -89,9 +89,14 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
             "Content-Type": "application/json"
         }
         
-        # Diagnostic Override: Pull the most recent orders chronologically to map the raw JSON schema
+        # Diagnostic Override: Pull the most recent orders chronologically with a catch-all condition
         paged_url = f"{search_url}?page=1&size={limit if limit else 5}"
         payload = {
+            "condition": {
+                "type": "GreaterThanCondition",
+                "field": { "type": "JsonField", "pointer": "/id" },
+                "value": { "type": "ValueField", "value": 0 }
+            },
             "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}]
         }
         
