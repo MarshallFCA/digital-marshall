@@ -475,10 +475,10 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
     
     raw_orders = []
     
-    # 2-Stage Fortress Sweep
+    # 2-Stage Fortress Sweep (Pagination safely inside JSON body)
     for page in range(1, 6): 
         try:
-            paged_url = f"{cc_base_url}/tenants/{cc_tenant_id}/outbound-orders/search?page={page}&size=50"
+            search_url = f"{cc_base_url}/tenants/{cc_tenant_id}/outbound-orders/search"
             
             # Stage 1: Native API Filter for Customer
             search_payload = {
@@ -488,10 +488,12 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                     "value": { "type": "ValueField", "value": customer_name },
                     "method": "CONTAINS"
                 },
-                "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}]
+                "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}],
+                "page": page,
+                "size": 50
             }
             
-            resp = requests.post(paged_url, headers=cc_headers, json=search_payload, timeout=15)
+            resp = requests.post(search_url, headers=cc_headers, json=search_payload, timeout=15)
             
             if resp.status_code == 200:
                 page_data = resp.json()
@@ -501,9 +503,11 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                 # Stage 2: Fallback to Brute Force if Condition Rejected
                 diagnostic_logs.append(f"Native Filter Rejected (HTTP {resp.status_code}). Executing Brute Force.")
                 fallback_payload = {
-                    "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}]
+                    "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}],
+                    "page": page,
+                    "size": 50
                 }
-                resp_fb = requests.post(paged_url, headers=cc_headers, json=fallback_payload, timeout=15)
+                resp_fb = requests.post(search_url, headers=cc_headers, json=fallback_payload, timeout=15)
                 
                 if resp_fb.status_code == 200:
                     page_data = resp_fb.json()
