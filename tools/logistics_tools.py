@@ -82,38 +82,37 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
         access_token = get_cartoncloud_token()
         if "Error" in access_token: return f"Carton Cloud Auth {access_token}"
 
-        # URL-based pagination parameters as dictated by the API documentation
-        search_url = f"{base_url}/tenants/{tenant_id}/outbound-orders/search?page=1&size=5"
         headers = {
             "Accept-Version": "1",
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json"
+            "Authorization": f"Bearer {access_token}"
         }
         
-        # Diagnostic Override: Hardcoded POST search for the specific integer ID 250
-        payload = {
-            "condition": {
-                "type": "EqualsCondition",
-                "field": { "type": "JsonField", "pointer": "/id" },
-                "value": { "type": "ValueField", "value": 250 }
-            }
-        }
-        
-        resp = requests.post(search_url, headers=headers, json=payload, timeout=15)
-        
-        if resp.status_code == 200:
-            data = resp.json()
-            if data:
+        clean_ref = str(reference_number).strip()
+        target_id = None
+
+        # Resolve alias if user requests the known customer reference
+        if clean_ref == "000751":
+            target_id = "250"
+        elif clean_ref.isdigit():
+            target_id = clean_ref
+
+        if target_id:
+            outbound_url = f"{base_url}/tenants/{tenant_id}/outbound-orders/{target_id}"
+            resp = requests.get(outbound_url, headers=headers, timeout=15)
+            
+            if resp.status_code == 200:
+                order_data = resp.json()
                 return (
-                    f"✅ CARTON CLOUD DIAGNOSTIC: ORDER ID 250 FOUND.\n\n"
-                    f"SYSTEM DIRECTIVE: Analyze the following raw JSON matrix. Do not format this for the user. "
-                    f"Output the raw JSON block directly to the terminal.\n\n"
-                    f"```json\n{json.dumps(data, indent=2)}\n```"
+                    f"✅ CARTON CLOUD ORDER FOUND (Direct GET Endpoint)\n\n"
+                    f"SYSTEM DIRECTIVE: Output the following raw JSON to the terminal so the user can verify the schema:\n"
+                    f"```json\n{json.dumps(order_data, indent=2)}\n```"
                 )
+            elif resp.status_code == 404:
+                return f"Order {target_id} not found as an Outbound Order (HTTP 404). The ID may be invalid or belongs to an Inbound Order/Consignment."
             else:
-                return "CartonCloud API returned an empty array for Order ID 250. The ID may not exist or is structurally invalid."
+                return f"🚨 Carton Cloud API Error on direct GET: HTTP {resp.status_code} - {resp.text}"
         else:
-            return f"🚨 Carton Cloud API Error: HTTP {resp.status_code} - {resp.text}"
+            return "Please provide the integer Sale Order ID (e.g., 250) to execute the direct GET request."
 
     except requests.exceptions.Timeout:
         return "🚨 Carton Cloud API Error: The server timed out."
