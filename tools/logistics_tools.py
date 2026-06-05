@@ -90,15 +90,30 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
         
         clean_ref = str(reference_number).strip()
 
-        def extract_cost(order_obj):
-            """Hierarchical extraction of WMS costs based on CartonCloud JSON structures."""
-            c = order_obj.get("income") or order_obj.get("calculatedCharges") or order_obj.get("totalCharge") or order_obj.get("invoiceAmount") or order_obj.get("totalCost") or 0.0
-            if not c and order_obj.get("financials"):
-                c = order_obj.get("financials", {}).get("income") or order_obj.get("financials", {}).get("totalCost") or order_obj.get("financials", {}).get("invoiceAmount") or 0.0
-            try:
-                return float(c)
-            except (ValueError, TypeError):
-                return 0.0
+        def extract_cost_recursive(obj):
+            """Deep recursive search through the N-dimensional JSON payload for financial markers."""
+            if isinstance(obj, dict):
+                # Check current level keys
+                for key, value in obj.items():
+                    k_lower = str(key).lower()
+                    if k_lower in ['income', 'totalincome', 'calculatedcharges', 'totalcharge', 'invoiceamount', 'totalcost']:
+                        try:
+                            if float(value) > 0.0:
+                                return float(value)
+                        except (ValueError, TypeError):
+                            pass
+                # Drill down into nested dictionaries and arrays
+                for key, value in obj.items():
+                    if isinstance(value, (dict, list)):
+                        result = extract_cost_recursive(value)
+                        if result > 0.0:
+                            return result
+            elif isinstance(obj, list):
+                for item in obj:
+                    result = extract_cost_recursive(item)
+                    if result > 0.0:
+                        return result
+            return 0.0
 
         # SCENARIO A: Retrieve Recent Orders
         if not clean_ref or clean_ref.lower() in ["none", "null", "recent", "latest"]:
@@ -116,7 +131,7 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
                         o_id = o.get("id", "Unknown")
                         c_name = o.get("customer", {}).get("name", "Unknown") if isinstance(o.get("customer"), dict) else o.get("customer", "Unknown")
                         status = o.get("status", {}).get("name", "UNKNOWN") if isinstance(o.get("status"), dict) else o.get("status", "UNKNOWN")
-                        cost = extract_cost(o)
+                        cost = extract_cost_recursive(o)
                         summary += f"\n- Order ID: {o_id} | Customer: {c_name} | Status: {status} | Warehouse Cost: ${cost:.2f}"
                         
                     return (
@@ -180,13 +195,15 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
             return f"No order found containing '{reference_number}'."
 
         order = orders[0]
-        verified_cost = extract_cost(order)
+        verified_cost = extract_cost_recursive(order)
 
         return (
             f"✅ CARTON CLOUD ORDER FOUND\n"
             f"- Extracted Warehouse Cost: ${verified_cost:.2f}\n\n"
-            f"SYSTEM DIRECTIVE: Utilize the Extracted Warehouse Cost above for calculations. "
-            f"Output the following raw JSON to the terminal to map the exact variables requested by the user.\n"
+            f"CRITICAL SYSTEM DIRECTIVE TO AI (BOOF): \n"
+            f"You MUST read the Extracted Warehouse Cost above. If it is $0.00, you are strictly commanded to output "
+            f"the following raw JSON block to the user EXACTLY as written. Do not summarize it. Do not format it. "
+            f"The engineering team requires this raw payload to fix the API mapping.\n\n"
             f"```json\n{json.dumps(order, indent=2)}\n```"
         )
 
