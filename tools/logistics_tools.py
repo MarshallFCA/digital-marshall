@@ -152,6 +152,10 @@ def search_cartoncloud_order(reference_number: str) -> str:
 
         timestamps = order.get("timestamps", {})
         dispatch_date = timestamps.get("dispatched", {}).get("time") or "Not Dispatched Yet"
+        
+        # Financial Extraction logic
+        financials = order.get("financials", {})
+        warehouse_cost = financials.get("totalCost") or financials.get("invoiceAmount") or order.get("totalCost") or order.get("calculatedCharges", 0.0)
 
         items = order.get("items", [])
         item_list = ""
@@ -169,6 +173,7 @@ def search_cartoncloud_order(reference_number: str) -> str:
         - Customer: {customer_name}
         - Receiver: {receiver_name}
         - Dispatch Date: {dispatch_date}
+        - Warehouse Cost: ${float(warehouse_cost):.2f}
         
         Items in this order:
         {item_list if item_list else "No items listed."}
