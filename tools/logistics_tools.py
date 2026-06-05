@@ -70,7 +70,7 @@ def search_transvirtual_connote(connote_number: str) -> str:
 # ==========================================
 # TOOL 5: CARTON CLOUD WMS ORACLE
 # ==========================================
-def search_cartoncloud_order(reference_number: str) -> str:
+def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
     try:
         tenant_id = st.secrets["cartoncloud"]["tenant_id"].strip()
         base_url = get_secure_endpoint("cartoncloud_base", "aHR0cHM6Ly9hcGkuY2FydG9uY2xvdWQuY29t")
@@ -86,6 +86,36 @@ def search_cartoncloud_order(reference_number: str) -> str:
         }
         
         clean_ref = str(reference_number).strip()
+
+        # SCENARIO A: Retrieve Recent Orders (No specific reference provided)
+        if not clean_ref or clean_ref.lower() in ["none", "null", "recent", "latest"]:
+            brute_payload = {
+                "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}],
+                "page": 1,
+                "size": limit if limit else 5
+            }
+            try:
+                resp = requests.post(search_url, headers=headers, json=brute_payload, timeout=15)
+                if resp.status_code == 200:
+                    recent_orders = resp.json()
+                    if not recent_orders:
+                        return "No recent sales orders found in Carton Cloud."
+                    
+                    output = f"✅ CARTON CLOUD - MOST RECENT {len(recent_orders)} SALES ORDERS\n"
+                    for o in recent_orders:
+                        o_id = o.get("id", "Unknown")
+                        c_name = o.get("customer", {}).get("name", "Unknown Customer")
+                        status = o.get("status", "UNKNOWN")
+                        dispatch = o.get("timestamps", {}).get("dispatched", {}).get("time", "Not Dispatched")
+                        cost = o.get("financials", {}).get("totalCost") or o.get("financials", {}).get("invoiceAmount") or 0.0
+                        output += f"\n- Order ID: {o_id} | Customer: {c_name} | Status: {status} | Dispatch: {dispatch} | Cost: ${float(cost):.2f}"
+                    return output
+                else:
+                    return f"🚨 Carton Cloud API Error: HTTP {resp.status_code} - {resp.text}"
+            except Exception as e:
+                return f"🚨 Carton Cloud API Error: {sanitize_error_log(str(e))}"
+
+        # SCENARIO B: Specific Reference Search
         orders = []
 
         # Pipeline 1: Native API Search across multiple reference pointers
@@ -114,7 +144,7 @@ def search_cartoncloud_order(reference_number: str) -> str:
             except Exception:
                 pass
 
-        # Pipeline 2: Native ID Match (Handling potential leading zeros)
+        # Pipeline 2: Native ID Match
         if not orders and clean_ref.isdigit():
             id_payload = {
                 "condition": {
@@ -132,23 +162,23 @@ def search_cartoncloud_order(reference_number: str) -> str:
             except Exception:
                 pass
 
-        # Pipeline 3: Deep Python Sweep for Historical Anomalies
+        # Pipeline 3: Deep Python Sweep for Historical Anomalies (API Safe Pagination)
         if not orders:
             stripped_ref = clean_ref.lstrip('0')
             brute_payload = {
                 "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}],
                 "page": 1,
-                "size": 500  # Expanded to 500 records per page to cover months of history natively
+                "size": 100  # API Safe Limit
             }
             
-            for page in range(1, 11): # Deep sweep: 5,000 records
+            for page in range(1, 51): # 5,000 records total (50 pages x 100 records)
                 if orders: break
                 brute_payload["page"] = page
                 try:
                     sweep_resp = requests.post(search_url, headers=headers, json=brute_payload, timeout=15)
                     if sweep_resp.status_code == 200:
                         page_data = sweep_resp.json()
-                        if not page_data: break # Break loop if we run out of historical pages
+                        if not page_data: break 
                         
                         for o in page_data:
                             order_id = str(o.get("id", ""))
@@ -156,12 +186,13 @@ def search_cartoncloud_order(reference_number: str) -> str:
                             sales_ref = str(o.get("salesOrderReference", ""))
                             wh_ref = str(o.get("warehouseReference", ""))
                             
-                            # Match exact, or substring, or stripped integer equivalent to bypass formatting errors
                             if clean_ref in [order_id, cust_ref, sales_ref, wh_ref] or \
                                clean_ref in cust_ref or clean_ref in sales_ref or \
                                (stripped_ref and stripped_ref in [order_id, cust_ref, sales_ref, wh_ref]):
                                 orders = [o]
                                 break
+                    else:
+                        break # Halt execution if API rejects pagination depth
                 except Exception:
                     break
 
