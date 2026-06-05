@@ -85,32 +85,57 @@ def search_cartoncloud_order(reference_number: str) -> str:
             "Content-Type": "application/json"
         }
         
+        # Pipeline 1: Native API Search by TextComparisonCondition
         search_payload = {
             "condition": {
-                "type": "AndCondition",
-                "conditions": [
-                    {
-                        "type": "TextComparisonCondition",
-                        "field": {
-                            "type": "JsonField",
-                            "pointer": "/references/customer"
-                        },
-                        "value": {
-                            "type": "ValueField",
-                            "value": str(reference_number)
-                        },
-                        "method": "CONTAINS"
-                    }
-                ]
+                "type": "TextComparisonCondition",
+                "field": { "type": "JsonField", "pointer": "/references/customer" },
+                "value": { "type": "ValueField", "value": str(reference_number) },
+                "method": "CONTAINS"
             }
         }
 
         response = requests.post(search_url, headers=headers, json=search_payload, timeout=15)
-        response.raise_for_status()
-        orders = response.json()
+        orders = response.json() if response.status_code == 200 else []
+
+        # Pipeline 2: If empty, try Native CartonCloud ID
+        if not orders and str(reference_number).strip().isdigit():
+            id_payload = {
+                "condition": {
+                    "type": "EqualsCondition",
+                    "field": { "type": "JsonField", "pointer": "/id" },
+                    "value": { "type": "ValueField", "value": int(str(reference_number).strip()) }
+                }
+            }
+            resp_id = requests.post(search_url, headers=headers, json=id_payload, timeout=15)
+            if resp_id.status_code == 200:
+                orders = resp_id.json()
+
+        # Pipeline 3: Brute Force Python Sweep (Bypassing API string matching quirks)
+        if not orders:
+            brute_payload = {
+                "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}],
+                "page": 1,
+                "size": 100
+            }
+            for page in range(1, 3): 
+                brute_payload["page"] = page
+                try:
+                    sweep_resp = requests.post(search_url, headers=headers, json=brute_payload, timeout=15)
+                    if sweep_resp.status_code == 200:
+                        for o in sweep_resp.json():
+                            cust_ref = str(o.get("references", {}).get("customer", ""))
+                            order_id = str(o.get("id", ""))
+                            target = str(reference_number).strip()
+                            if target in cust_ref or target == order_id:
+                                orders = [o]
+                                break
+                    if orders: break
+                except Exception:
+                    break
 
         if not orders:
-            return f"No order found in Carton Cloud containing reference: {reference_number}."
+            return f"No order found in Carton Cloud containing reference or ID: {reference_number}."
 
         order = orders[0]
         status = order.get("status", "UNKNOWN")
@@ -139,7 +164,7 @@ def search_cartoncloud_order(reference_number: str) -> str:
 
         return f"""
         ✅ CARTON CLOUD ORDER FOUND
-        - Reference: {reference_number}
+        - Reference/ID: {reference_number}
         - Status: {status}
         - Customer: {customer_name}
         - Receiver: {receiver_name}
