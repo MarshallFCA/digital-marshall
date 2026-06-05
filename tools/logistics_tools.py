@@ -60,8 +60,11 @@ def search_transvirtual_connote(connote_number: str) -> str:
         }
 
         raw_matrix = json.dumps(combined_matrix, indent=2)
-        return f"✅ Transvirtual Record: {connote_number}\n\n**Raw Data Available to AI:**\n```json\n{raw_matrix}\n
-```"
+        return (
+            f"✅ Transvirtual Record: {connote_number}\n\n"
+            f"**Raw Data Available to AI:**\n"
+            f"```json\n{raw_matrix}\n```"
+        )
 
     except requests.exceptions.Timeout:
         return "🚨 Transvirtual API Error: The server timed out."
@@ -100,7 +103,11 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
                     recent_orders = resp.json()
                     if not recent_orders:
                         return "No recent sales orders found in Carton Cloud."
-                    return f"✅ CARTON CLOUD: MOST RECENT {len(recent_orders)} SALES ORDERS\n\n**Raw Data Available to AI:**\n```json\n{json.dumps(recent_orders, indent=2)}\n```"
+                    return (
+                        f"✅ CARTON CLOUD: MOST RECENT {len(recent_orders)} SALES ORDERS\n\n"
+                        f"**Raw Data Available to AI:**\n"
+                        f"```json\n{json.dumps(recent_orders, indent=2)}\n```"
+                    )
                 else:
                     return f"🚨 Carton Cloud API Error: HTTP {resp.status_code} - {resp.text}"
             except Exception as e:
@@ -156,11 +163,18 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
             diag_url = f"{search_url}?page=1&size=1"
             diag_resp = requests.post(diag_url, headers=headers, json={"sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}]}, timeout=15)
             diag_json = diag_resp.json() if diag_resp.status_code == 200 else []
-            return f"No order found containing '{reference_number}'.\n\n**SCHEMA DIAGNOSTIC (Latest Order in DB):**\n```json\n{json.dumps(diag_json, indent=2)}\n
-```"
+            return (
+                f"No order found containing '{reference_number}'.\n\n"
+                f"**SCHEMA DIAGNOSTIC (Latest Order in DB):**\n"
+                f"```json\n{json.dumps(diag_json, indent=2)}\n```"
+            )
 
         order = orders[0]
-        return f"✅ CARTON CLOUD ORDER FOUND: {reference_number}\n\n**Raw Data Available to AI:**\n```json\n{json.dumps(order, indent=2)}\n```"
+        return (
+            f"✅ CARTON CLOUD ORDER FOUND: {reference_number}\n\n"
+            f"**Raw Data Available to AI:**\n"
+            f"```json\n{json.dumps(order, indent=2)}\n```"
+        )
 
     except requests.exceptions.Timeout:
         return "🚨 Carton Cloud API Error: The server timed out."
