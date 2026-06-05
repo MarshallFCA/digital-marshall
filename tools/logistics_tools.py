@@ -60,7 +60,8 @@ def search_transvirtual_connote(connote_number: str) -> str:
         }
 
         raw_matrix = json.dumps(combined_matrix, indent=2)
-        return f"✅ Transvirtual Record: {connote_number}\n\n**Raw Data Available to AI:**\n```json\n{raw_matrix}\n```"
+        return f"✅ Transvirtual Record: {connote_number}\n\n**Raw Data Available to AI:**\n```json\n{raw_matrix}\n
+```"
 
     except requests.exceptions.Timeout:
         return "🚨 Transvirtual API Error: The server timed out."
@@ -87,29 +88,19 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
         
         clean_ref = str(reference_number).strip()
 
-        # SCENARIO A: Retrieve Recent Orders (No specific reference provided)
+        # SCENARIO A: Retrieve Recent Orders
         if not clean_ref or clean_ref.lower() in ["none", "null", "recent", "latest"]:
+            paged_url = f"{search_url}?page=1&size={limit if limit else 5}"
             brute_payload = {
-                "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}],
-                "page": 1,
-                "size": limit if limit else 5
+                "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}]
             }
             try:
-                resp = requests.post(search_url, headers=headers, json=brute_payload, timeout=15)
+                resp = requests.post(paged_url, headers=headers, json=brute_payload, timeout=15)
                 if resp.status_code == 200:
                     recent_orders = resp.json()
                     if not recent_orders:
                         return "No recent sales orders found in Carton Cloud."
-                    
-                    output = f"✅ CARTON CLOUD - MOST RECENT {len(recent_orders)} SALES ORDERS\n"
-                    for o in recent_orders:
-                        o_id = o.get("id", "Unknown")
-                        c_name = o.get("customer", {}).get("name", "Unknown Customer")
-                        status = o.get("status", "UNKNOWN")
-                        dispatch = o.get("timestamps", {}).get("dispatched", {}).get("time", "Not Dispatched")
-                        cost = o.get("financials", {}).get("totalCost") or o.get("financials", {}).get("invoiceAmount") or 0.0
-                        output += f"\n- Order ID: {o_id} | Customer: {c_name} | Status: {status} | Dispatch: {dispatch} | Cost: ${float(cost):.2f}"
-                    return output
+                    return f"✅ CARTON CLOUD: MOST RECENT {len(recent_orders)} SALES ORDERS\n\n**Raw Data Available to AI:**\n```json\n{json.dumps(recent_orders, indent=2)}\n```"
                 else:
                     return f"🚨 Carton Cloud API Error: HTTP {resp.status_code} - {resp.text}"
             except Exception as e:
@@ -118,34 +109,8 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
         # SCENARIO B: Specific Reference Search
         orders = []
 
-        # Pipeline 1: Native API Search across multiple reference pointers
-        reference_pointers = [
-            "/references/customer",
-            "/salesOrderReference",
-            "/warehouseReference"
-        ]
-        
-        for pointer in reference_pointers:
-            if orders: break
-            search_payload = {
-                "condition": {
-                    "type": "TextComparisonCondition",
-                    "field": { "type": "JsonField", "pointer": pointer },
-                    "value": { "type": "ValueField", "value": clean_ref },
-                    "method": "CONTAINS"
-                }
-            }
-            try:
-                resp = requests.post(search_url, headers=headers, json=search_payload, timeout=10)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data:
-                        orders = data
-            except Exception:
-                pass
-
-        # Pipeline 2: Native ID Match
-        if not orders and clean_ref.isdigit():
+        # Pipeline 1: Native ID Match
+        if clean_ref.isdigit():
             id_payload = {
                 "condition": {
                     "type": "EqualsCondition",
@@ -154,92 +119,48 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
                 }
             }
             try:
-                resp_id = requests.post(search_url, headers=headers, json=id_payload, timeout=10)
+                resp_id = requests.post(f"{search_url}?page=1&size=1", headers=headers, json=id_payload, timeout=10)
                 if resp_id.status_code == 200:
                     data = resp_id.json()
-                    if data:
-                        orders = data
+                    if data: orders = data
             except Exception:
                 pass
 
-        # Pipeline 3: Deep Python Sweep for Historical Anomalies (API Safe Pagination)
+        # Pipeline 2: Deep Python Sweep for Historical Anomalies (API Safe Pagination + Global JSON Match)
         if not orders:
             stripped_ref = clean_ref.lstrip('0')
             brute_payload = {
-                "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}],
-                "page": 1,
-                "size": 100  # API Safe Limit
+                "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}]
             }
             
-            for page in range(1, 51): # 5,000 records total (50 pages x 100 records)
+            for page in range(1, 11): 
                 if orders: break
-                brute_payload["page"] = page
+                paged_url = f"{search_url}?page={page}&size=100"
                 try:
-                    sweep_resp = requests.post(search_url, headers=headers, json=brute_payload, timeout=15)
+                    sweep_resp = requests.post(paged_url, headers=headers, json=brute_payload, timeout=15)
                     if sweep_resp.status_code == 200:
                         page_data = sweep_resp.json()
                         if not page_data: break 
                         
                         for o in page_data:
-                            order_id = str(o.get("id", ""))
-                            cust_ref = str(o.get("references", {}).get("customer", ""))
-                            sales_ref = str(o.get("salesOrderReference", ""))
-                            wh_ref = str(o.get("warehouseReference", ""))
-                            
-                            if clean_ref in [order_id, cust_ref, sales_ref, wh_ref] or \
-                               clean_ref in cust_ref or clean_ref in sales_ref or \
-                               (stripped_ref and stripped_ref in [order_id, cust_ref, sales_ref, wh_ref]):
+                            raw_o_str = json.dumps(o)
+                            if clean_ref in raw_o_str or (stripped_ref and stripped_ref in raw_o_str):
                                 orders = [o]
                                 break
                     else:
-                        break # Halt execution if API rejects pagination depth
+                        break 
                 except Exception:
                     break
 
         if not orders:
-            return f"No order found in Carton Cloud containing reference or ID: {reference_number}. Ensure the record is within the last 5,000 dispatches."
+            diag_url = f"{search_url}?page=1&size=1"
+            diag_resp = requests.post(diag_url, headers=headers, json={"sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}]}, timeout=15)
+            diag_json = diag_resp.json() if diag_resp.status_code == 200 else []
+            return f"No order found containing '{reference_number}'.\n\n**SCHEMA DIAGNOSTIC (Latest Order in DB):**\n```json\n{json.dumps(diag_json, indent=2)}\n
+```"
 
         order = orders[0]
-        status = order.get("status", "UNKNOWN")
-        customer_name = order.get("customer", {}).get("name", "Unknown Customer")
-        
-        details = order.get("details", {})
-        address_node = details.get("deliver", {}).get("address", {})
-        receiver_name = (
-            address_node.get("companyName") or 
-            address_node.get("contactName") or 
-            address_node.get("name") or 
-            "Unknown Receiver"
-        )
-
-        timestamps = order.get("timestamps", {})
-        dispatch_date = timestamps.get("dispatched", {}).get("time") or "Not Dispatched Yet"
-        
-        # Financial Extraction logic
-        financials = order.get("financials", {})
-        warehouse_cost = financials.get("totalCost") or financials.get("invoiceAmount") or order.get("totalCost") or order.get("calculatedCharges", 0.0)
-
-        items = order.get("items", [])
-        item_list = ""
-        
-        for item in items:
-            quantity = item.get("measures", {}).get("quantity", 0)
-            product = item.get("details", {}).get("product", {})
-            product_name = product.get("name") or product.get("references", {}).get("code") or product.get("references", {}).get("name") or "Unknown Product"
-            item_list += f"- {quantity}x {product_name}\n"
-
-        return f"""
-        ✅ CARTON CLOUD ORDER FOUND
-        - Reference/ID: {reference_number}
-        - Status: {status}
-        - Customer: {customer_name}
-        - Receiver: {receiver_name}
-        - Dispatch Date: {dispatch_date}
-        - Warehouse Cost: ${float(warehouse_cost):.2f}
-        
-        Items in this order:
-        {item_list if item_list else "No items listed."}
-        """
+        return f"✅ CARTON CLOUD ORDER FOUND: {reference_number}\n\n**Raw Data Available to AI:**\n```json\n{json.dumps(order, indent=2)}\n```"
 
     except requests.exceptions.Timeout:
         return "🚨 Carton Cloud API Error: The server timed out."
