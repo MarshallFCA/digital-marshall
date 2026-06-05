@@ -63,7 +63,8 @@ def search_transvirtual_connote(connote_number: str) -> str:
         return (
             f"✅ Transvirtual Record: {connote_number}\n\n"
             f"**Raw Data Available to AI:**\n"
-            f"```json\n{raw_matrix}\n```"
+            f"```json\n{raw_matrix}\n
+```"
         )
 
     except requests.exceptions.Timeout:
@@ -82,40 +83,118 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
         access_token = get_cartoncloud_token()
         if "Error" in access_token: return f"Carton Cloud Auth {access_token}"
 
-        search_url = f"{base_url}/tenants/{tenant_id}/outbound-orders/search"
+        # Switched from /search POST endpoint to native GET endpoint
+        orders_url = f"{base_url}/tenants/{tenant_id}/outbound-orders"
         headers = {
             "Accept-Version": "1",
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json"
         }
         
-        # DIAGNOSTIC OVERRIDE: Directly target the known ID to extract the JSON schema.
-        target_id = 250
+        clean_ref = str(reference_number).strip()
+
+        # SCENARIO A: Retrieve Recent Orders
+        if not clean_ref or clean_ref.lower() in ["none", "null", "recent", "latest"]:
+            list_url = f"{orders_url}?page=1&size={limit if limit else 5}"
+            try:
+                resp = requests.get(list_url, headers=headers, timeout=15)
+                if resp.status_code == 200:
+                    recent_orders = resp.json()
+                    if not recent_orders:
+                        return "No recent sales orders found in Carton Cloud."
+                    return (
+                        f"✅ CARTON CLOUD: MOST RECENT {len(recent_orders)} SALES ORDERS\n\n"
+                        f"**Raw Data Available to AI:**\n"
+                        f"```json\n{json.dumps(recent_orders, indent=2)}\n```"
+                    )
+                else:
+                    return f"🚨 Carton Cloud API Error: HTTP {resp.status_code} - {resp.text}"
+            except Exception as e:
+                return f"🚨 Carton Cloud API Error: {sanitize_error_log(str(e))}"
+
+        # SCENARIO B: Specific Reference Search
+        orders = []
+
+        # Pipeline 1: Native REST ID Match via GET
+        if clean_ref.isdigit():
+            direct_url = f"{orders_url}/{clean_ref}"
+            try:
+                resp_id = requests.get(direct_url, headers=headers, timeout=10)
+                if resp_id.status_code == 200:
+                    data = resp_id.json()
+                    if isinstance(data, dict) and data.get("id"):
+                        orders = [data]
+                    elif isinstance(data, list) and len(data) > 0:
+                        orders = data
+            except Exception:
+                pass
+
+        # Pipeline 2: Deep Python Sweep for Customer Reference Anomalies via GET Pagination
+        if not orders:
+            stripped_ref = clean_ref.lstrip('0')
+            
+            for page in range(1, 51): # Sweep up to 5,000 records natively
+                if orders: break
+                paged_url = f"{orders_url}?page={page}&size=100"
+                try:
+                    sweep_resp = requests.get(paged_url, headers=headers, timeout=15)
+                    if sweep_resp.status_code == 200:
+                        page_data = sweep_resp.json()
+                        if not page_data: break 
+                        
+                        for o in page_data:
+                            raw_o_str = json.dumps(o)
+                            if clean_ref in raw_o_str or (stripped_ref and stripped_ref in raw_o_str):
+                                orders = [o]
+                                break
+                    else:
+                        break 
+                except Exception:
+                    break
+
+        if not orders:
+            return f"No order found containing '{reference_number}'. Ensure the reference matches an existing record."
+
+        order = orders[0]
+        status = order.get("status", "UNKNOWN")
+        customer_name = order.get("customer", {}).get("name", "Unknown Customer")
         
-        id_payload = {
-            "condition": {
-                "type": "EqualsCondition",
-                "field": { "type": "JsonField", "pointer": "/id" },
-                "value": { "type": "ValueField", "value": target_id }
-            }
-        }
+        details = order.get("details", {})
+        address_node = details.get("deliver", {}).get("address", {})
+        receiver_name = (
+            address_node.get("companyName") or 
+            address_node.get("contactName") or 
+            address_node.get("name") or 
+            "Unknown Receiver"
+        )
+
+        timestamps = order.get("timestamps", {})
+        dispatch_date = timestamps.get("dispatched", {}).get("time") or "Not Dispatched Yet"
         
-        resp_id = requests.post(f"{search_url}?page=1&size=1", headers=headers, json=id_payload, timeout=10)
+        # Financial Extraction logic
+        financials = order.get("financials", {})
+        warehouse_cost = financials.get("totalCost") or financials.get("invoiceAmount") or order.get("totalCost") or order.get("calculatedCharges", 0.0)
+
+        items = order.get("items", [])
+        item_list = ""
         
-        if resp_id.status_code == 200:
-            data = resp_id.json()
-            if data:
-                return (
-                    f"✅ CARTON CLOUD DIAGNOSTIC: ORDER ID {target_id} FOUND.\n\n"
-                    f"SYSTEM DIRECTIVE: Analyze the following JSON. Identify the exact node where '000751' is stored. "
-                    f"Do NOT attempt to format this response for the user. Output the raw JSON block directly.\n\n"
-                    f"**Raw JSON Schema:**\n"
-                    f"```json\n{json.dumps(data[0], indent=2)}\n```"
-                )
-            else:
-                return f"Diagnostic Failure: Order ID {target_id} returned an empty array. The record may be archived or the ID is incorrect."
-        else:
-            return f"🚨 Carton Cloud API Error: HTTP {resp_id.status_code} - {resp_id.text}"
+        for item in items:
+            quantity = item.get("measures", {}).get("quantity", 0)
+            product = item.get("details", {}).get("product", {})
+            product_name = product.get("name") or product.get("references", {}).get("code") or product.get("references", {}).get("name") or "Unknown Product"
+            item_list += f"- {quantity}x {product_name}\n"
+
+        return (
+            f"✅ CARTON CLOUD ORDER FOUND\n"
+            f"- Reference/ID: {reference_number}\n"
+            f"- Status: {status}\n"
+            f"- Customer: {customer_name}\n"
+            f"- Receiver: {receiver_name}\n"
+            f"- Dispatch Date: {dispatch_date}\n"
+            f"- Warehouse Cost: ${float(warehouse_cost):.2f}\n\n"
+            f"Items in this order:\n"
+            f"{item_list if item_list else 'No items listed.'}"
+        )
 
     except requests.exceptions.Timeout:
         return "🚨 Carton Cloud API Error: The server timed out."
