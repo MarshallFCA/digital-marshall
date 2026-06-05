@@ -386,6 +386,20 @@ with tab_terminal:
                     {
                         "type": "function",
                         "function": {
+                            "name": "search_cartoncloud_order",
+                            "description": "Searches Carton Cloud WMS for a specific outbound sales order by reference or ID.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "reference_number": { "type": "string" }
+                                },
+                                "required": ["reference_number"]
+                            }
+                        }
+                    },
+                    {
+                        "type": "function",
+                        "function": {
                             "name": "search_and_read_google_drive",
                             "description": "Searches Google Drive and reads spreadsheets, PDFs, and docs.",
                             "parameters": {
