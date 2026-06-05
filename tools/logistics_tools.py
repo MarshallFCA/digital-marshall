@@ -92,9 +92,9 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
 
         def extract_cost(order_obj):
             """Hierarchical extraction of WMS costs based on CartonCloud JSON structures."""
-            c = order_obj.get("calculatedCharges") or order_obj.get("totalCharge") or order_obj.get("invoiceAmount") or order_obj.get("totalCost") or 0.0
+            c = order_obj.get("income") or order_obj.get("calculatedCharges") or order_obj.get("totalCharge") or order_obj.get("invoiceAmount") or order_obj.get("totalCost") or 0.0
             if not c and order_obj.get("financials"):
-                c = order_obj.get("financials", {}).get("totalCost") or order_obj.get("financials", {}).get("invoiceAmount") or 0.0
+                c = order_obj.get("financials", {}).get("income") or order_obj.get("financials", {}).get("totalCost") or order_obj.get("financials", {}).get("invoiceAmount") or 0.0
             try:
                 return float(c)
             except (ValueError, TypeError):
