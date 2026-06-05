@@ -431,7 +431,6 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
 def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, customer_name: str = "Rhino") -> str:
     import datetime
     
-    # 1. Polymorphic Date Parser
     def parse_flexible_date(date_string: str) -> datetime.date:
         import re
         clean_str = re.sub(r'(?i)(st|nd|rd|th)', '', str(date_string)).strip()
@@ -444,7 +443,6 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                 return datetime.datetime.strptime(clean_str, fmt).date()
             except ValueError:
                 continue
-        # Failsafe: Return today's date if the AI passes total gibberish
         return datetime.datetime.now().date()
 
     try:
@@ -455,7 +453,6 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
         
     diagnostic_logs = []
     
-    # 2. CartonCloud Data Extraction
     cc_tenant_id = st.secrets["cartoncloud"]["tenant_id"].strip()
     cc_base_url = get_secure_endpoint("cartoncloud_base", "aHR0cHM6Ly9hcGkuY2FydG9uY2xvdWQuY29t")
     cc_token = get_cartoncloud_token()
@@ -469,25 +466,18 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
         "Content-Type": "application/json"
     }
     
-    cc_search_url = f"{cc_base_url}/tenants/{cc_tenant_id}/outbound-orders/search"
-    
+    # Unfiltered brute-force payload: fetch recent 500 orders and let Python handle the logic.
     search_payload = {
-        "condition": {
-            "type": "TextComparisonCondition",
-            "field": { "type": "JsonField", "pointer": "/customer/name" },
-            "value": { "type": "ValueField", "value": customer_name },
-            "method": "CONTAINS"
-        },
         "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}],
         "page": 1,
         "size": 100
     }
 
     raw_orders = []
-    for page in range(1, 10): 
+    for page in range(1, 6): 
         search_payload["page"] = page
         try:
-            resp = requests.post(cc_search_url, headers=cc_headers, json=search_payload, timeout=15)
+            resp = requests.post(f"{cc_base_url}/tenants/{cc_tenant_id}/outbound-orders/search", headers=cc_headers, json=search_payload, timeout=15)
             if resp.status_code == 200:
                 page_data = resp.json()
                 if not page_data: break
@@ -520,9 +510,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             continue
             
         cust_ref = order.get("references", {}).get("customer", "")
-        if not cust_ref:
-            continue
-            
+        
         financials = order.get("financials", {})
         cc_cost = financials.get("totalCost") or financials.get("invoiceAmount") or order.get("totalCost") or order.get("calculatedCharges", 0.0)
         
@@ -538,10 +526,11 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             "Machship Carrier": "N/A"
         })
 
+    # Fail-safe print of diagnostics if empty
     if not matrix_data:
-        return f"KERMIT Sweep Complete. No valid orders found for {customer_name} between {start_dt.strftime('%Y-%m-%d')} and {end_dt.strftime('%Y-%m-%d')}."
+        log_output = " | ".join(diagnostic_logs) if diagnostic_logs else "Clean"
+        return f"KERMIT Sweep Complete. No valid orders found for {customer_name} between {start_dt.strftime('%Y-%m-%d')} and {end_dt.strftime('%Y-%m-%d')}. Diagnostics: {log_output}"
 
-    # 3. Machship Data Extraction
     ms_token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
     ms_headers = { "token": ms_token, "Content-Type": "application/json" }
     
@@ -552,11 +541,13 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
     
     for row in matrix_data:
         ref = row["Customer Reference"]
+        if not ref: continue
+        
         found = False
         for url in ms_urls:
             if found: break
             try:
-                resp = requests.post(url, headers=ms_headers, json=[ref], timeout=15)
+                resp = requests.post(url, headers=ms_headers, json=[str(ref)], timeout=15)
                 if resp.status_code == 200:
                     data = resp.json()
                     obj_list = data.get("object")
@@ -578,7 +569,6 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
     df = pd.DataFrame(matrix_data)
     df["Total FCA Sell"] = df["Warehouse Cost"] + df["Machship Sell"]
     
-    # 4. GCP Export Pipeline
     try:
         drive_scope = get_secure_endpoint("drive_scope", "aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==")
         sheets_scope = get_secure_endpoint("sheets_scope", "aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9zcHJlYWRzaGVldHM=")
