@@ -429,14 +429,33 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
 # TOOL 17: KERMIT (CartonCloud Machship Invoice Reconciliation Tool)
 # ==========================================
 def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, customer_name: str = "Rhino") -> str:
+    import datetime
+    
+    # 1. Polymorphic Date Parser
+    def parse_flexible_date(date_string: str) -> datetime.date:
+        import re
+        clean_str = re.sub(r'(?i)(st|nd|rd|th)', '', str(date_string)).strip()
+        formats = [
+            "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", 
+            "%d %b %Y", "%d %B %Y", "%Y/%m/%d", "%B %d %Y", "%b %d %Y"
+        ]
+        for fmt in formats:
+            try:
+                return datetime.datetime.strptime(clean_str, fmt).date()
+            except ValueError:
+                continue
+        # Failsafe: Return today's date if the AI passes total gibberish
+        return datetime.datetime.now().date()
+
     try:
-        start_dt = datetime.datetime.strptime(start_date, "%Y-%m-%d").date()
-        end_dt = datetime.datetime.strptime(end_date, "%Y-%m-%d").date()
+        start_dt = parse_flexible_date(start_date)
+        end_dt = parse_flexible_date(end_date)
     except Exception as e:
-        return f"CRASH: Invalid date format. Parameters must be YYYY-MM-DD. {sanitize_error_log(str(e))}"
+        return f"CRITICAL CRASH: Date Engine Failure. {sanitize_error_log(str(e))}"
         
     diagnostic_logs = []
     
+    # 2. CartonCloud Data Extraction
     cc_tenant_id = st.secrets["cartoncloud"]["tenant_id"].strip()
     cc_base_url = get_secure_endpoint("cartoncloud_base", "aHR0cHM6Ly9hcGkuY2FydG9uY2xvdWQuY29t")
     cc_token = get_cartoncloud_token()
@@ -520,8 +539,9 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
         })
 
     if not matrix_data:
-        return f"KERMIT Sweep Complete. No valid orders found for {customer_name} between {start_date} and {end_date}."
+        return f"KERMIT Sweep Complete. No valid orders found for {customer_name} between {start_dt.strftime('%Y-%m-%d')} and {end_dt.strftime('%Y-%m-%d')}."
 
+    # 3. Machship Data Extraction
     ms_token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
     ms_headers = { "token": ms_token, "Content-Type": "application/json" }
     
@@ -558,6 +578,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
     df = pd.DataFrame(matrix_data)
     df["Total FCA Sell"] = df["Warehouse Cost"] + df["Machship Sell"]
     
+    # 4. GCP Export Pipeline
     try:
         drive_scope = get_secure_endpoint("drive_scope", "aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==")
         sheets_scope = get_secure_endpoint("sheets_scope", "aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9zcHJlYWRzaGVldHM=")
@@ -572,7 +593,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
 
         parent_folder_id = "1U8PYxUZMfJql0AYnhc0izJpI0FqveeFR"
         timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-        sheet_title = f"KERMIT Analysis - {customer_name} ({start_date} to {end_date}) - {timestamp_str}"
+        sheet_title = f"KERMIT Analysis - {customer_name} ({start_dt.strftime('%d-%b-%y')} to {end_dt.strftime('%d-%b-%y')}) - {timestamp_str}"
 
         file_metadata = {
             'name': sheet_title,
