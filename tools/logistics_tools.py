@@ -137,6 +137,8 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
         # ASYNCHRONOUS FINANCIAL REPORT DIAGNOSTIC
         diagnostic_log = ""
         customer_uuid = order.get("customer", {}).get("id")
+        order_id_str = str(order.get("id", ""))
+        warehouse_cost = 0.0
 
         if customer_uuid:
             try:
@@ -153,7 +155,7 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
                     "type": "BULK_CHARGES",
                     "parameters": {
                         "pageSize": 100,
-                        "dateFilter": "date_added",
+                        "dateFilter": "date_activity",
                         "fromDate": from_date,
                         "toDate": to_date,
                         "customers": [{"id": customer_uuid}],
@@ -167,13 +169,13 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
                     "Content-Type": "application/json"
                 }
                 
-                diagnostic_log += f"**Triggering Report for Customer:** {customer_uuid} (Dates: {from_date} to {to_date})\n"
+                diagnostic_log += f"Payload Dispatched: {json.dumps(report_payload)}\n"
                 
                 run_resp = requests.post(f"{base_url}/tenants/{tenant_id}/report-runs", headers=report_headers, json=report_payload, timeout=15)
                 
                 if run_resp.status_code == 200:
                     run_id = run_resp.json().get("id")
-                    diagnostic_log += f"✅ Report Task Created. Task ID: {run_id}\nPolling server...\n"
+                    diagnostic_log += f"✅ Task Created. ID: {run_id}\n"
                     
                     if run_id:
                         for attempt in range(1, 16):
@@ -184,26 +186,50 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
                                 status_flag = poll_data.get("status")
                                 
                                 if status_flag == "SUCCESS":
-                                    diagnostic_log += f"✅ Report SUCCESS on attempt {attempt}.\n\n**RAW REPORT DATA:**\n```json\n{json.dumps(poll_data.get('items', []), indent=2)}\n```\n"
+                                    items_array = poll_data.get("items", [])
+                                    diagnostic_log += f"✅ Report SUCCESS. Items found: {len(items_array)}\n"
+                                    
+                                    for item in items_array:
+                                        item_json = json.dumps(item)
+                                        if f'"{order_id_str}"' in item_json or f': {order_id_str}' in item_json or f'"{clean_ref}"' in item_json:
+                                            c = item.get("income") or item.get("chargeAmount") or item.get("total") or item.get("amount") or 0.0
+                                            try:
+                                                warehouse_cost += float(c)
+                                            except:
+                                                pass
                                     break
                                 elif status_flag == "FAILED":
-                                    diagnostic_log += f"❌ Report FAILED internally by CartonCloud: {json.dumps(poll_data.get('failureDetails', []))}\n"
+                                    diagnostic_log += f"❌ Report FAILED Internally: {json.dumps(poll_data.get('failureDetails', []))}\n"
                                     break
                             else:
-                                diagnostic_log += f"❌ Polling HTTP Error: {poll_resp.status_code}\n"
+                                diagnostic_log += f"❌ Polling Error HTTP {poll_resp.status_code}: {poll_resp.text}\n"
                                 break
                 else:
-                    diagnostic_log += f"❌ Server Rejected Task Creation. HTTP {run_resp.status_code}\nResponse: {run_resp.text}\n"
+                    diagnostic_log += f"❌ POST Error HTTP {run_resp.status_code}: {run_resp.text}\n"
 
             except Exception as e:
-                diagnostic_log += f"❌ Python Exception during report execution: {str(e)}\n"
+                diagnostic_log += f"❌ Exception: {str(e)}\n"
         else:
-            diagnostic_log += "❌ No Customer UUID found. Cannot run report.\n"
+            diagnostic_log += "❌ No Customer UUID found.\n"
+
+        # HARD STOP: If cost extraction fails, output the raw log and halt the summary.
+        if warehouse_cost == 0.0:
+            return (
+                f"🚨 SYSTEM HALTED. FINANCIAL EXTRACTION RETURNED $0.00.\n\n"
+                f"**RAW DIAGNOSTIC LOG (DO NOT SUMMARIZE THIS):**\n"
+                f"```text\n{diagnostic_log}\n```"
+            )
 
         return (
-            f"✅ CARTON CLOUD ORDER: {reference_number}\n\n"
-            f"**FINANCIAL DIAGNOSTIC TRACE:**\n"
-            f"{diagnostic_log}"
+            f"✅ CARTON CLOUD ORDER FOUND\n"
+            f"- Reference/ID: {reference_number}\n"
+            f"- Status: {status}\n"
+            f"- Customer: {customer_name}\n"
+            f"- Receiver: {receiver_name}\n"
+            f"- Dispatch Date: {dispatch_date}\n"
+            f"- Extracted Warehouse Cost: ${float(warehouse_cost):.2f}\n\n"
+            f"Items in this order:\n"
+            f"{item_list if item_list else 'No items listed.'}"
         )
 
     except requests.exceptions.Timeout:
