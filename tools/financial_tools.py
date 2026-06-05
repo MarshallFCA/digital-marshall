@@ -433,6 +433,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
     import pandas as pd
     import requests
     import streamlit as st
+    import json
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
     from tools.core_utils import get_secure_endpoint, sanitize_error_log, get_cartoncloud_token
@@ -468,23 +469,50 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
         
     cc_headers = {
         "Accept-Version": "1",
-        "Authorization": f"Bearer {cc_token}"
+        "Authorization": f"Bearer {cc_token}",
+        "Content-Type": "application/json"
     }
     
-    # Updated API Architecture: Use native GET endpoint and URL query string pagination
     raw_orders = []
+    
+    # 2-Stage Fortress Sweep
     for page in range(1, 6): 
         try:
-            paged_url = f"{cc_base_url}/tenants/{cc_tenant_id}/outbound-orders?page={page}&size=100"
-            resp = requests.get(paged_url, headers=cc_headers, timeout=15)
+            paged_url = f"{cc_base_url}/tenants/{cc_tenant_id}/outbound-orders/search?page={page}&size=50"
+            
+            # Stage 1: Native API Filter for Customer
+            search_payload = {
+                "condition": {
+                    "type": "TextComparisonCondition",
+                    "field": { "type": "JsonField", "pointer": "/customer/name" },
+                    "value": { "type": "ValueField", "value": customer_name },
+                    "method": "CONTAINS"
+                },
+                "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}]
+            }
+            
+            resp = requests.post(paged_url, headers=cc_headers, json=search_payload, timeout=15)
             
             if resp.status_code == 200:
                 page_data = resp.json()
                 if not page_data: break
                 raw_orders.extend(page_data)
             else:
-                diagnostic_logs.append(f"CartonCloud Pagination HTTP Error: {resp.status_code}")
-                break
+                # Stage 2: Fallback to Brute Force if Condition Rejected
+                diagnostic_logs.append(f"Native Filter Rejected (HTTP {resp.status_code}). Executing Brute Force.")
+                fallback_payload = {
+                    "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}]
+                }
+                resp_fb = requests.post(paged_url, headers=cc_headers, json=fallback_payload, timeout=15)
+                
+                if resp_fb.status_code == 200:
+                    page_data = resp_fb.json()
+                    if not page_data: break
+                    raw_orders.extend(page_data)
+                else:
+                    diagnostic_logs.append(f"CartonCloud Search HTTP Error: {resp_fb.status_code} - {resp_fb.text}")
+                    break
+                    
         except Exception as e:
             diagnostic_logs.append(f"CartonCloud Sweep Crash: {sanitize_error_log(str(e))}")
             break
@@ -511,7 +539,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             
         cust_ref = order.get("references", {}).get("customer", "")
         
-        # NOTE: Due to CC permissions, this cost may extract as 0.0 until the API role is updated by Support.
+        # Financials will pull 0.0 until CC Support updates your token permissions.
         financials = order.get("financials", {})
         cc_cost = financials.get("totalCost") or financials.get("invoiceAmount") or order.get("totalCost") or order.get("calculatedCharges", 0.0)
         
@@ -527,7 +555,6 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             "Machship Carrier": "N/A"
         })
 
-    # Fail-safe print of diagnostics if empty
     if not matrix_data:
         log_output = " | ".join(diagnostic_logs) if diagnostic_logs else "Clean"
         return f"KERMIT Sweep Complete. No valid orders found for {customer_name} between {start_dt.strftime('%Y-%m-%d')} and {end_dt.strftime('%Y-%m-%d')}. Diagnostics: {log_output}"
