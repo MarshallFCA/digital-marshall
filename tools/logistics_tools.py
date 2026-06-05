@@ -85,60 +85,88 @@ def search_cartoncloud_order(reference_number: str) -> str:
             "Content-Type": "application/json"
         }
         
-        # Pipeline 1: Native API Search by TextComparisonCondition
-        search_payload = {
-            "condition": {
-                "type": "TextComparisonCondition",
-                "field": { "type": "JsonField", "pointer": "/references/customer" },
-                "value": { "type": "ValueField", "value": str(reference_number) },
-                "method": "CONTAINS"
+        clean_ref = str(reference_number).strip()
+        orders = []
+
+        # Pipeline 1: Native API Search across multiple reference pointers
+        reference_pointers = [
+            "/references/customer",
+            "/salesOrderReference",
+            "/warehouseReference"
+        ]
+        
+        for pointer in reference_pointers:
+            if orders: break
+            search_payload = {
+                "condition": {
+                    "type": "TextComparisonCondition",
+                    "field": { "type": "JsonField", "pointer": pointer },
+                    "value": { "type": "ValueField", "value": clean_ref },
+                    "method": "CONTAINS"
+                }
             }
-        }
+            try:
+                resp = requests.post(search_url, headers=headers, json=search_payload, timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    if data:
+                        orders = data
+            except Exception:
+                pass
 
-        response = requests.post(search_url, headers=headers, json=search_payload, timeout=15)
-        orders = response.json() if response.status_code == 200 else []
-
-        # Pipeline 2: If empty, try Native CartonCloud ID
-        if not orders and str(reference_number).strip().isdigit():
+        # Pipeline 2: Native ID Match (Handling potential leading zeros)
+        if not orders and clean_ref.isdigit():
             id_payload = {
                 "condition": {
                     "type": "EqualsCondition",
                     "field": { "type": "JsonField", "pointer": "/id" },
-                    "value": { "type": "ValueField", "value": int(str(reference_number).strip()) }
+                    "value": { "type": "ValueField", "value": int(clean_ref) }
                 }
             }
-            resp_id = requests.post(search_url, headers=headers, json=id_payload, timeout=15)
-            if resp_id.status_code == 200:
-                orders = resp_id.json()
+            try:
+                resp_id = requests.post(search_url, headers=headers, json=id_payload, timeout=10)
+                if resp_id.status_code == 200:
+                    data = resp_id.json()
+                    if data:
+                        orders = data
+            except Exception:
+                pass
 
-        # Pipeline 3: Brute Force Python Sweep (Bypassing API string matching quirks)
+        # Pipeline 3: Deep Python Sweep for Historical Anomalies
         if not orders:
+            stripped_ref = clean_ref.lstrip('0')
             brute_payload = {
                 "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}],
                 "page": 1,
-                "size": 100
+                "size": 500  # Expanded to 500 records per page to cover months of history natively
             }
-            # Sweep expanded to 1000 records (10 pages) for historical data capture
-            for page in range(1, 11): 
+            
+            for page in range(1, 11): # Deep sweep: 5,000 records
+                if orders: break
                 brute_payload["page"] = page
                 try:
                     sweep_resp = requests.post(search_url, headers=headers, json=brute_payload, timeout=15)
                     if sweep_resp.status_code == 200:
-                        for o in sweep_resp.json():
-                            target = str(reference_number).strip()
+                        page_data = sweep_resp.json()
+                        if not page_data: break # Break loop if we run out of historical pages
+                        
+                        for o in page_data:
                             order_id = str(o.get("id", ""))
                             cust_ref = str(o.get("references", {}).get("customer", ""))
+                            sales_ref = str(o.get("salesOrderReference", ""))
+                            wh_ref = str(o.get("warehouseReference", ""))
                             
-                            # Global JSON serialisation match to bypass brittle field logic
-                            if target == order_id or target in cust_ref or target in json.dumps(o):
+                            # Match exact, or substring, or stripped integer equivalent to bypass formatting errors
+                            if clean_ref in [order_id, cust_ref, sales_ref, wh_ref] or \
+                               clean_ref in cust_ref or clean_ref in sales_ref or \
+                               (stripped_ref and stripped_ref in [order_id, cust_ref, sales_ref, wh_ref]):
                                 orders = [o]
                                 break
-                    if orders: break
                 except Exception:
                     break
 
         if not orders:
-            return f"No order found in Carton Cloud containing reference or ID: {reference_number}."
+            return f"No order found in Carton Cloud containing reference or ID: {reference_number}. Ensure the record is within the last 5,000 dispatches."
 
         order = orders[0]
         status = order.get("status", "UNKNOWN")
