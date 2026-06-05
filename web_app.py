@@ -387,13 +387,13 @@ with tab_terminal:
                         "type": "function",
                         "function": {
                             "name": "search_cartoncloud_order",
-                            "description": "Searches Carton Cloud WMS for a specific outbound sales order by reference or ID.",
+                            "description": "Searches Carton Cloud WMS for a specific outbound sales order by reference/ID, OR retrieves the most recent sales orders if no reference is provided.",
                             "parameters": {
                                 "type": "object",
                                 "properties": {
-                                    "reference_number": { "type": "string" }
-                                },
-                                "required": ["reference_number"]
+                                    "reference_number": { "type": "string", "description": "The specific order reference to search for. Leave blank if the user asks for recent/latest orders." },
+                                    "limit": { "type": "integer", "description": "Number of recent orders to retrieve if no reference is provided. Default 5." }
+                                }
                             }
                         }
                     },
