@@ -430,6 +430,12 @@ def tool_8_carrier_invoice_auditor(raw_invoice_text: str, notification_email: st
 # ==========================================
 def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, customer_name: str = "Rhino") -> str:
     import datetime
+    import pandas as pd
+    import requests
+    import streamlit as st
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    from tools.core_utils import get_secure_endpoint, sanitize_error_log, get_cartoncloud_token
     
     def parse_flexible_date(date_string: str) -> datetime.date:
         import re
@@ -462,22 +468,16 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
         
     cc_headers = {
         "Accept-Version": "1",
-        "Authorization": f"Bearer {cc_token}",
-        "Content-Type": "application/json"
+        "Authorization": f"Bearer {cc_token}"
     }
     
-    # Unfiltered brute-force payload: fetch recent 500 orders and let Python handle the logic.
-    search_payload = {
-        "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}],
-        "page": 1,
-        "size": 100
-    }
-
+    # Updated API Architecture: Use native GET endpoint and URL query string pagination
     raw_orders = []
     for page in range(1, 6): 
-        search_payload["page"] = page
         try:
-            resp = requests.post(f"{cc_base_url}/tenants/{cc_tenant_id}/outbound-orders/search", headers=cc_headers, json=search_payload, timeout=15)
+            paged_url = f"{cc_base_url}/tenants/{cc_tenant_id}/outbound-orders?page={page}&size=100"
+            resp = requests.get(paged_url, headers=cc_headers, timeout=15)
+            
             if resp.status_code == 200:
                 page_data = resp.json()
                 if not page_data: break
@@ -511,6 +511,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             
         cust_ref = order.get("references", {}).get("customer", "")
         
+        # NOTE: Due to CC permissions, this cost may extract as 0.0 until the API role is updated by Support.
         financials = order.get("financials", {})
         cc_cost = financials.get("totalCost") or financials.get("invoiceAmount") or order.get("totalCost") or order.get("calculatedCharges", 0.0)
         
@@ -518,7 +519,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             "CartonCloud ID": order.get("id"),
             "Date": o_date_str[:10],
             "Customer Reference": cust_ref,
-            "CartonCloud Status": order.get("status", "UNKNOWN"),
+            "CartonCloud Status": order.get("status", {}).get("name", "UNKNOWN") if isinstance(order.get("status"), dict) else order.get("status", "UNKNOWN"),
             "Warehouse Cost": float(cc_cost) if cc_cost else 0.0,
             "Machship Cost": 0.0,
             "Machship Sell": 0.0,
@@ -637,7 +638,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             except Exception:
                 pass 
 
-        sheet_url = f"[https://docs.google.com/spreadsheets/d/](https://docs.google.com/spreadsheets/d/){spreadsheet_id}"
+        sheet_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}"
         log_str = " | ".join(diagnostic_logs)
         return f"SUCCESS: KERMIT module executed. Processed {len(matrix_data)} records for {customer_name}. \nDiagnostics: {log_str if log_str else 'Clean'}\n\nView Financial Matrix: {sheet_url}"
 
