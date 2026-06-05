@@ -1,5 +1,7 @@
 import json
 import requests
+import time
+import datetime
 import streamlit as st
 
 from tools.core_utils import (
@@ -90,31 +92,6 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
         
         clean_ref = str(reference_number).strip()
 
-        def extract_cost_recursive(obj):
-            """Deep recursive search through the N-dimensional JSON payload for financial markers."""
-            if isinstance(obj, dict):
-                # Check current level keys
-                for key, value in obj.items():
-                    k_lower = str(key).lower()
-                    if k_lower in ['income', 'totalincome', 'calculatedcharges', 'totalcharge', 'invoiceamount', 'totalcost']:
-                        try:
-                            if float(value) > 0.0:
-                                return float(value)
-                        except (ValueError, TypeError):
-                            pass
-                # Drill down into nested dictionaries and arrays
-                for key, value in obj.items():
-                    if isinstance(value, (dict, list)):
-                        result = extract_cost_recursive(value)
-                        if result > 0.0:
-                            return result
-            elif isinstance(obj, list):
-                for item in obj:
-                    result = extract_cost_recursive(item)
-                    if result > 0.0:
-                        return result
-            return 0.0
-
         # SCENARIO A: Retrieve Recent Orders
         if not clean_ref or clean_ref.lower() in ["none", "null", "recent", "latest"]:
             paged_url = f"{orders_url}?page=1&size={limit if limit else 5}"
@@ -131,8 +108,7 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
                         o_id = o.get("id", "Unknown")
                         c_name = o.get("customer", {}).get("name", "Unknown") if isinstance(o.get("customer"), dict) else o.get("customer", "Unknown")
                         status = o.get("status", {}).get("name", "UNKNOWN") if isinstance(o.get("status"), dict) else o.get("status", "UNKNOWN")
-                        cost = extract_cost_recursive(o)
-                        summary += f"\n- Order ID: {o_id} | Customer: {c_name} | Status: {status} | Warehouse Cost: ${cost:.2f}"
+                        summary += f"\n- Order ID: {o_id} | Customer: {c_name} | Status: {status}"
                         
                     return (
                         f"{summary}\n\n"
@@ -148,7 +124,6 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
         orders = []
         target_id = None
 
-        # Resolve alias if user requests the known customer reference
         if clean_ref == "000751":
             target_id = "250"
         elif clean_ref.isdigit():
@@ -195,16 +170,110 @@ def search_cartoncloud_order(reference_number: str = "", limit: int = 5) -> str:
             return f"No order found containing '{reference_number}'."
 
         order = orders[0]
-        verified_cost = extract_cost_recursive(order)
+        
+        # EXTRACT ORDER VARIABLES
+        status = order.get("status", "UNKNOWN")
+        customer_name = order.get("customer", {}).get("name", "Unknown Customer")
+        details = order.get("details", {})
+        address_node = details.get("deliver", {}).get("address", {})
+        receiver_name = address_node.get("companyName") or address_node.get("contactName") or address_node.get("name") or "Unknown Receiver"
+        
+        timestamps = order.get("timestamps", {})
+        dispatch_date = timestamps.get("dispatched", {}).get("time") or "Not Dispatched Yet"
+
+        items = order.get("items", [])
+        item_list = ""
+        for item in items:
+            quantity = item.get("measures", {}).get("quantity", 0)
+            product = item.get("details", {}).get("product", {})
+            product_name = product.get("name") or product.get("references", {}).get("code") or product.get("references", {}).get("name") or "Unknown Product"
+            item_list += f"- {quantity}x {product_name}\n"
+
+        # ASYNCHRONOUS FINANCIAL REPORT PIPELINE
+        warehouse_cost = 0.0
+        matching_report_items = []
+        customer_uuid = order.get("customer", {}).get("id")
+        order_id_str = str(order.get("id", ""))
+
+        if customer_uuid and order_id_str:
+            try:
+                time_str = order.get("timestamps", {}).get("dispatched", {}).get("time") or order.get("timestamps", {}).get("created", {}).get("time")
+                if time_str:
+                    base_dt = datetime.datetime.strptime(time_str[:10], "%Y-%m-%d")
+                    from_date = (base_dt - datetime.timedelta(days=30)).strftime("%Y-%m-%d")
+                    to_date = (base_dt + datetime.timedelta(days=30)).strftime("%Y-%m-%d")
+                else:
+                    from_date = "2026-01-01"
+                    to_date = "2026-12-31"
+
+                report_payload = {
+                    "type": "BULK_CHARGES",
+                    "parameters": {
+                        "pageSize": 100,
+                        "dateFilter": "date_added",
+                        "fromDate": from_date,
+                        "toDate": to_date,
+                        "customers": [{"id": customer_uuid}],
+                        "chargeClasses": ["SALE_ORDER"]
+                    }
+                }
+                
+                # Initiate Report
+                report_headers = {
+                    "Accept-Version": "1",
+                    "Authorization": f"Bearer {access_token}",
+                    "Content-Type": "application/json"
+                }
+                
+                run_resp = requests.post(f"{base_url}/tenants/{tenant_id}/report-runs", headers=report_headers, json=report_payload, timeout=15)
+                if run_resp.status_code == 200:
+                    run_id = run_resp.json().get("id")
+                    if run_id:
+                        # Polling Loop
+                        for _ in range(15):
+                            time.sleep(2)
+                            poll_resp = requests.get(f"{base_url}/tenants/{tenant_id}/report-runs/{run_id}", headers=headers, timeout=15)
+                            if poll_resp.status_code == 200:
+                                poll_data = poll_resp.json()
+                                status_flag = poll_data.get("status")
+                                
+                                if status_flag == "SUCCESS":
+                                    items_array = poll_data.get("items", [])
+                                    for item in items_array:
+                                        item_json = json.dumps(item)
+                                        # Isolate charges linked to this specific order ID
+                                        if f'"{order_id_str}"' in item_json or f': {order_id_str}' in item_json:
+                                            matching_report_items.append(item)
+                                            # Attempt naive cost extraction
+                                            c = item.get("income") or item.get("chargeAmount") or item.get("total") or item.get("amount") or 0.0
+                                            try:
+                                                warehouse_cost += float(c)
+                                            except:
+                                                pass
+                                    break
+                                elif status_flag == "FAILED":
+                                    break
+            except Exception as e:
+                pass # Fail gracefully and rely on raw JSON outputs
+
+        # FORMAT DIAGNOSTIC OUTPUT
+        diagnostic_block = ""
+        if matching_report_items:
+            diagnostic_block = f"\n\n**FINANCIAL REPORT DIAGNOSTIC (Matched Charge Items):**\n```json\n{json.dumps(matching_report_items, indent=2)}\n```"
+        else:
+            diagnostic_block = f"\n\n**RAW ORDER JSON (Financial Run Failed or Missing):**\n```json\n{json.dumps(order, indent=2)}\n```"
 
         return (
             f"✅ CARTON CLOUD ORDER FOUND\n"
-            f"- Extracted Warehouse Cost: ${verified_cost:.2f}\n\n"
-            f"CRITICAL SYSTEM DIRECTIVE TO AI (BOOF): \n"
-            f"You MUST read the Extracted Warehouse Cost above. If it is $0.00, you are strictly commanded to output "
-            f"the following raw JSON block to the user EXACTLY as written. Do not summarize it. Do not format it. "
-            f"The engineering team requires this raw payload to fix the API mapping.\n\n"
-            f"```json\n{json.dumps(order, indent=2)}\n```"
+            f"- Reference/ID: {reference_number}\n"
+            f"- Status: {status}\n"
+            f"- Customer: {customer_name}\n"
+            f"- Receiver: {receiver_name}\n"
+            f"- Dispatch Date: {dispatch_date}\n"
+            f"- Extracted Warehouse Cost: ${float(warehouse_cost):.2f}\n\n"
+            f"Items in this order:\n"
+            f"{item_list if item_list else 'No items listed.'}"
+            f"{diagnostic_block}"
         )
 
     except requests.exceptions.Timeout:
