@@ -436,12 +436,12 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
     import streamlit as st
     import json
     import time
+    import re
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
     from tools.core_utils import get_secure_endpoint, sanitize_error_log, get_cartoncloud_token
     
     def parse_flexible_date(date_string: str) -> datetime.date:
-        import re
         clean_str = re.sub(r'(?i)(st|nd|rd|th)', '', str(date_string)).strip()
         formats = [
             "%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", 
@@ -480,7 +480,6 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
     # ---------------------------------------------------------
     report_run_id = None
     try:
-        # T-14 Buffer incorporated to ensure boundary dispatch packing dates are captured
         report_payload = {
             "type": "BULK_CHARGES",
             "parameters": {
@@ -506,13 +505,10 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
     # ---------------------------------------------------------
     raw_orders = []
     
-    # 2-Stage Fortress Sweep (20 pages = 2,000 orders to ensure deep historical reach)
     for page in range(1, 21): 
         try:
-            # Pagination placed natively in the URL to satisfy strict endpoint logic
             search_url = f"{cc_base_url}/tenants/{cc_tenant_id}/outbound-orders/search?page={page}&size=100"
             
-            # Stage 1: Native Filter strictly nested within the mandated AndCondition structure
             search_payload = {
                 "condition": {
                     "type": "AndCondition",
@@ -536,7 +532,6 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                 raw_orders.extend(page_data)
             else:
                 diagnostic_logs.append(f"Native Filter Rejected (HTTP {resp.status_code}). Executing Fallback Sweep on page {page}.")
-                # Stage 2: Permissive Date Filter fallback strictly nested within the mandated AndCondition structure
                 fallback_payload = {
                     "condition": {
                         "type": "AndCondition",
@@ -678,11 +673,37 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
         ref = row["Customer Reference"]
         if not ref: continue
         
+        # ---------------------------------------------------------
+        # REFERENCE MUTATION ENGINE
+        # ---------------------------------------------------------
+        base_ref = str(ref).strip()
+        mutations = [base_ref]
+        
+        if base_ref.startswith("0"):
+            stripped = base_ref.lstrip("0")
+            if stripped: mutations.append(stripped)
+            
+        numeric_only = re.sub(r'\D', '', base_ref)
+        if numeric_only and numeric_only not in mutations:
+            mutations.append(numeric_only)
+            if numeric_only.startswith("0"):
+                stripped_num = numeric_only.lstrip("0")
+                if stripped_num and stripped_num not in mutations:
+                    mutations.append(stripped_num)
+                    
+        if numeric_only:
+            mutations.append(f"SO-{numeric_only}")
+            mutations.append(f"SO{numeric_only}")
+            
+        # Deduplicate permutations
+        mutations = list(dict.fromkeys(mutations))
+        
         found = False
         for url in ms_urls:
             if found: break
             try:
-                resp = requests.post(url, headers=ms_headers, json=[str(ref)], timeout=15)
+                # Transmit entire array of mutations in a single payload
+                resp = requests.post(url, headers=ms_headers, json=mutations, timeout=15)
                 if resp.status_code == 200:
                     data = resp.json()
                     obj_list = data.get("object")
@@ -721,10 +742,8 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
 
     df = pd.DataFrame(matrix_data)
     
-    # Financial Consolidation
     df["Total FCA Sell"] = df["Machship Sell"] + df["Warehouse Cost"]
     
-    # Final column ordering enforcement
     col_order = [
         "Date", "Customer Reference", "CC Products", "CC Total Qty", "Machship Consignment", 
         "Machship Carrier Connote", "From Details", "To Details", "To Contact", 
