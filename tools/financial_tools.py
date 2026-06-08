@@ -510,18 +510,19 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             elif 'total weight' in cl or 'weight' in cl: col_map['weight'] = c
             elif 'carrier' in cl and 'name' in cl: col_map['carrier'] = c
             elif 'carrier' in cl and 'carrier' not in col_map: col_map['carrier'] = c
+            elif 'status' in cl: col_map['status'] = c
         
         for idx, row in df_ms.iterrows():
             ref1 = secure_str(row.get(col_map.get('ref1', ''), ''))
             ref2 = secure_str(row.get(col_map.get('ref2', ''), ''))
             did = secure_str(row.get(col_map.get('did', ''), ''))
             
-            # Numeric Isolation - Pulls all integers 3+ digits long
             ms_nums = re.findall(r'\d+', f"{ref1} {ref2} {did}")
             ms_nums = [n for n in ms_nums if len(n) >= 3]
             
             ms_records.append({
                 "ms_num": str(row.get(col_map.get('ms_num', 'Unknown'), '')).strip(),
+                "status": str(row.get(col_map.get('status', 'Unknown'), '')).strip().upper(),
                 "ref1": ref1,
                 "ref2": ref2,
                 "did": did,
@@ -724,6 +725,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             "CC Products": cc_products_str,
             "CC Total Qty": cc_total_qty,
             "Machship Consignment": "",
+            "Machship Status": "",
             "Machship Carrier Connote": "",
             "From Details": "",
             "To Details": "",
@@ -801,6 +803,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
 
                 if literal_match or numeric_match:
                     row["Machship Consignment"] = ms["ms_num"]
+                    row["Machship Status"] = ms["status"]
                     row["Machship Carrier Connote"] = ms["carrier"]
                     row["To Details"] = f"{ms['to_name'].title()} | {ms['to_suburb'].upper()}"
                     row["Total Weight"] = ms["weight"]
@@ -819,6 +822,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                     if len(clean_cc_name) > 4 and len(clean_ms_name) > 4:
                         if (clean_cc_name in clean_ms_name or clean_ms_name in clean_cc_name) and (cc_sub_clean == ms_sub_clean):
                             row["Machship Consignment"] = f"{ms['ms_num']} (Fuzzy Match)"
+                            row["Machship Status"] = ms["status"]
                             row["Machship Carrier Connote"] = ms["carrier"]
                             row["To Details"] = f"{ms['to_name'].title()} | {ms['to_suburb'].upper()}"
                             row["Total Weight"] = ms["weight"]
@@ -842,6 +846,8 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                             c_total = consignment.get("consignmentTotal", {})
                             sell = c_total.get("totalSellPrice") or c_total.get("totalSellBeforeTax") or c_total.get("totalSell") or 0.0
                             
+                            ms_status = consignment.get("status", {}).get("name", "Unknown").upper()
+                            
                             from_loc = consignment.get("fromLocation", {})
                             from_suburb = from_loc.get("suburb", "")
                             from_state = from_loc.get("state", {}).get("abbreviation", "") if isinstance(from_loc.get("state"), dict) else from_loc.get("state", "")
@@ -857,6 +863,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                             ms_items = consignment.get("items", [])
                                 
                             row["Machship Consignment"] = consignment.get("consignmentNumber", "")
+                            row["Machship Status"] = ms_status
                             row["Machship Carrier Connote"] = consignment.get("carrierConsignmentId", "")
                             row["From Details"] = from_str
                             row["To Details"] = to_str
@@ -869,11 +876,33 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                 except Exception:
                     pass
 
+        # ---------------------------------------------------------
+        # ROUTE 3: PROBABILISTIC GUESS (IF ALL ELSE FAILS)
+        # ---------------------------------------------------------
+        if not found and ms_records:
+            cc_sub_clean = re.sub(r'[^a-z]', '', row["CC Delivery Suburb"].lower())
+            cc_name_words = set(re.findall(r'[a-z]+', row["CC Delivery Name"].lower()))
+            
+            for ms in ms_records:
+                ms_sub_clean = re.sub(r'[^a-z]', '', ms["to_suburb"].lower())
+                ms_name_words = set(re.findall(r'[a-z]+', ms["to_name"].lower()))
+                
+                if cc_sub_clean and cc_sub_clean == ms_sub_clean:
+                    if cc_name_words.intersection(ms_name_words):
+                        row["Machship Consignment"] = f"*{ms['ms_num']} (Guessed)*"
+                        row["Machship Status"] = ms["status"]
+                        row["Machship Carrier Connote"] = ms["carrier"]
+                        row["To Details"] = f"{ms['to_name'].title()} | {ms['to_suburb'].upper()}"
+                        row["Total Weight"] = ms["weight"]
+                        row["Machship Sell"] = ms["sell"]
+                        found = True
+                        break
+
     df = pd.DataFrame(matrix_data)
     df["Total FCA Sell"] = df["Machship Sell"] + df["Warehouse Cost"]
     
     col_order = [
-        "Date", "Customer Reference", "CC Products", "CC Total Qty", "Machship Consignment", 
+        "Date", "Customer Reference", "CC Products", "CC Total Qty", "Machship Consignment", "Machship Status",
         "Machship Carrier Connote", "From Details", "To Details", "To Contact", 
         "Total Item Count", "Total Weight", "Warehouse Cost", "Machship Sell", "Total FCA Sell"
     ]
