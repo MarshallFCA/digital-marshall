@@ -454,6 +454,12 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                 continue
         return datetime.datetime.now().date()
 
+    def secure_str(val):
+        v = str(val).strip().lower()
+        if v.endswith('.0'): v = v[:-2]
+        if v in ['nan', 'nat', '<na>', 'none']: return ''
+        return v
+
     def safe_float(val):
         try:
             return float(re.sub(r'[^\d.-]', '', str(val)))
@@ -494,26 +500,37 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             cl = str(c).lower().strip()
             if 'consignment' in cl and ('number' in cl or 'id' in cl): col_map['ms_num'] = c
             elif 'ms number' in cl: col_map['ms_num'] = c
-            elif cl == 'reference 1': col_map['ref1'] = c
-            elif cl == 'reference 2': col_map['ref2'] = c
-            elif cl == 'despatch id': col_map['did'] = c
-            elif cl == 'to name' or cl == 'receiver': col_map['to_name'] = c
-            elif cl == 'to suburb': col_map['to_suburb'] = c
-            elif 'total sell' in cl or cl == 'sell price': col_map['sell'] = c
-            elif 'total weight' in cl or cl == 'weight': col_map['weight'] = c
-            elif 'carrier' in cl: col_map['carrier'] = c
+            elif 'reference 1' in cl or 'ref 1' in cl: col_map['ref1'] = c
+            elif 'reference 2' in cl or 'ref 2' in cl: col_map['ref2'] = c
+            elif 'reference' in cl and 'ref1' not in col_map: col_map['ref1'] = c
+            elif 'despatch id' in cl or 'dispatch' in cl: col_map['did'] = c
+            elif 'to name' in cl or 'receiver' in cl: col_map['to_name'] = c
+            elif 'to suburb' in cl or 'delivery suburb' in cl or 'suburb' in cl: col_map['to_suburb'] = c
+            elif 'total sell' in cl or 'sell price' in cl or ('sell' in cl and 'tax' not in cl): col_map['sell'] = c
+            elif 'total weight' in cl or 'weight' in cl: col_map['weight'] = c
+            elif 'carrier' in cl and 'name' in cl: col_map['carrier'] = c
+            elif 'carrier' in cl and 'carrier' not in col_map: col_map['carrier'] = c
         
         for idx, row in df_ms.iterrows():
+            ref1 = secure_str(row.get(col_map.get('ref1', ''), ''))
+            ref2 = secure_str(row.get(col_map.get('ref2', ''), ''))
+            did = secure_str(row.get(col_map.get('did', ''), ''))
+            
+            # Numeric Isolation - Pulls all integers 3+ digits long
+            ms_nums = re.findall(r'\d+', f"{ref1} {ref2} {did}")
+            ms_nums = [n for n in ms_nums if len(n) >= 3]
+            
             ms_records.append({
-                "ms_num": str(row.get(col_map.get('ms_num', 'Unknown'), '')),
-                "ref1": str(row.get(col_map.get('ref1'), '')).strip().lower(),
-                "ref2": str(row.get(col_map.get('ref2'), '')).strip().lower(),
-                "did": str(row.get(col_map.get('did'), '')).strip().lower(),
-                "to_name": str(row.get(col_map.get('to_name'), '')).strip().lower(),
-                "to_suburb": str(row.get(col_map.get('to_suburb'), '')).strip().upper(),
-                "sell": safe_float(row.get(col_map.get('sell'), 0.0)),
-                "weight": safe_float(row.get(col_map.get('weight'), 0.0)),
-                "carrier": str(row.get(col_map.get('carrier'), ''))
+                "ms_num": str(row.get(col_map.get('ms_num', 'Unknown'), '')).strip(),
+                "ref1": ref1,
+                "ref2": ref2,
+                "did": did,
+                "ms_nums": ms_nums,
+                "to_name": secure_str(row.get(col_map.get('to_name', ''), '')),
+                "to_suburb": secure_str(row.get(col_map.get('to_suburb', ''), '')),
+                "sell": safe_float(row.get(col_map.get('sell', ''), 0.0)),
+                "weight": safe_float(row.get(col_map.get('weight', ''), 0.0)),
+                "carrier": str(row.get(col_map.get('carrier', ''), '')).strip()
             })
 
     cc_tenant_id = st.secrets["cartoncloud"]["tenant_id"].strip()
@@ -733,26 +750,30 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
         ref = row["Customer Reference"]
         if not ref: continue
         
-        base_ref = str(ref).strip()
-        mutations = [base_ref.lower()]
+        base_ref = secure_str(ref)
+        mutations = [base_ref]
         
         if base_ref.startswith("0"):
             stripped = base_ref.lstrip("0")
-            if stripped: mutations.append(stripped.lower())
+            if stripped: mutations.append(stripped)
             
         numeric_only = re.sub(r'\D', '', base_ref)
         if numeric_only and numeric_only not in mutations:
-            mutations.append(numeric_only.lower())
+            mutations.append(numeric_only)
             if numeric_only.startswith("0"):
                 stripped_num = numeric_only.lstrip("0")
                 if stripped_num and stripped_num not in mutations:
-                    mutations.append(stripped_num.lower())
+                    mutations.append(stripped_num)
                     
         if numeric_only:
             mutations.append(f"so-{numeric_only}")
             mutations.append(f"so{numeric_only}")
             
         mutations = list(dict.fromkeys(mutations))
+        
+        cc_nums = re.findall(r'\d+', base_ref)
+        cc_nums = [n for n in cc_nums if len(n) >= 3]
+        
         found = False
         
         # ---------------------------------------------------------
@@ -760,10 +781,28 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
         # ---------------------------------------------------------
         if ms_records:
             for ms in ms_records:
-                if any(m and (m in ms["ref1"] or m in ms["ref2"] or m in ms["did"]) for m in mutations):
+                literal_match = False
+                for m in mutations:
+                    if m == ms["ref1"] or m == ms["ref2"] or m == ms["did"]:
+                        literal_match = True
+                        break
+                    
+                    if len(m) >= 3:
+                        pattern = r'\b' + re.escape(m) + r'\b'
+                        if re.search(pattern, ms["ref1"]) or re.search(pattern, ms["ref2"]) or re.search(pattern, ms["did"]):
+                            literal_match = True
+                            break
+
+                numeric_match = False
+                for cn in cc_nums:
+                    if cn in ms["ms_nums"]:
+                        numeric_match = True
+                        break
+
+                if literal_match or numeric_match:
                     row["Machship Consignment"] = ms["ms_num"]
                     row["Machship Carrier Connote"] = ms["carrier"]
-                    row["To Details"] = f"{ms['to_name']} | {ms['to_suburb']}"
+                    row["To Details"] = f"{ms['to_name'].title()} | {ms['to_suburb'].upper()}"
                     row["Total Weight"] = ms["weight"]
                     row["Machship Sell"] = ms["sell"]
                     found = True
@@ -771,13 +810,17 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             
             if not found and row["CC Delivery Name"]:
                 clean_cc_name = re.sub(r'[^a-z0-9]', '', row["CC Delivery Name"])
+                cc_sub_clean = re.sub(r'[^a-z]', '', row["CC Delivery Suburb"].lower())
+                
                 for ms in ms_records:
                     clean_ms_name = re.sub(r'[^a-z0-9]', '', ms["to_name"])
+                    ms_sub_clean = re.sub(r'[^a-z]', '', ms["to_suburb"].lower())
+                    
                     if len(clean_cc_name) > 4 and len(clean_ms_name) > 4:
-                        if (clean_cc_name in clean_ms_name or clean_ms_name in clean_cc_name) and row["CC Delivery Suburb"] == ms["to_suburb"]:
+                        if (clean_cc_name in clean_ms_name or clean_ms_name in clean_cc_name) and (cc_sub_clean == ms_sub_clean):
                             row["Machship Consignment"] = f"{ms['ms_num']} (Fuzzy Match)"
                             row["Machship Carrier Connote"] = ms["carrier"]
-                            row["To Details"] = f"{ms['to_name']} | {ms['to_suburb']}"
+                            row["To Details"] = f"{ms['to_name'].title()} | {ms['to_suburb'].upper()}"
                             row["Total Weight"] = ms["weight"]
                             row["Machship Sell"] = ms["sell"]
                             found = True
