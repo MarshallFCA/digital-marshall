@@ -650,15 +650,14 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             "Customer Reference": cust_ref,
             "CC Products": cc_products_str,
             "CC Total Qty": cc_total_qty,
-            "Warehouse Cost": mapped_warehouse_cost,
             "Machship Consignment": "",
             "Machship Carrier Connote": "",
             "From Details": "",
             "To Details": "",
             "To Contact": "",
-            "Total Weight": 0.0,
             "Total Item Count": 0,
-            "Machship Cost": 0.0,
+            "Total Weight": 0.0,
+            "Warehouse Cost": mapped_warehouse_cost,
             "Machship Sell": 0.0
         })
 
@@ -690,7 +689,6 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                         consignment = obj_list[0]
                         c_total = consignment.get("consignmentTotal", {})
                         
-                        cost = c_total.get("totalCostPrice") or c_total.get("totalCostBeforeTax") or c_total.get("totalCost") or 0.0
                         sell = c_total.get("totalSellPrice") or c_total.get("totalSellBeforeTax") or c_total.get("totalSell") or 0.0
                         
                         from_loc = consignment.get("fromLocation", {})
@@ -712,10 +710,9 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                         row["From Details"] = from_str
                         row["To Details"] = to_str
                         row["To Contact"] = to_contact_str
-                        row["Total Weight"] = float(consignment.get("weight", consignment.get("totalWeight", 0.0)))
                         row["Total Item Count"] = int(consignment.get("totalItemCount", len(ms_items)))
+                        row["Total Weight"] = float(consignment.get("weight", consignment.get("totalWeight", 0.0)))
                         
-                        row["Machship Cost"] = float(cost)
                         row["Machship Sell"] = float(sell)
                         found = True
             except Exception:
@@ -723,16 +720,11 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
 
     df = pd.DataFrame(matrix_data)
     
-    # 19% GP Application Matrix
-    df["Target Freight Sell"] = df["Machship Cost"].apply(lambda x: round(float(x) / 0.81, 2) if x else 0.0)
-    df["Target Warehouse Sell"] = df["Warehouse Cost"].apply(lambda x: round(float(x) / 0.81, 2) if x else 0.0)
-    
     # Final column ordering enforcement
     col_order = [
-        "Date", "Customer Reference", "CC Products", "CC Total Qty", "Warehouse Cost", 
-        "Target Warehouse Sell", "Machship Consignment", "Machship Carrier Connote", 
-        "From Details", "To Details", "To Contact", "Total Weight", "Total Item Count", 
-        "Machship Cost", "Machship Sell", "Target Freight Sell"
+        "Date", "Customer Reference", "CC Products", "CC Total Qty", "Machship Consignment", 
+        "Machship Carrier Connote", "From Details", "To Details", "To Contact", 
+        "Total Item Count", "Total Weight", "Warehouse Cost", "Machship Sell"
     ]
     
     try:
