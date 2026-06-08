@@ -454,6 +454,12 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                 continue
         return datetime.datetime.now().date()
 
+    def safe_float(val):
+        try:
+            return float(re.sub(r'[^\d.-]', '', str(val)))
+        except:
+            return 0.0
+
     try:
         start_dt = parse_flexible_date(start_date)
         end_dt = parse_flexible_date(end_date)
@@ -462,6 +468,54 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
         
     diagnostic_logs = []
     
+    # ---------------------------------------------------------
+    # MACHSHIP NATIVE CSV INTERCEPTOR (BYPASS API LIMITS)
+    # ---------------------------------------------------------
+    df_ms = None
+    ms_records = []
+    uploaded_files = st.session_state.get("chat_uploader")
+    if uploaded_files:
+        for uf in uploaded_files:
+            uf.seek(0)
+            if uf.name.lower().endswith('.csv') and 'kermit' not in uf.name.lower():
+                try:
+                    temp_df = pd.read_csv(uf, sep=None, engine='python')
+                    cols = [str(c).lower() for c in temp_df.columns]
+                    if any('consignment' in c or 'ms number' in c for c in cols) and any('reference' in c for c in cols):
+                        df_ms = temp_df
+                        break
+                except:
+                    continue
+
+    if df_ms is not None:
+        cols = df_ms.columns
+        col_map = {}
+        for c in cols:
+            cl = str(c).lower().strip()
+            if 'consignment' in cl and ('number' in cl or 'id' in cl): col_map['ms_num'] = c
+            elif 'ms number' in cl: col_map['ms_num'] = c
+            elif cl == 'reference 1': col_map['ref1'] = c
+            elif cl == 'reference 2': col_map['ref2'] = c
+            elif cl == 'despatch id': col_map['did'] = c
+            elif cl == 'to name' or cl == 'receiver': col_map['to_name'] = c
+            elif cl == 'to suburb': col_map['to_suburb'] = c
+            elif 'total sell' in cl or cl == 'sell price': col_map['sell'] = c
+            elif 'total weight' in cl or cl == 'weight': col_map['weight'] = c
+            elif 'carrier' in cl: col_map['carrier'] = c
+        
+        for idx, row in df_ms.iterrows():
+            ms_records.append({
+                "ms_num": str(row.get(col_map.get('ms_num', 'Unknown'), '')),
+                "ref1": str(row.get(col_map.get('ref1'), '')).strip().lower(),
+                "ref2": str(row.get(col_map.get('ref2'), '')).strip().lower(),
+                "did": str(row.get(col_map.get('did'), '')).strip().lower(),
+                "to_name": str(row.get(col_map.get('to_name'), '')).strip().lower(),
+                "to_suburb": str(row.get(col_map.get('to_suburb'), '')).strip().upper(),
+                "sell": safe_float(row.get(col_map.get('sell'), 0.0)),
+                "weight": safe_float(row.get(col_map.get('weight'), 0.0)),
+                "carrier": str(row.get(col_map.get('carrier'), ''))
+            })
+
     cc_tenant_id = st.secrets["cartoncloud"]["tenant_id"].strip()
     cc_base_url = get_secure_endpoint("cartoncloud_base", "aHR0cHM6Ly9hcGkuY2FydG9uY2xvdWQuY29t")
     cc_token = get_cartoncloud_token()
@@ -628,6 +682,10 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
         cust_ref = order.get("references", {}).get("customer", "")
         order_uuid = order.get("id", "")
         
+        del_address = order.get("deliveryAddress", {})
+        cc_del_name = del_address.get("name", "").strip().lower()
+        cc_del_suburb = del_address.get("suburb", "").strip().upper()
+        
         cc_items = order.get("items", [])
         cc_products_list = []
         cc_total_qty = 0.0
@@ -644,6 +702,8 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
         matrix_data.append({
             "Date": o_date_str[:10],
             "Customer Reference": cust_ref,
+            "CC Delivery Name": cc_del_name,
+            "CC Delivery Suburb": cc_del_suburb,
             "CC Products": cc_products_str,
             "CC Total Qty": cc_total_qty,
             "Machship Consignment": "",
@@ -673,75 +733,100 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
         ref = row["Customer Reference"]
         if not ref: continue
         
-        # ---------------------------------------------------------
-        # REFERENCE MUTATION ENGINE
-        # ---------------------------------------------------------
         base_ref = str(ref).strip()
-        mutations = [base_ref]
+        mutations = [base_ref.lower()]
         
         if base_ref.startswith("0"):
             stripped = base_ref.lstrip("0")
-            if stripped: mutations.append(stripped)
+            if stripped: mutations.append(stripped.lower())
             
         numeric_only = re.sub(r'\D', '', base_ref)
         if numeric_only and numeric_only not in mutations:
-            mutations.append(numeric_only)
+            mutations.append(numeric_only.lower())
             if numeric_only.startswith("0"):
                 stripped_num = numeric_only.lstrip("0")
                 if stripped_num and stripped_num not in mutations:
-                    mutations.append(stripped_num)
+                    mutations.append(stripped_num.lower())
                     
         if numeric_only:
-            mutations.append(f"SO-{numeric_only}")
-            mutations.append(f"SO{numeric_only}")
+            mutations.append(f"so-{numeric_only}")
+            mutations.append(f"so{numeric_only}")
             
-        # Deduplicate permutations
         mutations = list(dict.fromkeys(mutations))
-        
         found = False
-        for url in ms_urls:
-            if found: break
-            try:
-                # Transmit entire array of mutations in a single payload
-                resp = requests.post(url, headers=ms_headers, json=mutations, timeout=15)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    obj_list = data.get("object")
-                    if obj_list and len(obj_list) > 0:
-                        consignment = obj_list[0]
-                        c_total = consignment.get("consignmentTotal", {})
-                        
-                        sell = c_total.get("totalSellPrice") or c_total.get("totalSellBeforeTax") or c_total.get("totalSell") or 0.0
-                        
-                        from_loc = consignment.get("fromLocation", {})
-                        from_suburb = from_loc.get("suburb", "")
-                        from_state = from_loc.get("state", {}).get("abbreviation", "") if isinstance(from_loc.get("state"), dict) else from_loc.get("state", "")
-                        from_str = f"{consignment.get('fromName', '')} | {consignment.get('fromAddressLine1', '')} {from_suburb} {from_state}".strip()
-                        
-                        to_loc = consignment.get("toLocation", {})
-                        to_suburb = to_loc.get("suburb", "")
-                        to_state = to_loc.get("state", {}).get("abbreviation", "") if isinstance(to_loc.get("state"), dict) else to_loc.get("state", "")
-                        to_str = f"{consignment.get('toName', '')} | {consignment.get('toAddressLine1', '')} {to_suburb} {to_state}".strip()
-                        
-                        to_contact_str = f"{consignment.get('toContact', '')} / {consignment.get('toPhone', '')} / {consignment.get('toEmail', '')}".strip(" /")
-                        
-                        ms_items = consignment.get("items", [])
+        
+        # ---------------------------------------------------------
+        # ROUTE 1: NATIVE CSV HEURISTIC MATCHING
+        # ---------------------------------------------------------
+        if ms_records:
+            for ms in ms_records:
+                if any(m and (m in ms["ref1"] or m in ms["ref2"] or m in ms["did"]) for m in mutations):
+                    row["Machship Consignment"] = ms["ms_num"]
+                    row["Machship Carrier Connote"] = ms["carrier"]
+                    row["To Details"] = f"{ms['to_name']} | {ms['to_suburb']}"
+                    row["Total Weight"] = ms["weight"]
+                    row["Machship Sell"] = ms["sell"]
+                    found = True
+                    break
+            
+            if not found and row["CC Delivery Name"]:
+                clean_cc_name = re.sub(r'[^a-z0-9]', '', row["CC Delivery Name"])
+                for ms in ms_records:
+                    clean_ms_name = re.sub(r'[^a-z0-9]', '', ms["to_name"])
+                    if len(clean_cc_name) > 4 and len(clean_ms_name) > 4:
+                        if (clean_cc_name in clean_ms_name or clean_ms_name in clean_cc_name) and row["CC Delivery Suburb"] == ms["to_suburb"]:
+                            row["Machship Consignment"] = f"{ms['ms_num']} (Fuzzy Match)"
+                            row["Machship Carrier Connote"] = ms["carrier"]
+                            row["To Details"] = f"{ms['to_name']} | {ms['to_suburb']}"
+                            row["Total Weight"] = ms["weight"]
+                            row["Machship Sell"] = ms["sell"]
+                            found = True
+                            break
+
+        # ---------------------------------------------------------
+        # ROUTE 2: API FALLBACK (IF NO CSV UPLOADED)
+        # ---------------------------------------------------------
+        if not found and not ms_records:
+            for url in ms_urls:
+                if found: break
+                try:
+                    resp = requests.post(url, headers=ms_headers, json=mutations, timeout=15)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        obj_list = data.get("object")
+                        if obj_list and len(obj_list) > 0:
+                            consignment = obj_list[0]
+                            c_total = consignment.get("consignmentTotal", {})
+                            sell = c_total.get("totalSellPrice") or c_total.get("totalSellBeforeTax") or c_total.get("totalSell") or 0.0
                             
-                        row["Machship Consignment"] = consignment.get("consignmentNumber", "")
-                        row["Machship Carrier Connote"] = consignment.get("carrierConsignmentId", "")
-                        row["From Details"] = from_str
-                        row["To Details"] = to_str
-                        row["To Contact"] = to_contact_str
-                        row["Total Item Count"] = int(consignment.get("totalItemCount", len(ms_items)))
-                        row["Total Weight"] = float(consignment.get("weight", consignment.get("totalWeight", 0.0)))
-                        
-                        row["Machship Sell"] = float(sell)
-                        found = True
-            except Exception:
-                pass
+                            from_loc = consignment.get("fromLocation", {})
+                            from_suburb = from_loc.get("suburb", "")
+                            from_state = from_loc.get("state", {}).get("abbreviation", "") if isinstance(from_loc.get("state"), dict) else from_loc.get("state", "")
+                            from_str = f"{consignment.get('fromName', '')} | {consignment.get('fromAddressLine1', '')} {from_suburb} {from_state}".strip()
+                            
+                            to_loc = consignment.get("toLocation", {})
+                            to_suburb = to_loc.get("suburb", "")
+                            to_state = to_loc.get("state", {}).get("abbreviation", "") if isinstance(to_loc.get("state"), dict) else to_loc.get("state", "")
+                            to_str = f"{consignment.get('toName', '')} | {consignment.get('toAddressLine1', '')} {to_suburb} {to_state}".strip()
+                            
+                            to_contact_str = f"{consignment.get('toContact', '')} / {consignment.get('toPhone', '')} / {consignment.get('toEmail', '')}".strip(" /")
+                            
+                            ms_items = consignment.get("items", [])
+                                
+                            row["Machship Consignment"] = consignment.get("consignmentNumber", "")
+                            row["Machship Carrier Connote"] = consignment.get("carrierConsignmentId", "")
+                            row["From Details"] = from_str
+                            row["To Details"] = to_str
+                            row["To Contact"] = to_contact_str
+                            row["Total Item Count"] = int(consignment.get("totalItemCount", len(ms_items)))
+                            row["Total Weight"] = float(consignment.get("weight", consignment.get("totalWeight", 0.0)))
+                            
+                            row["Machship Sell"] = float(sell)
+                            found = True
+                except Exception:
+                    pass
 
     df = pd.DataFrame(matrix_data)
-    
     df["Total FCA Sell"] = df["Machship Sell"] + df["Warehouse Cost"]
     
     col_order = [
