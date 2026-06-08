@@ -1,6 +1,7 @@
 import io
 import re
 import json
+import time
 import requests
 import datetime
 import pandas as pd
@@ -434,6 +435,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
     import requests
     import streamlit as st
     import json
+    import time
     from google.oauth2 import service_account
     from googleapiclient.discovery import build
     from tools.core_utils import get_secure_endpoint, sanitize_error_log, get_cartoncloud_token
@@ -473,6 +475,34 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
         "Content-Type": "application/json"
     }
     
+    # ---------------------------------------------------------
+    # INITIATE ASYNCHRONOUS BULK CHARGES REPORT
+    # ---------------------------------------------------------
+    report_run_id = None
+    try:
+        report_payload = {
+            "type": "BULK_CHARGES",
+            "parameters": {
+                "pageSize": 100,
+                "dateFilter": "date_activity",
+                "fromDate": start_dt.strftime("%Y-%m-%d"),
+                "toDate": end_dt.strftime("%Y-%m-%d"),
+                "chargeClasses": ["SALE_ORDER"]
+            }
+        }
+        report_init_url = f"{cc_base_url}/tenants/{cc_tenant_id}/report-runs"
+        report_init_resp = requests.post(report_init_url, headers=cc_headers, json=report_payload, timeout=15)
+        
+        if report_init_resp.status_code == 201:
+            report_run_id = report_init_resp.json().get("id")
+        else:
+            diagnostic_logs.append(f"Report Init Failure (HTTP {report_init_resp.status_code})")
+    except Exception as e:
+        diagnostic_logs.append(f"Report Trigger Exception: {str(e)}")
+
+    # ---------------------------------------------------------
+    # METADATA SWEEP: OUTBOUND ORDERS
+    # ---------------------------------------------------------
     raw_orders = []
     
     # 2-Stage Fortress Sweep (20 pages = 2,000 orders to ensure deep historical reach)
@@ -534,6 +564,51 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             diagnostic_logs.append(f"CartonCloud Sweep Crash: {sanitize_error_log(str(e))}")
             break
 
+    # ---------------------------------------------------------
+    # POLL AND EXTRACT BULK CHARGES
+    # ---------------------------------------------------------
+    warehouse_costs_map = {}
+    
+    if report_run_id:
+        poll_status = "IN_PROCESS"
+        backoff_intervals = [10, 20, 40]
+        attempt = 0
+        
+        while poll_status == "IN_PROCESS" and attempt < len(backoff_intervals):
+            time.sleep(backoff_intervals[attempt])
+            try:
+                poll_resp = requests.get(f"{cc_base_url}/tenants/{cc_tenant_id}/report-runs/{report_run_id}", headers=cc_headers, timeout=15)
+                if poll_resp.status_code == 200:
+                    poll_data = poll_resp.json()
+                    poll_status = poll_data.get("status", "FAILED")
+                    
+                    if poll_status == "SUCCESS":
+                        page = 1
+                        while True:
+                            page_url = f"{cc_base_url}/tenants/{cc_tenant_id}/report-runs/{report_run_id}?page={page}&size=100"
+                            page_resp = requests.get(page_url, headers=cc_headers, timeout=15)
+                            
+                            if page_resp.status_code == 200:
+                                p_data = page_resp.json()
+                                items = p_data.get("items", [])
+                                for item in items:
+                                    sale_order_id = item.get("parentUuid")
+                                    charge_val = float(item.get("charge", 0.0))
+                                    if sale_order_id:
+                                        warehouse_costs_map[sale_order_id] = warehouse_costs_map.get(sale_order_id, 0.0) + charge_val
+                                
+                                total_pages = int(page_resp.headers.get("Total-Pages", 1))
+                                if page >= total_pages: break
+                                page += 1
+                            else:
+                                break
+            except Exception as e:
+                diagnostic_logs.append(f"Report Polling Crash: {str(e)}")
+            attempt += 1
+
+    # ---------------------------------------------------------
+    # DATA AGGREGATION & MATRIX GENERATION
+    # ---------------------------------------------------------
     matrix_data = []
     
     for order in raw_orders:
@@ -555,6 +630,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             continue
             
         cust_ref = order.get("references", {}).get("customer", "")
+        order_uuid = order.get("id", "")
         
         cc_items = order.get("items", [])
         cc_products_list = []
@@ -567,13 +643,14 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             cc_products_list.append(f"{qty}x {prod_code}")
             
         cc_products_str = ", ".join(cc_products_list)
+        mapped_warehouse_cost = float(warehouse_costs_map.get(order_uuid, 0.0))
         
         matrix_data.append({
             "Date": o_date_str[:10],
             "Customer Reference": cust_ref,
             "CC Products": cc_products_str,
             "CC Total Qty": cc_total_qty,
-            "Warehouse Cost": 0.0,
+            "Warehouse Cost": mapped_warehouse_cost,
             "Machship Consignment": "",
             "Machship Carrier Connote": "",
             "From Details": "",
@@ -645,7 +722,23 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                 pass
 
     df = pd.DataFrame(matrix_data)
-    df["Total FCA Sell"] = df["Machship Sell"]
+    
+    # 19% GP Application Matrix
+    df["Target Freight Sell"] = df["Machship Cost"].apply(lambda x: round(float(x) / 0.81, 2) if x else 0.0)
+    df["Target Warehouse Sell"] = df["Warehouse Cost"].apply(lambda x: round(float(x) / 0.81, 2) if x else 0.0)
+    
+    # Final column ordering enforcement
+    col_order = [
+        "Date", "Customer Reference", "CC Products", "CC Total Qty", "Warehouse Cost", 
+        "Target Warehouse Sell", "Machship Consignment", "Machship Carrier Connote", 
+        "From Details", "To Details", "To Contact", "Total Weight", "Total Item Count", 
+        "Machship Cost", "Machship Sell", "Target Freight Sell"
+    ]
+    
+    try:
+        df = df[col_order]
+    except KeyError:
+        pass
     
     try:
         drive_scope = get_secure_endpoint("drive_scope", "aHR0cHM6Ly93d3cuZ29vZ2xlYXBpcy5jb20vYXV0aC9kcml2ZQ==")
