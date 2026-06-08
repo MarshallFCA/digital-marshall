@@ -481,13 +481,18 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             # Pagination placed natively in the URL to satisfy strict endpoint logic
             search_url = f"{cc_base_url}/tenants/{cc_tenant_id}/outbound-orders/search?page={page}&size=100"
             
-            # Stage 1: Permissive DateTime Filter to extract un-filtered data natively into Python
+            # Stage 1: Native Filter strictly nested within the mandated AndCondition structure
             search_payload = {
                 "condition": {
-                    "type": "DateTimeComparisonCondition",
-                    "field": { "type": "JsonField", "pointer": "/timestamps/created/time" },
-                    "value": { "type": "ValueField", "value": "2020-01-01T00:00:00+10:00" },
-                    "method": "GREATER THAN"
+                    "type": "AndCondition",
+                    "conditions": [
+                        {
+                            "type": "TextComparisonCondition",
+                            "field": { "type": "JsonField", "pointer": "/customer/name" },
+                            "value": { "type": "ValueField", "value": customer_name },
+                            "method": "CONTAINS"
+                        }
+                    ]
                 },
                 "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}]
             }
@@ -499,14 +504,19 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                 if not page_data: break
                 raw_orders.extend(page_data)
             else:
-                # Stage 2: Fallback to underscore notation if standard notation is rejected
-                diagnostic_logs.append(f"Native Filter Rejected (HTTP {resp.status_code}). Executing Underscore Fallback on page {page}.")
+                diagnostic_logs.append(f"Native Filter Rejected (HTTP {resp.status_code}). Executing Fallback Sweep on page {page}.")
+                # Stage 2: Permissive Date Filter fallback strictly nested within the mandated AndCondition structure
                 fallback_payload = {
                     "condition": {
-                        "type": "DateTimeComparisonCondition",
-                        "field": { "type": "JsonField", "pointer": "/timestamps/created/time" },
-                        "value": { "type": "ValueField", "value": "2020-01-01T00:00:00+10:00" },
-                        "method": "GREATER_THAN"
+                        "type": "AndCondition",
+                        "conditions": [
+                            {
+                                "type": "DateTimeComparisonCondition",
+                                "field": { "type": "JsonField", "pointer": "/timestamps/created/time" },
+                                "value": { "type": "ValueField", "value": "2015-01-01T00:00:00+10:00" },
+                                "method": "GREATER_THAN"
+                            }
+                        ]
                     },
                     "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}]
                 }
