@@ -475,22 +475,21 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
     
     raw_orders = []
     
-    # 2-Stage Fortress Sweep (Pagination safely inside JSON body)
-    for page in range(1, 6): 
+    # 2-Stage Fortress Sweep (20 pages = 2,000 orders to ensure deep historical reach)
+    for page in range(1, 21): 
         try:
-            search_url = f"{cc_base_url}/tenants/{cc_tenant_id}/outbound-orders/search"
+            # Pagination placed natively in the URL to satisfy strict endpoint logic
+            search_url = f"{cc_base_url}/tenants/{cc_tenant_id}/outbound-orders/search?page={page}&size=100"
             
-            # Stage 1: Native API Filter for Customer
+            # Stage 1: Permissive DateTime Filter to extract un-filtered data natively into Python
             search_payload = {
                 "condition": {
-                    "type": "TextComparisonCondition",
-                    "field": { "type": "JsonField", "pointer": "/customer/name" },
-                    "value": { "type": "ValueField", "value": customer_name },
-                    "method": "CONTAINS"
+                    "type": "DateTimeComparisonCondition",
+                    "field": { "type": "JsonField", "pointer": "/timestamps/created/time" },
+                    "value": { "type": "ValueField", "value": "2020-01-01T00:00:00+10:00" },
+                    "method": "GREATER THAN"
                 },
-                "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}],
-                "page": page,
-                "size": 50
+                "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}]
             }
             
             resp = requests.post(search_url, headers=cc_headers, json=search_payload, timeout=15)
@@ -500,12 +499,16 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                 if not page_data: break
                 raw_orders.extend(page_data)
             else:
-                # Stage 2: Fallback to Brute Force if Condition Rejected
-                diagnostic_logs.append(f"Native Filter Rejected (HTTP {resp.status_code}). Executing Brute Force.")
+                # Stage 2: Fallback to underscore notation if standard notation is rejected
+                diagnostic_logs.append(f"Native Filter Rejected (HTTP {resp.status_code}). Executing Underscore Fallback on page {page}.")
                 fallback_payload = {
-                    "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}],
-                    "page": page,
-                    "size": 50
+                    "condition": {
+                        "type": "DateTimeComparisonCondition",
+                        "field": { "type": "JsonField", "pointer": "/timestamps/created/time" },
+                        "value": { "type": "ValueField", "value": "2020-01-01T00:00:00+10:00" },
+                        "method": "GREATER_THAN"
+                    },
+                    "sort": [{"field": {"type": "JsonField", "pointer": "/id"}, "direction": "DESC"}]
                 }
                 resp_fb = requests.post(search_url, headers=cc_headers, json=fallback_payload, timeout=15)
                 
