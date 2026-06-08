@@ -569,27 +569,23 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
         cc_products_str = ", ".join(cc_products_list)
         
         matrix_data.append({
-            "CartonCloud ID": order.get("id"),
             "Date": o_date_str[:10],
             "Customer Reference": cust_ref,
-            "CartonCloud Status": order.get("status", {}).get("name", "UNKNOWN") if isinstance(order.get("status"), dict) else order.get("status", "UNKNOWN"),
             "CC Products": cc_products_str,
             "CC Total Qty": cc_total_qty,
             "Warehouse Cost": 0.0,
             "Machship Consignment": "",
             "Machship Carrier Connote": "",
-            "Machship Booked Date": "",
-            "Machship Completed Date": "",
             "From Details": "",
             "To Details": "",
             "To Contact": "",
-            "Machship Weight": 0.0,
-            "Machship Item Count": 0,
-            "Machship Item Details": "",
+            "Total Weight": 0.0,
+            "Total Item Count": 0,
+            "Item Details": "",
             "Machship Cost": 0.0,
             "Machship Sell": 0.0,
             "Machship Status": "Not Found",
-            "Machship Carrier": "N/A"
+            "Carrier": "N/A"
         })
 
     if not matrix_data:
@@ -642,27 +638,27 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                             i_type = it.get("itemType", "Item")
                             if isinstance(i_type, dict):
                                 i_type = i_type.get("name", "Item")
-                            i_wgt = it.get("weight", 0)
-                            i_l = it.get("length", 0)
-                            i_w = it.get("width", 0)
-                            i_h = it.get("height", 0)
-                            ms_item_strings.append(f"{i_qty}x {i_type} ({i_wgt}kg, {i_l}x{i_w}x{i_h}cm)")
+                            i_wgt = float(it.get("weight", 0.0))
+                            i_l = float(it.get("length", 0.0))
+                            i_w = float(it.get("width", 0.0))
+                            i_h = float(it.get("height", 0.0))
+                            ms_item_strings.append(f"Type: {i_type}, Weight: {i_wgt} kg, Dimensions: {i_l} cm (L) x {i_w} cm (W) x {i_h} cm (H)")
                             
                         row["Machship Consignment"] = consignment.get("consignmentNumber", "")
                         row["Machship Carrier Connote"] = consignment.get("carrierConsignmentId", "")
-                        row["Machship Booked Date"] = consignment.get("despatchDate") or consignment.get("dateInserted", "")
-                        row["Machship Completed Date"] = consignment.get("dateCompleted", "")
                         row["From Details"] = from_str
                         row["To Details"] = to_str
                         row["To Contact"] = to_contact_str
-                        row["Machship Weight"] = float(consignment.get("totalWeight", 0.0))
-                        row["Machship Item Count"] = len(ms_items)
-                        row["Machship Item Details"] = " | ".join(ms_item_strings)
+                        row["Total Weight"] = float(consignment.get("weight", consignment.get("totalWeight", 0.0)))
+                        row["Total Item Count"] = int(consignment.get("totalItemCount", len(ms_items)))
+                        row["Item Details"] = " | ".join(ms_item_strings)
                         
                         row["Machship Cost"] = float(cost)
                         row["Machship Sell"] = float(sell)
                         row["Machship Status"] = consignment.get("status", {}).get("name", "Unknown")
-                        row["Machship Carrier"] = consignment.get("carrier", {}).get("name", "Unknown")
+                        
+                        carrier_node = consignment.get("carrier") or consignment.get("companyCarrier") or {}
+                        row["Carrier"] = carrier_node.get("name", "Unknown")
                         found = True
             except Exception:
                 pass
