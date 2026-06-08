@@ -719,6 +719,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
         
         matrix_data.append({
             "Date": o_date_str[:10],
+            "CC Customer Name": o_customer,
             "Customer Reference": cust_ref,
             "CC Delivery Name": cc_del_name,
             "CC Delivery Suburb": cc_del_suburb,
@@ -748,6 +749,8 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
         get_secure_endpoint("machship_ref2", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl")
     ]
     
+    stop_words = {'pty', 'ltd', 'the', 'and', 'company', 'co', 'shop', 'store', 'pharmacy', 'medical', 'clinic', 'hospital', 'group'}
+
     for row in matrix_data:
         ref = row["Customer Reference"]
         if not ref: continue
@@ -877,32 +880,35 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                     pass
 
         # ---------------------------------------------------------
-        # ROUTE 3: PROBABILISTIC GUESS (IF ALL ELSE FAILS)
+        # ROUTE 3: PROBABILISTIC GUESS (AGGRESSIVE)
         # ---------------------------------------------------------
         if not found and ms_records:
-            cc_sub_clean = re.sub(r'[^a-z]', '', row["CC Delivery Suburb"].lower())
-            cc_name_words = set(re.findall(r'[a-z]+', row["CC Delivery Name"].lower()))
+            cc_sub_clean = re.sub(r'[^A-Z]', '', str(row["CC Delivery Suburb"]).upper())
+            cc_name_words = {w for w in re.findall(r'[a-z]{3,}', row["CC Delivery Name"].lower()) if w not in stop_words}
             
             for ms in ms_records:
-                ms_sub_clean = re.sub(r'[^a-z]', '', ms["to_suburb"].lower())
-                ms_name_words = set(re.findall(r'[a-z]+', ms["to_name"].lower()))
+                ms_sub_clean = re.sub(r'[^A-Z]', '', str(ms["to_suburb"]).upper())
+                ms_name_words = {w for w in re.findall(r'[a-z]{3,}', ms["to_name"].lower()) if w not in stop_words}
                 
-                if cc_sub_clean and cc_sub_clean == ms_sub_clean:
-                    if cc_name_words.intersection(ms_name_words):
-                        row["Machship Consignment"] = f"*{ms['ms_num']} (Guessed)*"
-                        row["Machship Status"] = ms["status"]
-                        row["Machship Carrier Connote"] = ms["carrier"]
-                        row["To Details"] = f"{ms['to_name'].title()} | {ms['to_suburb'].upper()}"
-                        row["Total Weight"] = ms["weight"]
-                        row["Machship Sell"] = ms["sell"]
-                        found = True
-                        break
+                suburb_match = (cc_sub_clean == ms_sub_clean) or (len(cc_sub_clean) >= 4 and cc_sub_clean[:4] == ms_sub_clean[:4])
+                name_match = len(cc_name_words.intersection(ms_name_words)) > 0
+                strong_name_match = len(cc_name_words.intersection(ms_name_words)) >= 2
+                
+                if (suburb_match and name_match) or strong_name_match:
+                    row["Machship Consignment"] = f"*{ms['ms_num']} (Guessed)*"
+                    row["Machship Status"] = ms["status"]
+                    row["Machship Carrier Connote"] = ms["carrier"]
+                    row["To Details"] = f"{ms['to_name'].title()} | {ms['to_suburb'].upper()}"
+                    row["Total Weight"] = ms["weight"]
+                    row["Machship Sell"] = ms["sell"]
+                    found = True
+                    break
 
     df = pd.DataFrame(matrix_data)
     df["Total FCA Sell"] = df["Machship Sell"] + df["Warehouse Cost"]
     
     col_order = [
-        "Date", "Customer Reference", "CC Products", "CC Total Qty", "Machship Consignment", "Machship Status",
+        "Date", "CC Customer Name", "Customer Reference", "CC Products", "CC Total Qty", "Machship Consignment", "Machship Status",
         "Machship Carrier Connote", "From Details", "To Details", "To Contact", 
         "Total Item Count", "Total Weight", "Warehouse Cost", "Machship Sell", "Total FCA Sell"
     ]
