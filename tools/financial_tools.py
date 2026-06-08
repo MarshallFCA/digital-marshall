@@ -556,12 +556,36 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             
         cust_ref = order.get("references", {}).get("customer", "")
         
+        cc_items = order.get("items", [])
+        cc_products_list = []
+        cc_total_qty = 0.0
+        
+        for item in cc_items:
+            prod_code = item.get("details", {}).get("product", {}).get("references", {}).get("code", "Unknown")
+            qty = float(item.get("measures", {}).get("quantity", 0))
+            cc_total_qty += qty
+            cc_products_list.append(f"{qty}x {prod_code}")
+            
+        cc_products_str = ", ".join(cc_products_list)
+        
         matrix_data.append({
             "CartonCloud ID": order.get("id"),
             "Date": o_date_str[:10],
             "Customer Reference": cust_ref,
             "CartonCloud Status": order.get("status", {}).get("name", "UNKNOWN") if isinstance(order.get("status"), dict) else order.get("status", "UNKNOWN"),
+            "CC Products": cc_products_str,
+            "CC Total Qty": cc_total_qty,
             "Warehouse Cost": 0.0,
+            "Machship Consignment": "",
+            "Machship Carrier Connote": "",
+            "Machship Booked Date": "",
+            "Machship Completed Date": "",
+            "From Details": "",
+            "To Details": "",
+            "To Contact": "",
+            "Machship Weight": 0.0,
+            "Machship Item Count": 0,
+            "Machship Item Details": "",
             "Machship Cost": 0.0,
             "Machship Sell": 0.0,
             "Machship Status": "Not Found",
@@ -598,6 +622,42 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                         
                         cost = c_total.get("totalCostPrice") or c_total.get("totalCostBeforeTax") or c_total.get("totalCost") or 0.0
                         sell = c_total.get("totalSellPrice") or c_total.get("totalSellBeforeTax") or c_total.get("totalSell") or 0.0
+                        
+                        from_loc = consignment.get("fromLocation", {})
+                        from_suburb = from_loc.get("suburb", "")
+                        from_state = from_loc.get("state", {}).get("abbreviation", "") if isinstance(from_loc.get("state"), dict) else from_loc.get("state", "")
+                        from_str = f"{consignment.get('fromName', '')} | {consignment.get('fromAddressLine1', '')} {from_suburb} {from_state}".strip()
+                        
+                        to_loc = consignment.get("toLocation", {})
+                        to_suburb = to_loc.get("suburb", "")
+                        to_state = to_loc.get("state", {}).get("abbreviation", "") if isinstance(to_loc.get("state"), dict) else to_loc.get("state", "")
+                        to_str = f"{consignment.get('toName', '')} | {consignment.get('toAddressLine1', '')} {to_suburb} {to_state}".strip()
+                        
+                        to_contact_str = f"{consignment.get('toContact', '')} / {consignment.get('toPhone', '')} / {consignment.get('toEmail', '')}".strip(" /")
+                        
+                        ms_items = consignment.get("items", [])
+                        ms_item_strings = []
+                        for it in ms_items:
+                            i_qty = it.get("quantity", 0)
+                            i_type = it.get("itemType", "Item")
+                            if isinstance(i_type, dict):
+                                i_type = i_type.get("name", "Item")
+                            i_wgt = it.get("weight", 0)
+                            i_l = it.get("length", 0)
+                            i_w = it.get("width", 0)
+                            i_h = it.get("height", 0)
+                            ms_item_strings.append(f"{i_qty}x {i_type} ({i_wgt}kg, {i_l}x{i_w}x{i_h}cm)")
+                            
+                        row["Machship Consignment"] = consignment.get("consignmentNumber", "")
+                        row["Machship Carrier Connote"] = consignment.get("carrierConsignmentId", "")
+                        row["Machship Booked Date"] = consignment.get("despatchDate") or consignment.get("dateInserted", "")
+                        row["Machship Completed Date"] = consignment.get("dateCompleted", "")
+                        row["From Details"] = from_str
+                        row["To Details"] = to_str
+                        row["To Contact"] = to_contact_str
+                        row["Machship Weight"] = float(consignment.get("totalWeight", 0.0))
+                        row["Machship Item Count"] = len(ms_items)
+                        row["Machship Item Details"] = " | ".join(ms_item_strings)
                         
                         row["Machship Cost"] = float(cost)
                         row["Machship Sell"] = float(sell)
@@ -654,7 +714,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                             "sheetId": sheet_id,
                             "gridProperties": {
                                 "rowCount": max(1000, len(scrubbed_values) + 100),
-                                "columnCount": max(26, len(headers_list) + 5)
+                                "columnCount": max(35, len(headers_list) + 5)
                             }
                         },
                         "fields": "gridProperties(rowCount,columnCount)"
