@@ -581,11 +581,8 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             "To Contact": "",
             "Total Weight": 0.0,
             "Total Item Count": 0,
-            "Item Details": "",
             "Machship Cost": 0.0,
-            "Machship Sell": 0.0,
-            "Machship Status": "Not Found",
-            "Carrier": "N/A"
+            "Machship Sell": 0.0
         })
 
     if not matrix_data:
@@ -632,17 +629,6 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                         to_contact_str = f"{consignment.get('toContact', '')} / {consignment.get('toPhone', '')} / {consignment.get('toEmail', '')}".strip(" /")
                         
                         ms_items = consignment.get("items", [])
-                        ms_item_strings = []
-                        for it in ms_items:
-                            i_qty = it.get("quantity", 0)
-                            i_type = it.get("itemType", "Item")
-                            if isinstance(i_type, dict):
-                                i_type = i_type.get("name", "Item")
-                            i_wgt = float(it.get("weight", 0.0))
-                            i_l = float(it.get("length", 0.0))
-                            i_w = float(it.get("width", 0.0))
-                            i_h = float(it.get("height", 0.0))
-                            ms_item_strings.append(f"Type: {i_type}, Weight: {i_wgt} kg, Dimensions: {i_l} cm (L) x {i_w} cm (W) x {i_h} cm (H)")
                             
                         row["Machship Consignment"] = consignment.get("consignmentNumber", "")
                         row["Machship Carrier Connote"] = consignment.get("carrierConsignmentId", "")
@@ -651,14 +637,9 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                         row["To Contact"] = to_contact_str
                         row["Total Weight"] = float(consignment.get("weight", consignment.get("totalWeight", 0.0)))
                         row["Total Item Count"] = int(consignment.get("totalItemCount", len(ms_items)))
-                        row["Item Details"] = " | ".join(ms_item_strings)
                         
                         row["Machship Cost"] = float(cost)
                         row["Machship Sell"] = float(sell)
-                        row["Machship Status"] = consignment.get("status", {}).get("name", "Unknown")
-                        
-                        carrier_node = consignment.get("carrier") or consignment.get("companyCarrier") or {}
-                        row["Carrier"] = carrier_node.get("name", "Unknown")
                         found = True
             except Exception:
                 pass
