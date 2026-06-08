@@ -480,14 +480,15 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
     # ---------------------------------------------------------
     report_run_id = None
     try:
+        # T-14 Buffer incorporated to ensure boundary dispatch packing dates are captured
         report_payload = {
             "type": "BULK_CHARGES",
             "parameters": {
                 "pageSize": 100,
                 "dateFilter": "date_activity",
-                "fromDate": start_dt.strftime("%Y-%m-%d"),
-                "toDate": end_dt.strftime("%Y-%m-%d"),
-                "chargeClasses": ["SALE_ORDER"]
+                "fromDate": (start_dt - datetime.timedelta(days=14)).strftime("%Y-%m-%d"),
+                "toDate": (end_dt + datetime.timedelta(days=14)).strftime("%Y-%m-%d"),
+                "chargeClasses": ["SALE ORDER"] 
             }
         }
         report_init_url = f"{cc_base_url}/tenants/{cc_tenant_id}/report-runs"
@@ -720,11 +721,14 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
 
     df = pd.DataFrame(matrix_data)
     
+    # Financial Consolidation
+    df["Total FCA Sell"] = df["Machship Sell"] + df["Warehouse Cost"]
+    
     # Final column ordering enforcement
     col_order = [
         "Date", "Customer Reference", "CC Products", "CC Total Qty", "Machship Consignment", 
         "Machship Carrier Connote", "From Details", "To Details", "To Contact", 
-        "Total Item Count", "Total Weight", "Warehouse Cost", "Machship Sell"
+        "Total Item Count", "Total Weight", "Warehouse Cost", "Machship Sell", "Total FCA Sell"
     ]
     
     try:
