@@ -488,7 +488,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                 "dateFilter": "date_activity",
                 "fromDate": (start_dt - datetime.timedelta(days=14)).strftime("%Y-%m-%d"),
                 "toDate": (end_dt + datetime.timedelta(days=14)).strftime("%Y-%m-%d"),
-                "chargeClasses": ["SALE ORDER"] 
+                "chargeClasses": ["SALE_ORDER"] 
             }
         }
         report_init_url = f"{cc_base_url}/tenants/{cc_tenant_id}/report-runs"
