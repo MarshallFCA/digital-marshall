@@ -511,6 +511,9 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             elif 'carrier' in cl and 'name' in cl: col_map['carrier'] = c
             elif 'carrier' in cl and 'carrier' not in col_map: col_map['carrier'] = c
             elif 'status' in cl: col_map['status'] = c
+            elif 'date' in cl and 'creation' in cl: col_map['date'] = c
+            elif 'date' in cl and 'despatch' in cl: col_map['date'] = c
+            elif 'date' in cl and 'date' not in col_map: col_map['date'] = c
         
         for idx, row in df_ms.iterrows():
             ref1 = secure_str(row.get(col_map.get('ref1', ''), ''))
@@ -531,7 +534,8 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                 "to_suburb": secure_str(row.get(col_map.get('to_suburb', ''), '')),
                 "sell": safe_float(row.get(col_map.get('sell', ''), 0.0)),
                 "weight": safe_float(row.get(col_map.get('weight', ''), 0.0)),
-                "carrier": str(row.get(col_map.get('carrier', ''), '')).strip()
+                "carrier": str(row.get(col_map.get('carrier', ''), '')).strip(),
+                "date": str(row.get(col_map.get('date', ''), '')).strip()
             })
 
     cc_tenant_id = st.secrets["cartoncloud"]["tenant_id"].strip()
@@ -737,7 +741,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
             "Machship Sell": 0.0
         })
 
-    if not matrix_data:
+    if not matrix_data and not ms_records:
         log_output = " | ".join(diagnostic_logs) if diagnostic_logs else "Clean"
         return f"KERMIT Sweep Complete. No valid orders found for {customer_name} between {start_dt.strftime('%Y-%m-%d')} and {end_dt.strftime('%Y-%m-%d')}. Diagnostics: {log_output}"
 
@@ -750,6 +754,8 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
     ]
     
     stop_words = {'pty', 'ltd', 'the', 'and', 'company', 'co', 'shop', 'store', 'pharmacy', 'medical', 'clinic', 'hospital', 'group'}
+
+    matched_ms_nums = set()
 
     for row in matrix_data:
         ref = row["Customer Reference"]
@@ -811,6 +817,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                     row["To Details"] = f"{ms['to_name'].title()} | {ms['to_suburb'].upper()}"
                     row["Total Weight"] = ms["weight"]
                     row["Machship Sell"] = ms["sell"]
+                    matched_ms_nums.add(ms["ms_num"])
                     found = True
                     break
             
@@ -830,6 +837,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                             row["To Details"] = f"{ms['to_name'].title()} | {ms['to_suburb'].upper()}"
                             row["Total Weight"] = ms["weight"]
                             row["Machship Sell"] = ms["sell"]
+                            matched_ms_nums.add(ms["ms_num"])
                             found = True
                             break
 
@@ -875,6 +883,7 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                             row["Total Weight"] = float(consignment.get("weight", consignment.get("totalWeight", 0.0)))
                             
                             row["Machship Sell"] = float(sell)
+                            matched_ms_nums.add(row["Machship Consignment"])
                             found = True
                 except Exception:
                     pass
@@ -901,8 +910,36 @@ def tool_17_kermit_reconciliation_engine(start_date: str, end_date: str, custome
                     row["To Details"] = f"{ms['to_name'].title()} | {ms['to_suburb'].upper()}"
                     row["Total Weight"] = ms["weight"]
                     row["Machship Sell"] = ms["sell"]
+                    matched_ms_nums.add(ms["ms_num"])
                     found = True
                     break
+
+    # ---------------------------------------------------------
+    # ROUTE 4: ORPHANED MACHSHIP SWEEP
+    # ---------------------------------------------------------
+    if ms_records:
+        for ms in ms_records:
+            if ms["ms_num"] not in matched_ms_nums:
+                ms_date = ms.get("date", "")
+                matrix_data.append({
+                    "Date": ms_date[:10] if ms_date else "Unknown",
+                    "CC Customer Name": f"MACHSHIP ONLY - {customer_name}",
+                    "Customer Reference": ms["ref1"] or ms["ref2"] or ms["did"] or "No Ref",
+                    "CC Delivery Name": ms["to_name"].title() if ms["to_name"] else "",
+                    "CC Delivery Suburb": ms["to_suburb"].upper() if ms["to_suburb"] else "",
+                    "CC Products": "No WMS Record Found",
+                    "CC Total Qty": 0.0,
+                    "Machship Consignment": ms["ms_num"],
+                    "Machship Status": ms["status"],
+                    "Machship Carrier Connote": ms["carrier"],
+                    "From Details": "Unknown",
+                    "To Details": f"{ms['to_name'].title()} | {ms['to_suburb'].upper()}",
+                    "To Contact": "",
+                    "Total Item Count": 0,
+                    "Total Weight": float(ms["weight"]) if ms["weight"] else 0.0,
+                    "Warehouse Cost": 0.0,
+                    "Machship Sell": float(ms["sell"]) if ms["sell"] else 0.0
+                })
 
     df = pd.DataFrame(matrix_data)
     df["Total FCA Sell"] = df["Machship Sell"] + df["Warehouse Cost"]
