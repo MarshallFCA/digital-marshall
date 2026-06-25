@@ -169,7 +169,7 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
 
                 data = resp.json()
                 
-                # SAFE OBJECT EXTRACTION: Circumvents NoneType exceptions if API yields null keys
+                # SAFE OBJECT EXTRACTION
                 obj_node = data.get('object') or {}
                 routes = obj_node.get('routes') or []
                 
@@ -196,11 +196,23 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
 
                     c_total = r.get('consignmentTotal') or {}
                     
-                    base_cost = c_total.get('totalCost')
+                    # ROBUST FORENSIC COST EXTRACTION
+                    base_cost = c_total.get('totalCostPrice')
+                    if base_cost is None: base_cost = c_total.get('totalBaseCostPrice')
+                    if base_cost is None: base_cost = c_total.get('totalCostBeforeTax')
+                    if base_cost is None: base_cost = c_total.get('totalCost')
+                    if base_cost is None: base_cost = c_total.get('cost')
+
                     if base_cost is not None:
                         sell_price = float(base_cost) / (1 - (margin_target / 100))
                     else:
+                        # Fallback to Carrier Sell keys if Wholesale Cost is masked
                         sell_price = c_total.get('totalSellPrice')
+                        if sell_price is None: sell_price = c_total.get('totalSellBeforeTax')
+                        if sell_price is None: sell_price = c_total.get('totalSell')
+                        
+                        # Absolute Safety Net: If route exists but is unpriced, show it as $0.00
+                        if sell_price is None: sell_price = 0.0
 
                     if sell_price is not None:
                         valid_routes.append({
