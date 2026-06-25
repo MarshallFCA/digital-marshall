@@ -51,7 +51,7 @@ def fetch_australian_postcodes() -> list:
 
 def get_next_business_day() -> str:
     next_day = datetime.datetime.now() + datetime.timedelta(days=1)
-    while next_day.weekday() >= 5:  # Skip Saturday (5) and Sunday (6)
+    while next_day.weekday() >= 5:
         next_day += datetime.timedelta(days=1)
     return next_day.strftime("%Y-%m-%dT09:00:00")
 
@@ -65,7 +65,6 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
     try:
         df = pd.read_csv(io.BytesIO(file_bytes))
         
-        # Standardise DataFrame to prevent NaN payload injection failures
         df = df.replace({np.nan: ""})
         
         if "Routing Status" not in df.columns:
@@ -83,17 +82,14 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
 
         def fetch_route(index: int, row: pd.Series) -> tuple:
             try:
-                # Extract and sanitise core routing variables
                 sender_suburb = str(row.get("Sender Suburb", "")).strip()
                 sender_postcode = str(row.get("Sender Postcode", "")).strip()
                 receiver_suburb = str(row.get("Receiver Suburb", "")).strip()
                 receiver_postcode = str(row.get("Receiver Postcode", "")).strip()
                 
-                # Check for critical missing location data before processing payload
                 if not sender_suburb or not sender_postcode or not receiver_suburb or not receiver_postcode:
                     return index, "Invalid Location Data", []
 
-                # Financial and physical attributes with strict type casting
                 raw_qty = row.get("Qty", 1)
                 raw_weight = row.get("Consign Customer Charge Weight", 1.0)
                 raw_cubic = row.get("Cubic", 0.01)
@@ -109,15 +105,11 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                 except ValueError:
                     qty, total_weight, total_cubic = 1, 1.0, 0.01
 
-                # Isolate per-item metrics to satisfy Machship array structures
                 per_item_weight = total_weight / qty if qty > 0 else total_weight
                 per_item_cubic = total_cubic / qty if qty > 0 else total_cubic
-
-                # Derive synthetic dimensions (cm) from per-item cubic volume (m3)
                 volume_cm3 = per_item_cubic * 1000000.0
                 side_length = max(1.0, round(volume_cm3 ** (1.0/3.0), 2))
 
-                # Construct robust Machship V2 Payload
                 payload = {
                     "companyId": 52036,
                     "fromLocation": {
@@ -147,17 +139,12 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                 
                 if response.status_code == 200:
                     data = response.json()
-                    
-                    # Structural safeguard against Machship returning "object": null
                     ms_object = data.get("object") or {}
                     routes = ms_object.get("routes", [])
                     
                     if not routes:
                         errors = data.get("errors") or []
-                        if errors and isinstance(errors, list):
-                            error_msg = errors[0].get("errorMessage", "No Routes Available")
-                        else:
-                            error_msg = "No Valid Routes"
+                        error_msg = errors[0].get("errorMessage", "No Routes Available") if errors else "No Valid Routes"
                         return index, error_msg, []
                     
                     unique_options = []
@@ -168,23 +155,33 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                         if carrier_name in excluded_carriers or carrier_name in seen_carriers:
                             continue
                             
-                        # Strict target lock on valid nested nodes ONLY
                         c_total = route.get('consignmentTotal') or {}
-                        cost_price = c_total.get('totalCostPrice')
-                        sell_price = c_total.get('totalSellPrice')
                         
-                        if cost_price is not None and float(cost_price) > 0:
-                            # Apply BOOF mandated 19% GP markup against pure cost
-                            final_price = abs(float(cost_price) / (1.0 - margin_target))
-                        elif sell_price is not None and float(sell_price) > 0:
-                            # Fallback to TMS pre-calculated sell price if cost is shielded
-                            final_price = float(sell_price)
-                        else:
-                            final_price = 0.0
+                        # Forensic node extraction
+                        cost_ex_tax = float(c_total.get('totalCostPriceExTax') or 0.0)
+                        fuel_cost = float(c_total.get('totalFuelLevyCostPrice') or 0.0)
+                        
+                        if cost_ex_tax == 0.0:
+                            cost_ex_tax = float(c_total.get('totalSellPriceExTax') or 0.0)
+                            fuel_cost = float(c_total.get('totalFuelLevySellPrice') or 0.0)
                             
+                        base_cost = cost_ex_tax - fuel_cost
+                        
+                        # Apply mandated Gross Profit margin
+                        sell_base = base_cost / (1.0 - margin_target) if base_cost > 0 else 0.0
+                        sell_fuel = fuel_cost / (1.0 - margin_target) if fuel_cost > 0 else 0.0
+                        sell_ex_tax = sell_base + sell_fuel
+                        
+                        # Apply standard Australian GST (10%)
+                        sell_gst = sell_ex_tax * 0.10
+                        sell_total = sell_ex_tax + sell_gst
+                        
                         unique_options.append({
                             "display": carrier_name,
-                            "price": final_price
+                            "base": sell_base,
+                            "fuel": sell_fuel,
+                            "gst": sell_gst,
+                            "total": sell_total
                         })
                         seen_carriers.add(carrier_name)
                         
@@ -192,16 +189,13 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                             break
                             
                     if unique_options:
-                        all_zero = all(opt["price"] == 0.0 for opt in unique_options)
-                        status_str = "Success (TMS Rate $0.00)" if all_zero else "Success"
-                        return index, status_str, unique_options
+                        return index, "Success", unique_options
                     
                 return index, f"HTTP Rejection {response.status_code}", []
                 
             except Exception as e:
                 return index, f"Crash: {sanitize_error_log(str(e))}", []
 
-        # Execute threaded batch dispatch
         with ThreadPoolExecutor(max_workers=15) as executor:
             future_to_row = {executor.submit(fetch_route, index, row): index for index, row in df.iterrows()}
             
@@ -209,16 +203,19 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                 idx, status, options = future.result()
                 
                 df.at[idx, "Routing Status"] = status
-                if "Success" in status:
+                if status == "Success":
                     if len(options) > 0:
                         df.at[idx, "Option 1 (Cheapest)"] = options[0]['display']
-                        df.at[idx, "Option 1 Price"] = f"${options[0]['price']:.2f}"
+                        df.at[idx, "Option 1 Base ($)"] = f"${options[0]['base']:.2f}"
+                        df.at[idx, "Option 1 Fuel ($)"] = f"${options[0]['fuel']:.2f}"
+                        df.at[idx, "Option 1 GST ($)"] = f"${options[0]['gst']:.2f}"
+                        df.at[idx, "Option 1 Total ($)"] = f"${options[0]['total']:.2f}"
                     if len(options) > 1:
                         df.at[idx, "Option 2 (Alternative)"] = options[1]['display']
-                        df.at[idx, "Option 2 Price"] = f"${options[1]['price']:.2f}"
+                        df.at[idx, "Option 2 Total ($)"] = f"${options[1]['total']:.2f}"
                     if len(options) > 2:
                         df.at[idx, "Option 3 (Alternative)"] = options[2]['display']
-                        df.at[idx, "Option 3 Price"] = f"${options[2]['price']:.2f}"
+                        df.at[idx, "Option 3 Total ($)"] = f"${options[2]['total']:.2f}"
 
         return True, df
 
