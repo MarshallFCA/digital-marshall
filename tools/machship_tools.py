@@ -156,16 +156,38 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                             continue
                             
                         c_total = route.get('consignmentTotal') or {}
+                        cost_price = c_total.get('totalCostPrice')
+                        sell_price = c_total.get('totalSellPrice')
                         
-                        # Forensic node extraction
-                        cost_ex_tax = float(c_total.get('totalCostPriceExTax') or 0.0)
-                        fuel_cost = float(c_total.get('totalFuelLevyCostPrice') or 0.0)
+                        base_cost = 0.0
+                        fuel_cost = 0.0
                         
-                        if cost_ex_tax == 0.0:
-                            cost_ex_tax = float(c_total.get('totalSellPriceExTax') or 0.0)
-                            fuel_cost = float(c_total.get('totalFuelLevySellPrice') or 0.0)
+                        # Mathematical Synthesis Fallback Protocol
+                        if cost_price is not None and float(cost_price) > 0:
+                            val_ex_tax = c_total.get('totalCostPriceExTax')
+                            ex_tax = float(val_ex_tax) if val_ex_tax is not None else (float(cost_price) / 1.1)
                             
-                        base_cost = cost_ex_tax - fuel_cost
+                            val_fuel = c_total.get('totalFuelLevyCostPrice')
+                            if val_fuel is not None:
+                                fuel_cost = float(val_fuel)
+                            else:
+                                val_base = c_total.get('totalBaseCostPrice')
+                                fuel_cost = ex_tax - float(val_base) if val_base is not None else 0.0
+                                
+                            base_cost = ex_tax - fuel_cost
+                            
+                        elif sell_price is not None and float(sell_price) > 0:
+                            val_ex_tax = c_total.get('totalSellPriceExTax')
+                            ex_tax = float(val_ex_tax) if val_ex_tax is not None else (float(sell_price) / 1.1)
+                            
+                            val_fuel = c_total.get('totalFuelLevySellPrice')
+                            if val_fuel is not None:
+                                fuel_cost = float(val_fuel)
+                            else:
+                                val_base = c_total.get('totalBaseSellPrice')
+                                fuel_cost = ex_tax - float(val_base) if val_base is not None else 0.0
+                                
+                            base_cost = ex_tax - fuel_cost
                         
                         # Apply mandated Gross Profit margin
                         sell_base = base_cost / (1.0 - margin_target) if base_cost > 0 else 0.0
