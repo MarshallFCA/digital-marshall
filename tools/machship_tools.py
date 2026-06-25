@@ -90,6 +90,10 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                 raw_qty = row.get("Qty", 1)
                 raw_weight = row.get("Consign Customer Charge Weight", 1.0)
                 raw_cubic = row.get("Cubic", 0.01)
+                item_name = str(row.get("Item", "Carton")).strip()
+                
+                if not item_name:
+                    item_name = "Carton"
                 
                 try:
                     qty = int(float(raw_qty)) if raw_qty != "" else 1
@@ -110,6 +114,7 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                     },
                     "items": [
                         {
+                            "name": item_name,
                             "itemType": "Carton", 
                             "quantity": qty,
                             "weight": weight,
