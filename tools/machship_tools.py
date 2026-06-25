@@ -102,6 +102,10 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                 except ValueError:
                     qty, weight, cubic = 1, 1.0, 0.01
 
+                # Derive synthetic dimensions (cm) from cubic volume (m3)
+                volume_cm3 = cubic * 1000000.0
+                side_length = max(1.0, round(volume_cm3 ** (1.0/3.0), 2))
+
                 # Construct robust Machship V2 Payload
                 payload = {
                     "fromLocation": {
@@ -118,7 +122,10 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                             "itemType": "Carton", 
                             "quantity": qty,
                             "weight": weight,
-                            "cubic": cubic
+                            "cubic": cubic,
+                            "length": side_length,
+                            "width": side_length,
+                            "height": side_length
                         }
                     ],
                     "despatchDateTimeLocal": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
