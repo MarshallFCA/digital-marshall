@@ -62,6 +62,21 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
     if excluded_carriers is None:
         excluded_carriers = []
 
+    # GP Margin Sanitisation Gate (Corrects UI Payload Inversions)
+    try:
+        margin_target = float(margin_target)
+        if margin_target > 1.0:
+            if margin_target >= 10.0:
+                margin_target = margin_target / 100.0  # e.g., 19 or 22 -> 0.19 or 0.22
+            else:
+                margin_target = margin_target - 1.0    # e.g., 1.19 -> 0.19
+        if margin_target >= 1.0 or margin_target < 0.0:
+            margin_target = 0.19 # Rigid fallback to baseline FCA rule
+    except ValueError:
+        margin_target = 0.19
+        
+    gp_divisor = 1.0 - margin_target
+
     try:
         df = pd.read_csv(io.BytesIO(file_bytes))
         
@@ -164,7 +179,6 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                         fuel_cost = 0.0
                         derived_from_cost = False
                         
-                        # Mathematical Synthesis Fallback Protocol - Strict Evaluation
                         if cost_price is not None and float(cost_price) > 0:
                             derived_from_cost = True
                             
@@ -207,13 +221,12 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                                 
                             base_cost = ex_tax - fuel_cost
                         
-                        # Apply absolute value filters to prevent floating point inversions
                         base_cost = abs(base_cost)
                         fuel_cost = abs(fuel_cost)
                         
-                        applied_margin = margin_target if derived_from_cost else 0.0
-                        sell_base = base_cost / (1.0 - applied_margin) if base_cost > 0 else 0.0
-                        sell_fuel = fuel_cost / (1.0 - applied_margin) if fuel_cost > 0 else 0.0
+                        applied_divisor = gp_divisor if derived_from_cost else 1.0
+                        sell_base = abs(base_cost / applied_divisor) if base_cost > 0 else 0.0
+                        sell_fuel = abs(fuel_cost / applied_divisor) if fuel_cost > 0 else 0.0
                         sell_ex_tax = sell_base + sell_fuel
                         
                         sell_gst = sell_ex_tax * 0.10
