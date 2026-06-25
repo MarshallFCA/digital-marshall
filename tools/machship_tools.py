@@ -92,7 +92,7 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                 raw_cubic = row.get("Cubic", 0.01)
                 item_name = str(row.get("Item", "Carton")).strip()
                 
-                if not item_name:
+                if item_name.lower() in ["nan", "none", ""]:
                     item_name = "Carton"
                 
                 try:
@@ -102,7 +102,7 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                 except ValueError:
                     qty, weight, cubic = 1, 1.0, 0.01
 
-                # Derive synthetic dimensions (cm) from cubic volume (m3)
+                # Derive synthetic dimensions (cm) from cubic volume (m3) to bypass strict API requirements
                 volume_cm3 = cubic * 1000000.0
                 side_length = max(1.0, round(volume_cm3 ** (1.0/3.0), 2))
 
@@ -158,9 +158,12 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                         if carrier_name in excluded_carriers or carrier_name in seen_carriers:
                             continue
                             
-                        # Retrieve raw cost and apply standard margin
-                        base_cost = float(route.get("totalPrice", 0.0))
-                        sell_price = base_cost / (1.0 - margin_target)
+                        # Correct nested JSON extraction for Machship V2 pricing
+                        price_node = route.get("price") or {}
+                        base_cost = float(price_node.get("total", 0.0))
+                        
+                        # Apply standard margin and absolute value to prevent $-0.00 formatting artefacts
+                        sell_price = abs(base_cost / (1.0 - margin_target))
                         
                         unique_options.append({
                             "display": carrier_name,
