@@ -108,7 +108,6 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                 per_item_weight = total_weight / qty if qty > 0 else total_weight
                 per_item_cubic = total_cubic / qty if qty > 0 else total_cubic
                 
-                # Derive synthetic dimensions as STRICT INTEGERS to satisfy carrier rating engines
                 volume_cm3 = per_item_cubic * 1000000.0
                 side_length = max(1, int(round(volume_cm3 ** (1.0/3.0), 0)))
 
@@ -128,7 +127,6 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                             "itemType": "Item", 
                             "quantity": qty,
                             "weight": round(per_item_weight, 2),
-                            # Omitted "cubic" parameter to force Machship to accept LWH parameters exclusively
                             "length": side_length,
                             "width": side_length,
                             "height": side_length
@@ -157,44 +155,62 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                         if carrier_name in excluded_carriers or carrier_name in seen_carriers:
                             continue
                             
-                        # Universal multi-node net
                         c_total = route.get('consignmentTotal') or route.get('price') or route
                         
-                        cost_price = c_total.get('totalCostPrice') or c_total.get('costPrice')
-                        sell_price = c_total.get('totalSellPrice') or c_total.get('sellPrice')
+                        cost_price = c_total.get('totalCostPrice')
+                        sell_price = c_total.get('totalSellPrice')
                         
                         base_cost = 0.0
                         fuel_cost = 0.0
                         derived_from_cost = False
                         
+                        # Mathematical Synthesis Fallback Protocol - Strict Evaluation
                         if cost_price is not None and float(cost_price) > 0:
                             derived_from_cost = True
-                            val_ex_tax = c_total.get('totalCostPriceExTax') or c_total.get('costPriceExTax')
+                            
+                            val_ex_tax = c_total.get('totalCostPriceExTax')
+                            if val_ex_tax is None:
+                                val_ex_tax = c_total.get('costPriceExTax')
                             ex_tax = float(val_ex_tax) if val_ex_tax is not None else (float(cost_price) / 1.1)
                             
-                            val_fuel = c_total.get('totalFuelLevyCostPrice') or c_total.get('fuelLevyCostPrice')
+                            val_fuel = c_total.get('totalFuelLevyCostPrice')
+                            if val_fuel is None:
+                                val_fuel = c_total.get('fuelLevyCostPrice')
+                                
                             if val_fuel is not None:
                                 fuel_cost = float(val_fuel)
                             else:
-                                val_base = c_total.get('totalBaseCostPrice') or c_total.get('baseCostPrice')
+                                val_base = c_total.get('totalBaseCostPrice')
+                                if val_base is None:
+                                    val_base = c_total.get('baseCostPrice')
                                 fuel_cost = ex_tax - float(val_base) if val_base is not None else 0.0
                                 
                             base_cost = ex_tax - fuel_cost
                             
                         elif sell_price is not None and float(sell_price) > 0:
-                            val_ex_tax = c_total.get('totalSellPriceExTax') or c_total.get('sellPriceExTax')
+                            val_ex_tax = c_total.get('totalSellPriceExTax')
+                            if val_ex_tax is None:
+                                val_ex_tax = c_total.get('sellPriceExTax')
                             ex_tax = float(val_ex_tax) if val_ex_tax is not None else (float(sell_price) / 1.1)
                             
-                            val_fuel = c_total.get('totalFuelLevySellPrice') or c_total.get('fuelLevySellPrice')
+                            val_fuel = c_total.get('totalFuelLevySellPrice')
+                            if val_fuel is None:
+                                val_fuel = c_total.get('fuelLevySellPrice')
+                                
                             if val_fuel is not None:
                                 fuel_cost = float(val_fuel)
                             else:
-                                val_base = c_total.get('totalBaseSellPrice') or c_total.get('baseSellPrice')
+                                val_base = c_total.get('totalBaseSellPrice')
+                                if val_base is None:
+                                    val_base = c_total.get('baseSellPrice')
                                 fuel_cost = ex_tax - float(val_base) if val_base is not None else 0.0
                                 
                             base_cost = ex_tax - fuel_cost
                         
-                        # Apply mandated margin only if extracting from pure Cost nodes
+                        # Apply absolute value filters to prevent floating point inversions
+                        base_cost = abs(base_cost)
+                        fuel_cost = abs(fuel_cost)
+                        
                         applied_margin = margin_target if derived_from_cost else 0.0
                         sell_base = base_cost / (1.0 - applied_margin) if base_cost > 0 else 0.0
                         sell_fuel = fuel_cost / (1.0 - applied_margin) if fuel_cost > 0 else 0.0
@@ -241,9 +257,15 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                         df.at[idx, "Option 1 Total ($)"] = f"${options[0]['total']:.2f}"
                     if len(options) > 1:
                         df.at[idx, "Option 2 (Alternative)"] = options[1]['display']
+                        df.at[idx, "Option 2 Base ($)"] = f"${options[1]['base']:.2f}"
+                        df.at[idx, "Option 2 Fuel ($)"] = f"${options[1]['fuel']:.2f}"
+                        df.at[idx, "Option 2 GST ($)"] = f"${options[1]['gst']:.2f}"
                         df.at[idx, "Option 2 Total ($)"] = f"${options[1]['total']:.2f}"
                     if len(options) > 2:
                         df.at[idx, "Option 3 (Alternative)"] = options[2]['display']
+                        df.at[idx, "Option 3 Base ($)"] = f"${options[2]['base']:.2f}"
+                        df.at[idx, "Option 3 Fuel ($)"] = f"${options[2]['fuel']:.2f}"
+                        df.at[idx, "Option 3 GST ($)"] = f"${options[2]['gst']:.2f}"
                         df.at[idx, "Option 3 Total ($)"] = f"${options[2]['total']:.2f}"
 
         return True, df
