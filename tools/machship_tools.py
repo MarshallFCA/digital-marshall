@@ -25,8 +25,11 @@ def search_machship_connote(connote_number: str) -> str:
                 data = response.json()
                 if data.get("object"):
                     consignment = data["object"]
-                    carrier = consignment.get("carrier", {}).get("name") or consignment.get("carrier", {}).get("abbreviation") or "Carrier Not Assigned"
-                    status = consignment.get("status", {}).get("name", "Unknown Status")
+                    carrier_node = consignment.get("carrier") or {}
+                    carrier = carrier_node.get("name") or carrier_node.get("abbreviation") or "Carrier Not Assigned"
+                    
+                    status_node = consignment.get("status") or {}
+                    status = status_node.get("name", "Unknown Status")
                     
                     raw_data = json.dumps(consignment, indent=2)
                     return f"✅ Machship Record (MS): Carrier: {carrier} | Status: {status}\n\n**Raw Data Available to AI:**\n```json\n{raw_data}\n```"
@@ -45,8 +48,11 @@ def search_machship_connote(connote_number: str) -> str:
                 data = response.json()
                 if data.get("object") and len(data["object"]) > 0:
                     consignment = data["object"][0]
-                    carrier = consignment.get("carrier", {}).get("name") or consignment.get("carrier", {}).get("abbreviation") or "Carrier Not Assigned"
-                    status = consignment.get("status", {}).get("name", "Unknown Status")
+                    carrier_node = consignment.get("carrier") or {}
+                    carrier = carrier_node.get("name") or carrier_node.get("abbreviation") or "Carrier Not Assigned"
+                    
+                    status_node = consignment.get("status") or {}
+                    status = status_node.get("name", "Unknown Status")
                     
                     raw_data = json.dumps(consignment, indent=2)
                     return f"✅ Machship Record (Found via {search_type}): Carrier: {carrier} | Status: {status}\n\n**Raw Data Available to AI:**\n```json\n{raw_data}\n```"
@@ -162,11 +168,15 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
                     return index, "API Error", []
 
                 data = resp.json()
-                routes = data.get('object', {}).get('routes', [])
+                
+                # SAFE OBJECT EXTRACTION: Circumvents NoneType exceptions if API yields null keys
+                obj_node = data.get('object') or {}
+                routes = obj_node.get('routes') or []
                 
                 valid_routes = []
                 for r in routes:
-                    raw_carrier_name = r.get('carrier', {}).get('name', 'Unknown')
+                    carrier_node = r.get('carrier') or {}
+                    raw_carrier_name = carrier_node.get('name', 'Unknown')
                     
                     if any(ex.lower() in raw_carrier_name.lower() for ex in excluded_carriers):
                         continue
@@ -174,7 +184,9 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
                     acc_node = r.get('companyCarrierAccount') or r.get('carrierAccount') or {}
                     acc_name = acc_node.get('name') or acc_node.get('accountCode') or ''
                     
-                    service_name = r.get('companyCarrierAccountService', {}).get('name') or r.get('carrierService', {}).get('name') or ''
+                    cca_service_node = r.get('companyCarrierAccountService') or {}
+                    cs_node = r.get('carrierService') or {}
+                    service_name = cca_service_node.get('name') or cs_node.get('name') or ''
                     
                     display_name = raw_carrier_name
                     if service_name: 
@@ -229,10 +241,10 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
                         df.at[idx, "Option 1 (Cheapest)"] = options[0]['display']
                         df.at[idx, "Option 1 Price"] = f"${options[0]['price']:.2f}"
                     if len(options) > 1:
-                        df.at[idx, "Option 2 (Alternative)"] = options[2]['display']
-                        df.at[idx, "Option 2 Price"] = f"${options[2]['price']:.2f}"
+                        df.at[idx, "Option 2 (Alternative)"] = options[1]['display']
+                        df.at[idx, "Option 2 Price"] = f"${options[1]['price']:.2f}"
                     if len(options) > 2:
-                        df.at[idx, "Option 3 (Alternative)"] = options[3]['display']
+                        df.at[idx, "Option 3 (Alternative)"] = options[2]['display']
                         df.at[idx, "Option 3 Price"] = f"${options[2]['price']:.2f}"
 
         return True, df
