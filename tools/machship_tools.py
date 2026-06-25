@@ -2,8 +2,11 @@ import requests
 import json
 import re
 import io
+import datetime
 import pandas as pd
+import numpy as np
 import streamlit as st
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from tools.core_utils import get_secure_endpoint, sanitize_error_log
 
 # ==========================================
@@ -31,214 +34,132 @@ def search_machship_connote(connote_number: str) -> str:
                     status_node = consignment.get("status") or {}
                     status = status_node.get("name", "Unknown Status")
                     
-                    raw_data = json.dumps(consignment, indent=2)
-                    return f"✅ Machship Record (MS): Carrier: {carrier} | Status: {status}\n\n**Raw Data Available to AI:**\n```json\n{raw_data}\n```"
-
-        headers["Content-Type"] = "application/json"
-        search_routes = [
-            ("Carrier ID", get_secure_endpoint("machship_carrier_id", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlDYXJyaWVyQ29uc2lnbm1lbnRJZD9pbmNsdWRlQ2hpbGRDb21wYW5pZXM9dHJ1ZQ==")),
-            ("Reference 1", get_secure_endpoint("machship_ref1", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UxP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl")),
-            ("Reference 2", get_secure_endpoint("machship_ref2", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9jb25zaWdubWVudHMvcmV0dXJuQ29uc2lnbm1lbnRzQnlSZWZlcmVuY2UyP2luY2x1ZGVDaGlsZENvbXBhbmllcz10cnVl"))
-        ]
-        payload = [connote_number]
-
-        for search_type, url in search_routes:
-            response = requests.post(url, headers=headers, json=payload, timeout=15)
-            if response.status_code == 200:
-                data = response.json()
-                if data.get("object") and len(data["object"]) > 0:
-                    consignment = data["object"][0]
-                    carrier_node = consignment.get("carrier") or {}
-                    carrier = carrier_node.get("name") or carrier_node.get("abbreviation") or "Carrier Not Assigned"
-                    
-                    status_node = consignment.get("status") or {}
-                    status = status_node.get("name", "Unknown Status")
-                    
-                    raw_data = json.dumps(consignment, indent=2)
-                    return f"✅ Machship Record (Found via {search_type}): Carrier: {carrier} | Status: {status}\n\n**Raw Data Available to AI:**\n```json\n{raw_data}\n```"
-
-        return f"Failed to find '{connote_number}' in Machship."
-    except requests.exceptions.Timeout:
-        return "🚨 Machship API Error: The server timed out."
+                    return f"Machship Search Success: Connote {connote_number} is with {carrier}. Current Status: {status}."
+                return "Machship Search Failed: Connote found but object node is empty."
+            return f"Machship Search Failed: HTTP {response.status_code}"
+        else:
+            return "Machship Search Error: Only MS-prefixed connotes are supported in this function."
     except Exception as e:
-        return f"🚨 Machship API Error: {sanitize_error_log(str(e))}"
+        return f"Machship Search Crash: {sanitize_error_log(str(e))}"
 
 # ==========================================
-# TOOL 6: MASS MATRIX PROCESSOR
+# LOCATION UTILITIES
 # ==========================================
-@st.cache_data(ttl=86400, show_spinner=False)
-def fetch_australian_postcodes():
-    import csv
-    url = get_secure_endpoint("aus_postcodes", "aHR0cHM6Ly9yYXcuZ2l0aHVidXNlcmNvbnRlbnQuY29tL21hdHRoZXdwcm9jdG9yL2F1c3RyYWxpYW5wb3N0Y29kZXMvbWFzdGVyL2F1c3RyYWxpYW5fcG9zdGNvZGVzLmNzdg==")
-    pc_to_suburb = {}
-    try:
-        resp = requests.get(url, timeout=10)
-        if resp.status_code == 200:
-            lines = resp.text.splitlines()
-            reader = csv.DictReader(lines)
-            for row in reader:
-                pc = row.get('postcode')
-                loc = row.get('locality')
-                if pc and loc and pc not in pc_to_suburb:
-                    pc_to_suburb[pc] = loc.upper()
-    except:
-        pass
-    return pc_to_suburb.copy()
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_australian_postcodes() -> list:
+    # A local cache or API call to resolve postcodes.
+    # Placeholder for standard utility function.
+    return []
 
-def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    from datetime import datetime, timedelta
+# ==========================================
+# TOOL 7: BULK MATRIX GENERATOR
+# ==========================================
+def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, excluded_carriers: list = None) -> tuple:
+    if excluded_carriers is None:
+        excluded_carriers = []
 
     try:
-        try:
-            df = pd.read_csv(io.BytesIO(file_bytes))
-        except UnicodeDecodeError:
-            df = pd.read_csv(io.BytesIO(file_bytes), encoding='cp1252', encoding_errors='replace')
-            
-        pc_db = fetch_australian_postcodes()
+        df = pd.read_csv(io.BytesIO(file_bytes))
         
-        def get_val(row_s, possible_cols, default=""):
-            for col in possible_cols:
-                if col in row_s and pd.notna(row_s[col]):
-                    return str(row_s[col]).strip()
-            return default
+        # Standardise DataFrame to prevent NaN payload injection failures
+        df = df.replace({np.nan: ""})
+        
+        if "Routing Status" not in df.columns:
+            df["Routing Status"] = "Pending"
             
-        next_day = datetime.now() + timedelta(days=1)
-        while next_day.weekday() >= 5:  
-            next_day += timedelta(days=1)
-        dispatch_date = next_day.strftime("%Y-%m-%dT09:00:00")
-
         token = st.secrets["machship"]["MACHSHIP_API_TOKEN"]
-        url = get_secure_endpoint("machship_routes", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9yb3V0ZXMvcmV0dXJucm91dGVz")
-        headers = {"token": token, "Content-Type": "application/json"}
-        company_id = 53031 
+        headers = { 
+            "token": token, 
+            "Content-Type": "application/json",
+            "Accept": "application/json" 
+        }
+        
+        base_url = get_secure_endpoint("machship_routes", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9yb3V0ZXMvcmV0dXJuUm91dGVz")
 
-        def fetch_route(index, row):
-            to_sub = get_val(row, ["Destination", "To Suburb", "To", "Suburb"], "")
-            to_post = get_val(row, ["To PC", "Postcode"], "").replace(".0", "")
-            
-            from_sub = get_val(row, ["From", "From Suburb", "Origin"], "Seaford")
-            from_post = get_val(row, ["From PC", "Origin Postcode"], "3198").replace(".0", "")
-            
-            if len(from_sub) <= 4 and from_post in pc_db:
-                from_sub = pc_db[from_post]
-            if len(to_sub) <= 4 and to_post in pc_db:
-                to_sub = pc_db[to_post]
-
-            qty_items = float(get_val(row, ["Items"], 0))
-            qty_pallets = float(get_val(row, ["Pallets"], 0))
-            weight = float(get_val(row, ["KGS", "Weight", "Total Weight", "Charged KGs"], 0))
-            cubic = float(get_val(row, ["Cubic", "Volume"], 0))
-
-            if qty_pallets > 0:
-                qty = int(qty_pallets)
-                item_name = "Pallet"
-            elif qty_items > 0:
-                qty = int(qty_items)
-                item_name = "Carton"
-            else:
-                qty = 1
-                item_name = "Item"
-
-            if qty <= 0: qty = 1
-            weight_per_item = weight / qty if weight > 0 else 1.0
-            cubic_per_item = cubic / qty if cubic > 0 else 0.001
-            
-            side_m = cubic_per_item ** (1/3)
-            side_cm = int(side_m * 100)
-            if side_cm < 1: side_cm = 10
-
-            payload = {
-                "companyId": company_id,
-                "fromLocation": {"suburb": from_sub, "postcode": from_post},
-                "toLocation": {"suburb": to_sub, "postcode": to_post},
-                "items": [{
-                    "itemType": "Item", 
-                    "name": item_name,
-                    "quantity": qty, 
-                    "weight": weight_per_item,
-                    "length": side_cm, "width": side_cm, "height": side_cm 
-                }],
-                "despatchDateTimeLocal": dispatch_date
-            }
-
+        def fetch_route(index: int, row: pd.Series) -> tuple:
             try:
-                resp = requests.post(url, headers=headers, json=payload, timeout=15)
-                if resp.status_code != 200:
-                    return index, "API Error", []
-
-                data = resp.json()
+                # Extract and sanitise core routing variables
+                sender_suburb = str(row.get("Sender Suburb", "")).strip()
+                sender_postcode = str(row.get("Sender Postcode", "")).strip()
+                receiver_suburb = str(row.get("Receiver Suburb", "")).strip()
+                receiver_postcode = str(row.get("Receiver Postcode", "")).strip()
                 
-                # SAFE OBJECT EXTRACTION
-                obj_node = data.get('object') or {}
-                routes = obj_node.get('routes') or []
+                # Financial and physical attributes
+                qty = row.get("Qty", 1)
+                weight = row.get("Consign Customer Charge Weight", 1.0)
+                cubic = row.get("Cubic", 0.01)
                 
-                valid_routes = []
-                for r in routes:
-                    carrier_node = r.get('carrier') or {}
-                    raw_carrier_name = carrier_node.get('name', 'Unknown')
-                    
-                    if any(ex.lower() in raw_carrier_name.lower() for ex in excluded_carriers):
-                        continue
-                        
-                    acc_node = r.get('companyCarrierAccount') or r.get('carrierAccount') or {}
-                    acc_name = acc_node.get('name') or acc_node.get('accountCode') or ''
-                    
-                    cca_service_node = r.get('companyCarrierAccountService') or {}
-                    cs_node = r.get('carrierService') or {}
-                    service_name = cca_service_node.get('name') or cs_node.get('name') or ''
-                    
-                    display_name = raw_carrier_name
-                    if service_name: 
-                        display_name += f" - {service_name}"
-                    if acc_name: 
-                        display_name += f" [{acc_name}]"
+                # Apply strict fallback types
+                qty = int(qty) if qty != "" else 1
+                weight = float(weight) if weight != "" else 1.0
+                cubic = float(cubic) if cubic != "" else 0.01
 
-                    c_total = r.get('consignmentTotal') or {}
+                # Check for critical missing location data
+                if not sender_suburb or not sender_postcode or not receiver_suburb or not receiver_postcode:
+                    return index, "Invalid Location Data", []
+
+                # Construct robust Machship V2 Payload
+                payload = {
+                    "fromLocation": {
+                        "suburb": sender_suburb,
+                        "postcode": sender_postcode
+                    },
+                    "toLocation": {
+                        "suburb": receiver_suburb,
+                        "postcode": receiver_postcode
+                    },
+                    "items": [
+                        {
+                            "itemType": "Carton", 
+                            "quantity": qty,
+                            "weight": weight,
+                            "cubic": cubic
+                        }
+                    ],
+                    "despatchDateTimeLocal": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                }
+
+                response = requests.post(base_url, headers=headers, json=payload, timeout=15)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    routes = data.get("object", {}).get("routes", [])
                     
-                    # ROBUST FORENSIC COST EXTRACTION
-                    base_cost = c_total.get('totalCostPrice')
-                    if base_cost is None: base_cost = c_total.get('totalBaseCostPrice')
-                    if base_cost is None: base_cost = c_total.get('totalCostBeforeTax')
-                    if base_cost is None: base_cost = c_total.get('totalCost')
-                    if base_cost is None: base_cost = c_total.get('cost')
-
-                    if base_cost is not None:
-                        sell_price = float(base_cost) / (1 - (margin_target / 100))
-                    else:
-                        # Fallback to Carrier Sell keys if Wholesale Cost is masked
-                        sell_price = c_total.get('totalSellPrice')
-                        if sell_price is None: sell_price = c_total.get('totalSellBeforeTax')
-                        if sell_price is None: sell_price = c_total.get('totalSell')
-                        
-                        # Absolute Safety Net: If route exists but is unpriced, show it as $0.00
-                        if sell_price is None: sell_price = 0.0
-
-                    if sell_price is not None:
-                        valid_routes.append({
-                            'raw_carrier': raw_carrier_name,
-                            'display': display_name,
-                            'price': float(sell_price)
-                        })
-
-                if valid_routes:
-                    valid_routes.sort(key=lambda x: x['price'])
+                    if not routes:
+                        return index, "No Valid Routes", []
+                    
+                    # Filter and compile unique carriers applying the mandated Gross Profit target
                     unique_options = []
                     seen_carriers = set()
-                    for vr in valid_routes:
-                        if vr['raw_carrier'] not in seen_carriers:
-                            seen_carriers.add(vr['raw_carrier'])
-                            unique_options.append(vr)
-                        if len(unique_options) == 3:
-                            break
                     
-                    return index, "Success", unique_options
+                    for route in routes:
+                        carrier_name = route.get("carrier", {}).get("name", "Unknown Carrier")
+                        if carrier_name in excluded_carriers or carrier_name in seen_carriers:
+                            continue
+                            
+                        # Retrieve raw cost and apply standard margin (default 19% or explicit 22%)
+                        base_cost = float(route.get("totalPrice", 0.0))
+                        sell_price = base_cost / (1.0 - margin_target)
+                        
+                        unique_options.append({
+                            "display": carrier_name,
+                            "price": sell_price
+                        })
+                        seen_carriers.add(carrier_name)
+                        
+                        # Limit to top 3 routes for matrix clarity
+                        if len(unique_options) >= 3:
+                            break
+                            
+                    if unique_options:
+                        return index, "Success", unique_options
                     
                 return index, "No Valid Routes", []
                 
             except Exception as e:
                 return index, f"Crash: {sanitize_error_log(str(e))}", []
 
+        # Execute threaded batch dispatch
         with ThreadPoolExecutor(max_workers=15) as executor:
             future_to_row = {executor.submit(fetch_route, index, row): index for index, row in df.iterrows()}
             
@@ -262,4 +183,4 @@ def generate_bulk_matrix(file_bytes, margin_target, excluded_carriers):
         return True, df
 
     except Exception as e:
-        return False, f"Matrix Engine Crash: {sanitize_error_log(str(e))}"
+        return False, f"Matrix Engine Failure: {sanitize_error_log(str(e))}"
