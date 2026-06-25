@@ -43,45 +43,17 @@ def search_machship_connote(connote_number: str) -> str:
         return f"Machship Search Crash: {sanitize_error_log(str(e))}"
 
 # ==========================================
-# LOCATION UTILITIES
+# LOCATION & TEMPORAL UTILITIES
 # ==========================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_australian_postcodes() -> list:
     return []
 
-# ==========================================
-# FINANCIAL EXTRACTION PROTOCOL
-# ==========================================
-def extract_price(route_dict: dict) -> float:
-    # 1. Target exact node from verified working script
-    c_total = route_dict.get('consignmentTotal')
-    if isinstance(c_total, dict):
-        # Prioritise Base/Cost to apply BOOF's strict 19% markup rule
-        cost = c_total.get('totalCostPrice')
-        if cost is not None and float(cost) > 0:
-            return float(cost)
-        
-        # Fallback to Sell Price if Cost is obfuscated
-        sell = c_total.get('totalSellPrice')
-        if sell is not None and float(sell) > 0:
-            return float(sell)
-
-    # 2. Generic/Legacy fallback nodes
-    keys_to_check = ['totalPrice', 'sellPrice', 'costPrice', 'clientCharge']
-    for k in keys_to_check:
-        val = route_dict.get(k)
-        if isinstance(val, (int, float)) and val > 0:
-            return float(val)
-            
-    price_node = route_dict.get('price')
-    if isinstance(price_node, dict):
-        nested_keys = ['costPrice', 'total', 'sellPrice', 'base']
-        for nk in nested_keys:
-            val = price_node.get(nk)
-            if isinstance(val, (int, float)) and val > 0:
-                return float(val)
-                
-    return 0.0
+def get_next_business_day() -> str:
+    next_day = datetime.datetime.now() + datetime.timedelta(days=1)
+    while next_day.weekday() >= 5:  # Skip Saturday (5) and Sunday (6)
+        next_day += datetime.timedelta(days=1)
+    return next_day.strftime("%Y-%m-%dT09:00:00")
 
 # ==========================================
 # TOOL 7: BULK MATRIX GENERATOR
@@ -107,6 +79,7 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
         }
         
         base_url = get_secure_endpoint("machship_routes", "aHR0cHM6Ly9saXZlLm1hY2hzaGlwLmNvbS9hcGl2Mi9yb3V0ZXMvcmV0dXJuUm91dGVz")
+        dispatch_datetime = get_next_business_day()
 
         def fetch_route(index: int, row: pd.Series) -> tuple:
             try:
@@ -131,16 +104,20 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                 
                 try:
                     qty = int(float(raw_qty)) if raw_qty != "" else 1
-                    weight = float(raw_weight) if raw_weight != "" else 1.0
-                    cubic = float(raw_cubic) if raw_cubic != "" else 0.01
+                    total_weight = float(raw_weight) if raw_weight != "" else 1.0
+                    total_cubic = float(raw_cubic) if raw_cubic != "" else 0.01
                 except ValueError:
-                    qty, weight, cubic = 1, 1.0, 0.01
+                    qty, total_weight, total_cubic = 1, 1.0, 0.01
 
-                # Derive synthetic dimensions (cm) from cubic volume (m3) to bypass strict API requirements
-                volume_cm3 = cubic * 1000000.0
+                # Isolate per-item metrics to satisfy Machship array structures
+                per_item_weight = total_weight / qty if qty > 0 else total_weight
+                per_item_cubic = total_cubic / qty if qty > 0 else total_cubic
+
+                # Derive synthetic dimensions (cm) from per-item cubic volume (m3)
+                volume_cm3 = per_item_cubic * 1000000.0
                 side_length = max(1.0, round(volume_cm3 ** (1.0/3.0), 2))
 
-                # Construct robust Machship V2 Payload strictly matched to working structure
+                # Construct robust Machship V2 Payload
                 payload = {
                     "companyId": 52036,
                     "fromLocation": {
@@ -156,14 +133,14 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                             "name": item_name,
                             "itemType": "Item", 
                             "quantity": qty,
-                            "weight": weight,
-                            "cubic": cubic,
+                            "weight": round(per_item_weight, 2),
+                            "cubic": round(per_item_cubic, 3),
                             "length": side_length,
                             "width": side_length,
                             "height": side_length
                         }
                     ],
-                    "despatchDateTimeLocal": datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                    "despatchDateTimeLocal": dispatch_datetime
                 }
 
                 response = requests.post(base_url, headers=headers, json=payload, timeout=15)
@@ -176,7 +153,6 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                     routes = ms_object.get("routes", [])
                     
                     if not routes:
-                        # Extract precise Machship error for forensic matrix analysis
                         errors = data.get("errors") or []
                         if errors and isinstance(errors, list):
                             error_msg = errors[0].get("errorMessage", "No Routes Available")
@@ -184,7 +160,6 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                             error_msg = "No Valid Routes"
                         return index, error_msg, []
                     
-                    # Filter and compile unique carriers applying the mandated Gross Profit target
                     unique_options = []
                     seen_carriers = set()
                     
@@ -193,15 +168,23 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                         if carrier_name in excluded_carriers or carrier_name in seen_carriers:
                             continue
                             
-                        # Execute Universal Price Node Extraction
-                        base_cost = extract_price(route)
+                        # Strict target lock on valid nested nodes ONLY
+                        c_total = route.get('consignmentTotal') or {}
+                        cost_price = c_total.get('totalCostPrice')
+                        sell_price = c_total.get('totalSellPrice')
                         
-                        # Apply standard margin and absolute value
-                        sell_price = abs(base_cost / (1.0 - margin_target)) if base_cost > 0 else 0.0
-                        
+                        if cost_price is not None and float(cost_price) > 0:
+                            # Apply BOOF mandated 19% GP markup against pure cost
+                            final_price = abs(float(cost_price) / (1.0 - margin_target))
+                        elif sell_price is not None and float(sell_price) > 0:
+                            # Fallback to TMS pre-calculated sell price if cost is shielded
+                            final_price = float(sell_price)
+                        else:
+                            final_price = 0.0
+                            
                         unique_options.append({
                             "display": carrier_name,
-                            "price": sell_price
+                            "price": final_price
                         })
                         seen_carriers.add(carrier_name)
                         
@@ -209,7 +192,6 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                             break
                             
                     if unique_options:
-                        # Validate if prices resolved to zero
                         all_zero = all(opt["price"] == 0.0 for opt in unique_options)
                         status_str = "Success (TMS Rate $0.00)" if all_zero else "Success"
                         return index, status_str, unique_options
