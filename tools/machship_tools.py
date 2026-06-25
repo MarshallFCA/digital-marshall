@@ -47,8 +47,6 @@ def search_machship_connote(connote_number: str) -> str:
 # ==========================================
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_australian_postcodes() -> list:
-    # A local cache or API call to resolve postcodes.
-    # Placeholder for standard utility function.
     return []
 
 # ==========================================
@@ -84,19 +82,21 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                 receiver_suburb = str(row.get("Receiver Suburb", "")).strip()
                 receiver_postcode = str(row.get("Receiver Postcode", "")).strip()
                 
-                # Financial and physical attributes
-                qty = row.get("Qty", 1)
-                weight = row.get("Consign Customer Charge Weight", 1.0)
-                cubic = row.get("Cubic", 0.01)
-                
-                # Apply strict fallback types
-                qty = int(qty) if qty != "" else 1
-                weight = float(weight) if weight != "" else 1.0
-                cubic = float(cubic) if cubic != "" else 0.01
-
-                # Check for critical missing location data
+                # Check for critical missing location data before processing payload
                 if not sender_suburb or not sender_postcode or not receiver_suburb or not receiver_postcode:
                     return index, "Invalid Location Data", []
+
+                # Financial and physical attributes with strict type casting
+                raw_qty = row.get("Qty", 1)
+                raw_weight = row.get("Consign Customer Charge Weight", 1.0)
+                raw_cubic = row.get("Cubic", 0.01)
+                
+                try:
+                    qty = int(float(raw_qty)) if raw_qty != "" else 1
+                    weight = float(raw_weight) if raw_weight != "" else 1.0
+                    cubic = float(raw_cubic) if raw_cubic != "" else 0.01
+                except ValueError:
+                    qty, weight, cubic = 1, 1.0, 0.01
 
                 # Construct robust Machship V2 Payload
                 payload = {
@@ -123,10 +123,19 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                 
                 if response.status_code == 200:
                     data = response.json()
-                    routes = data.get("object", {}).get("routes", [])
+                    
+                    # Structural safeguard against Machship returning "object": null
+                    ms_object = data.get("object") or {}
+                    routes = ms_object.get("routes", [])
                     
                     if not routes:
-                        return index, "No Valid Routes", []
+                        # Extract precise Machship error for forensic matrix analysis
+                        errors = data.get("errors") or []
+                        if errors and isinstance(errors, list):
+                            error_msg = errors[0].get("errorMessage", "No Routes Available")
+                        else:
+                            error_msg = "No Valid Routes"
+                        return index, error_msg, []
                     
                     # Filter and compile unique carriers applying the mandated Gross Profit target
                     unique_options = []
@@ -137,7 +146,7 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                         if carrier_name in excluded_carriers or carrier_name in seen_carriers:
                             continue
                             
-                        # Retrieve raw cost and apply standard margin (default 19% or explicit 22%)
+                        # Retrieve raw cost and apply standard margin
                         base_cost = float(route.get("totalPrice", 0.0))
                         sell_price = base_cost / (1.0 - margin_target)
                         
@@ -147,14 +156,13 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                         })
                         seen_carriers.add(carrier_name)
                         
-                        # Limit to top 3 routes for matrix clarity
                         if len(unique_options) >= 3:
                             break
                             
                     if unique_options:
                         return index, "Success", unique_options
                     
-                return index, "No Valid Routes", []
+                return index, f"HTTP Rejection {response.status_code}", []
                 
             except Exception as e:
                 return index, f"Crash: {sanitize_error_log(str(e))}", []
