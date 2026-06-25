@@ -50,6 +50,40 @@ def fetch_australian_postcodes() -> list:
     return []
 
 # ==========================================
+# FINANCIAL EXTRACTION PROTOCOL
+# ==========================================
+def extract_price(route_dict: dict) -> float:
+    # 1. Target exact node from verified working script
+    c_total = route_dict.get('consignmentTotal')
+    if isinstance(c_total, dict):
+        # Prioritise Base/Cost to apply BOOF's strict 19% markup rule
+        cost = c_total.get('totalCostPrice')
+        if cost is not None and float(cost) > 0:
+            return float(cost)
+        
+        # Fallback to Sell Price if Cost is obfuscated
+        sell = c_total.get('totalSellPrice')
+        if sell is not None and float(sell) > 0:
+            return float(sell)
+
+    # 2. Generic/Legacy fallback nodes
+    keys_to_check = ['totalPrice', 'sellPrice', 'costPrice', 'clientCharge']
+    for k in keys_to_check:
+        val = route_dict.get(k)
+        if isinstance(val, (int, float)) and val > 0:
+            return float(val)
+            
+    price_node = route_dict.get('price')
+    if isinstance(price_node, dict):
+        nested_keys = ['costPrice', 'total', 'sellPrice', 'base']
+        for nk in nested_keys:
+            val = price_node.get(nk)
+            if isinstance(val, (int, float)) and val > 0:
+                return float(val)
+                
+    return 0.0
+
+# ==========================================
 # TOOL 7: BULK MATRIX GENERATOR
 # ==========================================
 def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, excluded_carriers: list = None) -> tuple:
@@ -106,8 +140,9 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                 volume_cm3 = cubic * 1000000.0
                 side_length = max(1.0, round(volume_cm3 ** (1.0/3.0), 2))
 
-                # Construct robust Machship V2 Payload
+                # Construct robust Machship V2 Payload strictly matched to working structure
                 payload = {
+                    "companyId": 52036,
                     "fromLocation": {
                         "suburb": sender_suburb,
                         "postcode": sender_postcode
@@ -119,7 +154,7 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                     "items": [
                         {
                             "name": item_name,
-                            "itemType": "Carton", 
+                            "itemType": "Item", 
                             "quantity": qty,
                             "weight": weight,
                             "cubic": cubic,
@@ -158,12 +193,11 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                         if carrier_name in excluded_carriers or carrier_name in seen_carriers:
                             continue
                             
-                        # Correct nested JSON extraction for Machship V2 pricing
-                        price_node = route.get("price") or {}
-                        base_cost = float(price_node.get("total", 0.0))
+                        # Execute Universal Price Node Extraction
+                        base_cost = extract_price(route)
                         
-                        # Apply standard margin and absolute value to prevent $-0.00 formatting artefacts
-                        sell_price = abs(base_cost / (1.0 - margin_target))
+                        # Apply standard margin and absolute value
+                        sell_price = abs(base_cost / (1.0 - margin_target)) if base_cost > 0 else 0.0
                         
                         unique_options.append({
                             "display": carrier_name,
@@ -175,7 +209,10 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
                             break
                             
                     if unique_options:
-                        return index, "Success", unique_options
+                        # Validate if prices resolved to zero
+                        all_zero = all(opt["price"] == 0.0 for opt in unique_options)
+                        status_str = "Success (TMS Rate $0.00)" if all_zero else "Success"
+                        return index, status_str, unique_options
                     
                 return index, f"HTTP Rejection {response.status_code}", []
                 
@@ -189,10 +226,8 @@ def generate_bulk_matrix(file_bytes: bytes, margin_target: float = 0.19, exclude
             for future in as_completed(future_to_row):
                 idx, status, options = future.result()
                 
-                if status != "Success":
-                    df.at[idx, "Routing Status"] = status
-                else:
-                    df.at[idx, "Routing Status"] = "Success"
+                df.at[idx, "Routing Status"] = status
+                if "Success" in status:
                     if len(options) > 0:
                         df.at[idx, "Option 1 (Cheapest)"] = options[0]['display']
                         df.at[idx, "Option 1 Price"] = f"${options[0]['price']:.2f}"
